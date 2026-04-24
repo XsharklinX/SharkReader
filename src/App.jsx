@@ -6,6 +6,9 @@ import { translations, languageNames, RANDOM_EMOJIS } from './translations';
 import { safeParse, loadFilesFromDB, saveFileToDB, deleteFileFromDB, fileToBase64 } from './db';
 import EpubReader from './EpubReader';
 import PdfReader from './PdfReader';
+import AnalyticsView from './AnalyticsView';
+import WorkshopPanel from './WorkshopPanel';
+import { checkNewAchievements, ACHIEVEMENTS, RARITY } from './achievements';
 
     // ─────────────────────────────────────────
     // BOOK CARD — memoized + lazy cover load
@@ -197,12 +200,28 @@ import PdfReader from './PdfReader';
         const persistTimerRef = useRef(null);
         const activeBookIdRef = useRef(null);
 
+        // ── LOGROS / WORKSHOP / ANALYTICS ──
+        const [achievements, setAchievements] = useState(() => safeParse('sharkreader_achievements', {}));
+        const [addons, setAddons] = useState(() => safeParse('sharkreader_addons', {}));
+        const [showWorkshop, setShowWorkshop] = useState(false);
+        const [achievementToast, setAchievementToast] = useState(null);
+        const [journalEntries, setJournalEntries] = useState(() => safeParse('sharkreader_journal', []));
+        const [showJournalModal, setShowJournalModal] = useState(false);
+
         const t = translations[lang] || translations['es'];
 
         // ─────────────────────────────────────────
         // EFECTOS
         // ─────────────────────────────────────────
-        useEffect(() => { document.body.className = `theme-${theme}`; }, [theme]);
+        useEffect(() => {
+            document.body.className = `theme-${theme}`;
+            setStats(prev => {
+                const used = new Set(prev.themesUsed || []);
+                used.add(theme);
+                if (used.size === (prev.themesUsed || []).length) return prev;
+                return { ...prev, themesUsed: [...used] };
+            });
+        }, [theme]);
 
         // Cargar libros desde IndexedDB
         useEffect(() => {
@@ -289,6 +308,9 @@ import PdfReader from './PdfReader';
                 localStorage.setItem('sharkreader_libview', JSON.stringify(libraryView));
                 localStorage.setItem('sharkreader_daily_goal', JSON.stringify(dailyGoalMins));
                 localStorage.setItem('sharkreader_yearly_goal', JSON.stringify(yearlyGoal));
+                localStorage.setItem('sharkreader_achievements', JSON.stringify(achievements));
+                localStorage.setItem('sharkreader_addons', JSON.stringify(addons));
+                localStorage.setItem('sharkreader_journal', JSON.stringify(journalEntries));
                 // Escribir sync a carpeta local si está configurada
                 if (syncFolder) {
                     try {
@@ -367,6 +389,12 @@ import PdfReader from './PdfReader';
                         }
                         return { timeRead, pagesTurned, streak, currentDailyMins, lastActiveDate, streakSavers, history, minutesByDay };
                     });
+                    // Rastrear hora del día para analíticas
+                    const hour = new Date().getHours();
+                    setStats(prev => ({
+                        ...prev,
+                        hourlyLog: { ...(prev.hourlyLog || {}), [hour]: ((prev.hourlyLog || {})[hour] || 0) + 1 }
+                    }));
                     // Acumular minuto en el libro activo
                     if (activeBookIdRef.current) {
                         setBooks(prev => prev.map(b => {
@@ -401,6 +429,22 @@ import PdfReader from './PdfReader';
             }
         }, [lastReadId]); // eslint-disable-line
 
+        // Comprobar logros cuando cambian stats o libros
+        useEffect(() => {
+            if (!isDbLoaded || !userProfile) return;
+            const context = { stats, books, vocabulary, achievements, addons, yearlyGoal };
+            const newOnes = checkNewAchievements(context, achievements);
+            if (!newOnes.length) return;
+            const now = Date.now();
+            const updated = { ...achievements };
+            newOnes.forEach(a => { updated[a.id] = { unlockedAt: now }; });
+            setAchievements(updated);
+            localStorage.setItem('sharkreader_achievements', JSON.stringify(updated));
+            // Show toast for the first new achievement
+            setAchievementToast(newOnes[0]);
+            setTimeout(() => setAchievementToast(null), 4000);
+        }, [stats, books, vocabulary, addons]); // eslint-disable-line
+
         // ─────────────────────────────────────────
         // TABS
         // ─────────────────────────────────────────
@@ -427,6 +471,17 @@ import PdfReader from './PdfReader';
         const closeTab = useCallback((tabId, e) => {
             if (e) { e.stopPropagation(); e.preventDefault(); }
             if (!tabId) return;
+            // Journal entry on tab close
+            setBooks(booksSnap => {
+                const closingTab = tabs.find(t => t.id === tabId);
+                if (closingTab) {
+                    const book = booksSnap.find(b => b.id === closingTab.bookId);
+                    if (book && book.readingMinutes > 0) {
+                        addJournalEntry(book.name, book.readingMinutes, book.progress || 0);
+                    }
+                }
+                return booksSnap;
+            });
             setTabs(prev => {
                 const newTabs = prev.filter(t => t.id !== tabId);
                 if (activeTabId === tabId) {
@@ -466,6 +521,25 @@ import PdfReader from './PdfReader';
             if (f) { const r = new FileReader(); r.onload = ev => setTempLoginAvatar(ev.target.result); r.readAsDataURL(f); }
         };
         const handleRandomEmoji = () => setTempLoginAvatar(RANDOM_EMOJIS[Math.floor(Math.random() * RANDOM_EMOJIS.length)]);
+
+        const toggleAddon = (id) => {
+            setAddons(prev => {
+                const updated = { ...prev, [id]: !prev[id] };
+                localStorage.setItem('sharkreader_addons', JSON.stringify(updated));
+                return updated;
+            });
+        };
+
+        const addJournalEntry = (bookName, minutes, progress) => {
+            if (!addons.readingJournal) return;
+            const entry = {
+                id: Date.now().toString(),
+                date: new Date().toLocaleDateString(),
+                dateTs: Date.now(),
+                bookName, minutes, progress
+            };
+            setJournalEntries(prev => [entry, ...prev].slice(0, 100));
+        };
 
         const exportAllData = () => {
             if (!userProfile) { alert("Inicia sesión para exportar."); return; }
@@ -784,6 +858,7 @@ import PdfReader from './PdfReader';
                 const a = document.createElement('a'); a.href = url; a.download = 'Mis_Subrayados.png'; a.click();
                 URL.revokeObjectURL(url);
             }, 'image/png');
+            setStats(prev => ({ ...prev, quoteExported: true }));
         };
 
         const allBookmarks = useMemo(() => books.filter(b => b.bookmarks.length > 0), [books]);
@@ -875,22 +950,95 @@ import PdfReader from './PdfReader';
                                                         <p className="text-[10px] opacity-70 uppercase tracking-widest mt-0.5 font-bold text-[var(--highlight)]">Nivel {Math.floor((stats.timeRead || 0) / 60) + 1}</p>
                                                     </div>
                                                 </div>
+                                                {/* Stats grid */}
                                                 <div className="p-4 grid grid-cols-4 gap-2 text-center border-b border-[var(--border-color)]">
                                                     {[
-                                                        { v: `${stats.timeRead || 0}m`, l: 'Tiempo', c: 'var(--highlight)' },
+                                                        { v: stats.timeRead >= 60 ? `${Math.floor(stats.timeRead/60)}h` : `${stats.timeRead||0}m`, l: 'Tiempo', c: 'var(--highlight)' },
                                                         { v: stats.pagesTurned || 0, l: 'Páginas', c: '#22c55e' },
-                                                        { v: stats.streak || 0, l: 'Racha', c: '#f97316' },
-                                                        { v: stats.timeRead > 0 ? `${Math.round((stats.pagesTurned * 250) / stats.timeRead)}` : '—', l: 'WPM', c: '#a855f7' }
+                                                        { v: stats.streak || 0, l: 'Racha 🔥', c: '#f97316' },
+                                                        { v: stats.timeRead > 0 ? Math.round((stats.pagesTurned * 250) / stats.timeRead) : '—', l: 'WPM', c: '#a855f7' }
                                                     ].map(s => (
                                                         <div key={s.l} className="bg-black/5 dark:bg-white/5 rounded-xl p-2">
-                                                            <div className="text-xl font-black" style={{ color: s.c }}>{s.v}</div>
-                                                            <div className="text-[9px] uppercase tracking-widest opacity-60 font-bold mt-1">{s.l}</div>
+                                                            <div className="text-lg font-black" style={{ color: s.c }}>{s.v}</div>
+                                                            <div className="text-[8px] uppercase tracking-widest opacity-50 font-bold mt-0.5">{s.l}</div>
                                                         </div>
                                                     ))}
                                                 </div>
-                                                <div className="p-3 space-y-2">
-                                                    <button onClick={() => { exportAllData(); setShowUserMenu(false); }} className="w-full py-2 bg-[var(--highlight)] text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:brightness-110 transition text-sm"><Icons.Export /> {t.exportBackup}</button>
-                                                    <button onClick={() => { importInputRef.current.click(); setShowUserMenu(false); }} className="w-full py-2 bg-black/5 dark:bg-white/5 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-black/10 dark:hover:bg-white/10 transition text-sm"><Icons.Import /> {t.importBackup}</button>
+                                                {/* Level XP bar */}
+                                                {(() => {
+                                                    const lvl = Math.floor((stats.timeRead || 0) / 60) + 1;
+                                                    const xpInLevel = (stats.timeRead || 0) % 60;
+                                                    const pct = (xpInLevel / 60) * 100;
+                                                    return (
+                                                        <div className="px-4 py-3 border-b border-[var(--border-color)]">
+                                                            <div className="flex justify-between items-center mb-1.5">
+                                                                <span className="text-[10px] font-black opacity-50 uppercase tracking-widest">Nivel {lvl} — Lector</span>
+                                                                <span className="text-[10px] font-black opacity-50">{xpInLevel}/60 min</span>
+                                                            </div>
+                                                            <div className="w-full h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                                                                <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: 'linear-gradient(90deg, var(--progress-bg), var(--highlight))' }} />
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })()}
+                                                {/* Recent achievements */}
+                                                {(() => {
+                                                    const recent = Object.entries(achievements)
+                                                        .sort((a, b) => (b[1]?.unlockedAt || 0) - (a[1]?.unlockedAt || 0))
+                                                        .slice(0, 3)
+                                                        .map(([id]) => ACHIEVEMENTS.find(a => a.id === id))
+                                                        .filter(Boolean);
+                                                    if (!recent.length) return null;
+                                                    return (
+                                                        <div className="px-4 py-3 border-b border-[var(--border-color)]">
+                                                            <div className="flex justify-between items-center mb-2">
+                                                                <span className="text-[10px] font-black opacity-50 uppercase tracking-widest">Últimos Logros</span>
+                                                                <button onClick={() => { setView('analytics'); setShowUserMenu(false); }} className="text-[10px] font-black opacity-60 hover:opacity-100 transition" style={{ color: 'var(--highlight)' }}>
+                                                                    Ver todos →
+                                                                </button>
+                                                            </div>
+                                                            <div className="flex gap-2">
+                                                                {recent.map(a => {
+                                                                    const r = RARITY[a.rarity];
+                                                                    return (
+                                                                        <div key={a.id} title={a.name} className="flex-1 rounded-xl p-2 text-center" style={{ backgroundColor: r.bg, border: `1px solid ${r.border}` }}>
+                                                                            <div className="text-xl">{a.emoji}</div>
+                                                                            <div className="text-[8px] font-black opacity-70 mt-0.5 truncate">{a.name}</div>
+                                                                        </div>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })()}
+                                                {/* Extended stats */}
+                                                <div className="px-4 py-3 grid grid-cols-3 gap-2 border-b border-[var(--border-color)]">
+                                                    {[
+                                                        { v: books.filter(b => b.isFinished).length, l: '📚 Terminados' },
+                                                        { v: books.filter(b => b.lastReadDate > 0 && !b.isFinished).length, l: '📖 Leyendo' },
+                                                        { v: books.reduce((s, b) => s + (b.bookmarks?.length || 0), 0), l: '🔖 Notas' },
+                                                    ].map(s => (
+                                                        <div key={s.l} className="bg-black/5 dark:bg-white/5 rounded-xl p-2 text-center">
+                                                            <div className="text-base font-black">{s.v}</div>
+                                                            <div className="text-[8px] opacity-50 font-bold mt-0.5">{s.l}</div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                {/* Shortcuts */}
+                                                <div className="p-3 grid grid-cols-2 gap-2">
+                                                    <button onClick={() => { setView('analytics'); setShowUserMenu(false); }}
+                                                        className="py-2 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 hover:opacity-80 transition text-white"
+                                                        style={{ background: 'linear-gradient(135deg, var(--topbar-bg), var(--highlight))' }}>
+                                                        📊 Analíticas
+                                                    </button>
+                                                    <button onClick={() => { setShowWorkshop(true); setShowUserMenu(false); }}
+                                                        className="py-2 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 hover:opacity-80 transition bg-black/5 dark:bg-white/5">
+                                                        🔧 Workshop
+                                                    </button>
+                                                    <button onClick={() => { exportAllData(); setShowUserMenu(false); }} className="py-2 bg-black/5 dark:bg-white/5 font-bold rounded-xl flex items-center justify-center gap-1.5 hover:opacity-80 transition text-xs"><Icons.Export /> Exportar</button>
+                                                    <button onClick={() => { importInputRef.current.click(); setShowUserMenu(false); }} className="py-2 bg-black/5 dark:bg-white/5 font-bold rounded-xl flex items-center justify-center gap-1.5 hover:opacity-80 transition text-xs"><Icons.Import /> Importar</button>
+                                                </div>
+                                                <div className="px-3 pb-3">
                                                     <button onClick={() => { setUserProfile(null); setShowUserMenu(false); }} className="w-full py-2 text-red-500 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-red-500/10 transition text-sm"><Icons.Close /> Cerrar sesión</button>
                                                 </div>
                                             </div>
@@ -1086,8 +1234,33 @@ import PdfReader from './PdfReader';
                                     ))}
                                 </div>
                             </div>
-                            <div className="p-4 border-t" style={{ borderColor: 'var(--border-color)' }}>
-                                <button onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }} className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100">
+                            <div className="p-4 border-t space-y-1.5" style={{ borderColor: 'var(--border-color)' }}>
+                                <button onClick={() => { setView('analytics'); setSidebarOpen(false); }}
+                                    className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
+                                    <span className="text-base">📊</span> Analíticas & Logros
+                                    {Object.keys(achievements).length > 0 && (
+                                        <span className="ml-auto text-xs font-black px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: 'var(--highlight)' }}>
+                                            {Object.keys(achievements).length}/{ACHIEVEMENTS.length}
+                                        </span>
+                                    )}
+                                </button>
+                                <button onClick={() => { setShowWorkshop(true); setSidebarOpen(false); }}
+                                    className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
+                                    <span className="text-base">🔧</span> Workshop
+                                    {Object.values(addons).filter(Boolean).length > 0 && (
+                                        <span className="ml-auto text-xs font-black px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: '#22c55e' }}>
+                                            {Object.values(addons).filter(Boolean).length} activos
+                                        </span>
+                                    )}
+                                </button>
+                                {addons.readingJournal && journalEntries.length > 0 && (
+                                    <button onClick={() => { setShowJournalModal(true); setSidebarOpen(false); }}
+                                        className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
+                                        <span className="text-base">📓</span> Reading Journal
+                                        <span className="ml-auto text-xs font-black px-2 py-0.5 rounded-full bg-black/5 dark:bg-white/10">{journalEntries.length}</span>
+                                    </button>
+                                )}
+                                <button onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }} className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
                                     <Icons.Settings /> {t.settings}
                                 </button>
                             </div>
@@ -1297,7 +1470,7 @@ import PdfReader from './PdfReader';
                                     </div>
                                 )}
                                 {displayedBooks.length > 0 && libraryView === 'grid' && (
-                                    <div className="books-grid fade-in">
+                                    <div className={`books-grid fade-in ${addons.netflixView ? 'netflix-grid' : ''}`}>
                                         {displayedBooks.map(book => (
                                             <BookCard key={book.id} book={book} isOpen={openBookIds.has(book.id)} onOpen={openBook} onContextMenu={handleContextMenu} />
                                         ))}
@@ -1622,6 +1795,20 @@ import PdfReader from './PdfReader';
                     </div>
                 )}
 
+                {/* ── ANALYTICS VIEW ── */}
+                {view === 'analytics' && (
+                    <div className="flex-1 overflow-hidden">
+                        <AnalyticsView
+                            stats={stats}
+                            books={books}
+                            vocabulary={vocabulary}
+                            achievements={achievements}
+                            yearlyGoal={yearlyGoal}
+                            onBack={() => setView('library')}
+                        />
+                    </div>
+                )}
+
                 {/* ── READER ── */}
                 {view === 'reader' && currentBookData && (
                     <div className="flex-1 flex overflow-hidden relative w-full" style={{ backgroundColor: 'var(--bg-color)' }}>
@@ -1636,6 +1823,8 @@ import PdfReader from './PdfReader';
                                     updateLocationAndProgress={updateBookLocation}
                                     toggleBookmark={toggleBookmarkInApp}
                                     isFullscreen={isFullscreen}
+                                    focusMode={addons.focusMode}
+                                    ttsEnabled={addons.tts}
                                     onClose={closeBook}
                                     onOpenSettings={() => setSettingsOpen(true)}
                                     onStatsUpdate={pages => setStats(prev => ({ ...prev, pagesTurned: prev.pagesTurned + pages }))}
@@ -1655,6 +1844,7 @@ import PdfReader from './PdfReader';
                                     bookData={currentBookData}
                                     theme={theme} t={t}
                                     isFullscreen={isFullscreen}
+                                    focusMode={addons.focusMode}
                                     onClose={closeBook}
                                     onOpenSettings={() => setSettingsOpen(true)}
                                     onOpenBookInfo={() => setActiveBookModal(currentBookData)}
@@ -1719,6 +1909,75 @@ import PdfReader from './PdfReader';
                         )}
                     </div>
                 )}
+                {/* ── WORKSHOP ── */}
+                {showWorkshop && (
+                    <WorkshopPanel
+                        addons={addons}
+                        onToggle={toggleAddon}
+                        onClose={() => setShowWorkshop(false)}
+                    />
+                )}
+
+                {/* ── ACHIEVEMENT TOAST ── */}
+                {achievementToast && (() => {
+                    const r = RARITY[achievementToast.rarity];
+                    return (
+                        <div className="fixed bottom-6 right-6 z-[9999] fade-in" style={{ animation: 'fadeInUp 0.4s ease' }}>
+                            <div className="flex items-center gap-3 px-5 py-4 rounded-2xl shadow-2xl border"
+                                style={{ backgroundColor: 'var(--surface-bg)', borderColor: r.border, minWidth: 260, maxWidth: 320 }}>
+                                <div className="text-3xl flex-shrink-0">{achievementToast.emoji}</div>
+                                <div className="min-w-0">
+                                    <div className="flex items-center gap-2 mb-0.5">
+                                        <span className="text-[9px] font-black uppercase tracking-widest" style={{ color: r.color }}>¡Logro desbloqueado!</span>
+                                    </div>
+                                    <p className="font-black text-sm leading-tight">{achievementToast.name}</p>
+                                    <p className="text-[11px] opacity-60 mt-0.5">{achievementToast.desc}</p>
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })()}
+
+                {/* ── READING JOURNAL MODAL ── */}
+                {showJournalModal && (
+                    <div className="fixed inset-0 z-[300] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 fade-in" onClick={() => setShowJournalModal(false)}>
+                        <div className="bg-[var(--surface-bg)] w-full max-w-md rounded-3xl shadow-2xl border border-[var(--border-color)] flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
+                            <div className="flex items-center justify-between p-6 border-b flex-shrink-0" style={{ borderColor: 'var(--border-color)' }}>
+                                <h2 className="font-black text-xl flex items-center gap-2">📓 Reading Journal</h2>
+                                <button onClick={() => setShowJournalModal(false)} className="p-2 opacity-60 hover:opacity-100 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition">✕</button>
+                            </div>
+                            <div className="flex-1 overflow-y-auto p-5 space-y-3">
+                                {journalEntries.length === 0 ? (
+                                    <p className="text-center opacity-40 italic text-sm py-8">Aún no hay entradas. Lee y cierra un libro para generar la primera.</p>
+                                ) : journalEntries.map(entry => (
+                                    <div key={entry.id} className="p-4 rounded-2xl border" style={{ backgroundColor: 'var(--bg-color)', borderColor: 'var(--border-color)' }}>
+                                        <div className="flex items-start justify-between gap-2 mb-1">
+                                            <p className="font-black text-sm flex-1 leading-tight">{entry.bookName}</p>
+                                            <span className="text-[10px] opacity-40 font-bold flex-shrink-0">{entry.date}</span>
+                                        </div>
+                                        <div className="flex items-center gap-3 text-[11px]">
+                                            <span className="opacity-60">⏱️ {entry.minutes >= 60 ? `${Math.floor(entry.minutes/60)}h ${entry.minutes%60}m` : `${entry.minutes}m`}</span>
+                                            <span className="opacity-60">📈 {entry.progress}% completado</span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                            {journalEntries.length > 0 && (
+                                <div className="p-4 border-t flex-shrink-0" style={{ borderColor: 'var(--border-color)' }}>
+                                    <button onClick={() => {
+                                        let md = '# 📓 Reading Journal — Shark Reader\n\n';
+                                        journalEntries.forEach(e => { md += `### ${e.date} — ${e.bookName}\n- Tiempo: ${e.minutes}min\n- Progreso: ${e.progress}%\n\n`; });
+                                        const url = URL.createObjectURL(new Blob([md], { type: 'text/markdown' }));
+                                        const a = document.createElement('a'); a.href = url; a.download = 'ReadingJournal.md'; a.click(); URL.revokeObjectURL(url);
+                                    }} className="w-full py-2.5 rounded-xl font-bold text-white text-sm transition hover:brightness-110" style={{ backgroundColor: 'var(--highlight)' }}>
+                                        Exportar .MD
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+
             </div>
         );
     };

@@ -6,7 +6,7 @@ import { Icons } from './icons';
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
 const PdfReader = ({
-    bookData, theme, t, isFullscreen,
+    bookData, theme, t, isFullscreen, focusMode,
     onClose, onOpenSettings, onOpenBookInfo,
     updateLocationAndProgress, toggleBookmark, onStatsUpdate,
     tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary
@@ -23,6 +23,20 @@ const PdfReader = ({
     const [inputPage, setInputPage] = useState('1');
     const [showToolbar, setShowToolbar] = useState(true);
     const [isBookmarked, setIsBookmarked] = useState(false);
+    const [focusToolbarVisible, setFocusToolbarVisible] = useState(true);
+    const focusHideTimer = useRef(null);
+
+    useEffect(() => {
+        if (!focusMode) { setFocusToolbarVisible(true); return; }
+        const onMove = (e) => {
+            setFocusToolbarVisible(true);
+            clearTimeout(focusHideTimer.current);
+            if (e.clientY > 80) focusHideTimer.current = setTimeout(() => setFocusToolbarVisible(false), 2500);
+        };
+        document.addEventListener('mousemove', onMove);
+        focusHideTimer.current = setTimeout(() => setFocusToolbarVisible(false), 2500);
+        return () => { document.removeEventListener('mousemove', onMove); clearTimeout(focusHideTimer.current); setFocusToolbarVisible(true); };
+    }, [focusMode]);
 
     // Calcular si la página actual tiene marcador
     useEffect(() => {
@@ -140,7 +154,7 @@ const PdfReader = ({
 
             {/* ── BARRA SUPERIOR ── */}
             {!isFullscreen && (
-                <div className="flex-shrink-0 flex flex-col text-white shadow-md z-40"
+                <div className={`flex-shrink-0 flex flex-col text-white shadow-md z-40 focus-mode-toolbar ${focusMode && !focusToolbarVisible ? 'hidden' : ''}`}
                     style={{ background: 'linear-gradient(to right, var(--topbar-bg), var(--highlight))' }}>
 
                     {/* Fila de pestañas */}

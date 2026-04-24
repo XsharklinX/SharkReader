@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ePub from 'epubjs';
 import { Icons } from './icons';
 
-    const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout, updateLocationAndProgress, toggleBookmark, isFullscreen, onClose, onOpenSettings, onStatsUpdate, onOpenBookInfo, onSaveWord, aiProvider, aiApiKey, tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary }) => {
+    const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout, updateLocationAndProgress, toggleBookmark, isFullscreen, focusMode, ttsEnabled, onClose, onOpenSettings, onStatsUpdate, onOpenBookInfo, onSaveWord, aiProvider, aiApiKey, tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary }) => {
         const viewerRef = useRef(null);
         const renditionRef = useRef(null);
         const bookRef = useRef(null);
@@ -63,6 +63,64 @@ import { Icons } from './icons';
         const aiInputRef = useRef(null);
         const aiScrollRef = useRef(null);
         const [currentChapterTitle, setCurrentChapterTitle] = useState('');
+
+        // TTS
+        const [ttsPlaying, setTtsPlaying] = useState(false);
+        const ttsRef = useRef(null);
+
+        // Focus mode: hide toolbar on mouse idle, show on hover near top
+        const focusToolbarHideTimer = useRef(null);
+        const [focusToolbarVisible, setFocusToolbarVisible] = useState(true);
+
+        useEffect(() => {
+            if (!focusMode) { setFocusToolbarVisible(true); return; }
+            const onMove = (e) => {
+                setFocusToolbarVisible(true);
+                clearTimeout(focusToolbarHideTimer.current);
+                if (e.clientY > 80) {
+                    focusToolbarHideTimer.current = setTimeout(() => setFocusToolbarVisible(false), 2500);
+                }
+            };
+            document.addEventListener('mousemove', onMove);
+            focusToolbarHideTimer.current = setTimeout(() => setFocusToolbarVisible(false), 2500);
+            return () => {
+                document.removeEventListener('mousemove', onMove);
+                clearTimeout(focusToolbarHideTimer.current);
+                setFocusToolbarVisible(true);
+            };
+        }, [focusMode]);
+
+        // TTS: stop when disabled or unmounted
+        useEffect(() => {
+            if (!ttsEnabled && ttsPlaying) {
+                window.speechSynthesis?.cancel();
+                setTtsPlaying(false);
+            }
+        }, [ttsEnabled]);
+        useEffect(() => () => { window.speechSynthesis?.cancel(); }, []);
+
+        const handleTtsToggle = useCallback(() => {
+            if (!window.speechSynthesis) return;
+            if (ttsPlaying) {
+                window.speechSynthesis.cancel();
+                setTtsPlaying(false);
+                return;
+            }
+            // Get text from the epub iframe
+            const iframes = viewerRef.current?.querySelectorAll('iframe');
+            let text = '';
+            iframes?.forEach(iframe => {
+                try { text += iframe.contentDocument?.body?.innerText || ''; } catch (_) {}
+            });
+            if (!text.trim()) return;
+            const utter = new SpeechSynthesisUtterance(text.slice(0, 5000));
+            utter.lang = 'es-ES';
+            utter.rate = 0.9;
+            utter.onend = () => setTtsPlaying(false);
+            utter.onerror = () => setTtsPlaying(false);
+            window.speechSynthesis.speak(utter);
+            setTtsPlaying(true);
+        }, [ttsPlaying]);
 
         useEffect(() => { isHighlightingRef.current = isHighlighting; }, [isHighlighting]);
 
@@ -770,7 +828,7 @@ import { Icons } from './icons';
 
                 {/* ── BARRA SUPERIOR — Modo Normal ── */}
                 {!isFullscreen && (
-                    <div className="flex-shrink-0 flex flex-col text-white shadow-md z-40" style={{ background: 'linear-gradient(to right, var(--topbar-bg), var(--highlight))' }}>
+                    <div className={`flex-shrink-0 flex flex-col text-white shadow-md z-40 focus-mode-toolbar ${focusMode && !focusToolbarVisible ? 'hidden' : ''}`} style={{ background: 'linear-gradient(to right, var(--topbar-bg), var(--highlight))' }}>
 
                         {/* Fila 1: pestañas (solo cuando se pasan tabs) */}
                         {tabs && (
@@ -851,6 +909,13 @@ import { Icons } from './icons';
                                         className={`p-1.5 rounded-xl transition text-base leading-none ${showAiChat ? 'bg-white/25' : 'hover:bg-white/15'}`}
                                         title="Asistente IA">
                                         🤖
+                                    </button>
+                                )}
+                                {ttsEnabled && (
+                                    <button onClick={handleTtsToggle}
+                                        className={`p-1.5 rounded-xl transition ${ttsPlaying ? 'bg-green-500/30 text-green-300' : 'hover:bg-white/15'}`}
+                                        title={ttsPlaying ? 'Detener lectura en voz alta' : 'Leer en voz alta (TTS)'}>
+                                        {ttsPlaying ? '⏹' : '🔊'}
                                     </button>
                                 )}
                                 <button onClick={onOpenSettings} className="p-1.5 hover:bg-white/15 rounded-xl transition hidden sm:block" title={t.settings}>
