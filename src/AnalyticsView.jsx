@@ -37,8 +37,8 @@ const AchievementCard = ({ achievement, unlocked, unlockedAt }) => {
     );
 };
 
-const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, onBack }) => {
-    const [activeTab, setActiveTab] = useState('stats');
+const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, initialTab = 'stats', onBack }) => {
+    const [activeTab, setActiveTab] = useState(initialTab);
 
     // ── Heatmap ──────────────────────────────────────────────────────────────
     const weeks = useMemo(() => {

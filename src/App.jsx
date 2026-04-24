@@ -199,6 +199,7 @@ import { checkNewAchievements, ACHIEVEMENTS, RARITY } from './achievements';
         const avatarInputRef = useRef(null);
         const persistTimerRef = useRef(null);
         const activeBookIdRef = useRef(null);
+        const addonsRef = useRef(addons);
 
         // ── LOGROS / WORKSHOP / ANALYTICS ──
         const [achievements, setAchievements] = useState(() => safeParse('sharkreader_achievements', {}));
@@ -471,13 +472,23 @@ import { checkNewAchievements, ACHIEVEMENTS, RARITY } from './achievements';
         const closeTab = useCallback((tabId, e) => {
             if (e) { e.stopPropagation(); e.preventDefault(); }
             if (!tabId) return;
-            // Journal entry on tab close
+            // On close: Reading Journal + Auto Bookmark (use addonsRef to avoid stale closure)
             setBooks(booksSnap => {
                 const closingTab = tabs.find(t => t.id === tabId);
                 if (closingTab) {
                     const book = booksSnap.find(b => b.id === closingTab.bookId);
-                    if (book && book.readingMinutes > 0) {
-                        addJournalEntry(book.name, book.readingMinutes, book.progress || 0);
+                    if (book) {
+                        if (addonsRef.current.readingJournal && book.readingMinutes > 0) {
+                            addJournalEntry(book.name, book.readingMinutes, book.progress || 0);
+                        }
+                        if (addonsRef.current.autoBookmark && book.lastLocation) {
+                            // Auto-bookmark current position if not already bookmarked there
+                            const alreadyBookmarked = book.bookmarks?.some(bm => bm.cfi === book.lastLocation);
+                            if (!alreadyBookmarked) {
+                                const autoMark = { cfi: book.lastLocation, note: `📌 Auto — ${new Date().toLocaleDateString()}`, date: new Date().toLocaleDateString() };
+                                return booksSnap.map(b => b.id === closingTab.bookId ? { ...b, bookmarks: [...(b.bookmarks || []), autoMark] } : b);
+                            }
+                        }
                     }
                 }
                 return booksSnap;
@@ -525,10 +536,13 @@ import { checkNewAchievements, ACHIEVEMENTS, RARITY } from './achievements';
         const toggleAddon = (id) => {
             setAddons(prev => {
                 const updated = { ...prev, [id]: !prev[id] };
+                addonsRef.current = updated;
                 localStorage.setItem('sharkreader_addons', JSON.stringify(updated));
                 return updated;
             });
         };
+        // Keep addonsRef in sync
+        useEffect(() => { addonsRef.current = addons; }, [addons]);
 
         const addJournalEntry = (bookName, minutes, progress) => {
             if (!addons.readingJournal) return;
@@ -1237,12 +1251,14 @@ import { checkNewAchievements, ACHIEVEMENTS, RARITY } from './achievements';
                             <div className="p-4 border-t space-y-1.5" style={{ borderColor: 'var(--border-color)' }}>
                                 <button onClick={() => { setView('analytics'); setSidebarOpen(false); }}
                                     className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
-                                    <span className="text-base">📊</span> Analíticas & Logros
-                                    {Object.keys(achievements).length > 0 && (
-                                        <span className="ml-auto text-xs font-black px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: 'var(--highlight)' }}>
-                                            {Object.keys(achievements).length}/{ACHIEVEMENTS.length}
-                                        </span>
-                                    )}
+                                    <span className="text-base">📊</span> Analíticas
+                                </button>
+                                <button onClick={() => { setView('achievements'); setSidebarOpen(false); }}
+                                    className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
+                                    <span className="text-base">🏆</span> Logros
+                                    <span className="ml-auto text-xs font-black px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: Object.keys(achievements).length > 0 ? 'var(--highlight)' : 'rgba(128,128,128,0.3)' }}>
+                                        {Object.keys(achievements).length}/{ACHIEVEMENTS.length}
+                                    </span>
                                 </button>
                                 <button onClick={() => { setShowWorkshop(true); setSidebarOpen(false); }}
                                     className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
@@ -1796,7 +1812,7 @@ import { checkNewAchievements, ACHIEVEMENTS, RARITY } from './achievements';
                 )}
 
                 {/* ── ANALYTICS VIEW ── */}
-                {view === 'analytics' && (
+                {(view === 'analytics' || view === 'achievements') && (
                     <div className="flex-1 overflow-hidden">
                         <AnalyticsView
                             stats={stats}
@@ -1804,6 +1820,7 @@ import { checkNewAchievements, ACHIEVEMENTS, RARITY } from './achievements';
                             vocabulary={vocabulary}
                             achievements={achievements}
                             yearlyGoal={yearlyGoal}
+                            initialTab={view === 'achievements' ? 'achievements' : 'stats'}
                             onBack={() => setView('library')}
                         />
                     </div>
@@ -1825,6 +1842,8 @@ import { checkNewAchievements, ACHIEVEMENTS, RARITY } from './achievements';
                                     isFullscreen={isFullscreen}
                                     focusMode={addons.focusMode}
                                     ttsEnabled={addons.tts}
+                                    pomodoroAddon={addons.pomodoro}
+                                    dyslexiaAddon={addons.dyslexiaFont}
                                     onClose={closeBook}
                                     onOpenSettings={() => setSettingsOpen(true)}
                                     onStatsUpdate={pages => setStats(prev => ({ ...prev, pagesTurned: prev.pagesTurned + pages }))}

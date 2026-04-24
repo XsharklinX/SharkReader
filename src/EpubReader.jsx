@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ePub from 'epubjs';
 import { Icons } from './icons';
 
-    const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout, updateLocationAndProgress, toggleBookmark, isFullscreen, focusMode, ttsEnabled, onClose, onOpenSettings, onStatsUpdate, onOpenBookInfo, onSaveWord, aiProvider, aiApiKey, tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary }) => {
+    const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout, updateLocationAndProgress, toggleBookmark, isFullscreen, focusMode, ttsEnabled, pomodoroAddon, dyslexiaAddon, onClose, onOpenSettings, onStatsUpdate, onOpenBookInfo, onSaveWord, aiProvider, aiApiKey, tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary }) => {
         const viewerRef = useRef(null);
         const renditionRef = useRef(null);
         const bookRef = useRef(null);
@@ -43,8 +43,8 @@ import { Icons } from './icons';
         const [isHighlighting, setIsHighlighting] = useState(false);
         const isHighlightingRef = useRef(isHighlighting);
 
-        // Pomodoro
-        const [pomodoroActive, setPomodoroActive] = useState(false);
+        // Pomodoro (auto-start when addon is active)
+        const [pomodoroActive, setPomodoroActive] = useState(!!pomodoroAddon);
         const [pomodoroPhase, setPomodoroPhase] = useState('work');
         const [pomodoroTimeLeft, setPomodoroTimeLeft] = useState(25 * 60);
         const [showPomodoro, setShowPomodoro] = useState(false);
@@ -100,27 +100,44 @@ import { Icons } from './icons';
         useEffect(() => () => { window.speechSynthesis?.cancel(); }, []);
 
         const handleTtsToggle = useCallback(() => {
-            if (!window.speechSynthesis) return;
-            if (ttsPlaying) {
-                window.speechSynthesis.cancel();
-                setTtsPlaying(false);
+            const synth = window.speechSynthesis;
+            if (!synth) { alert('Tu navegador/sistema no soporta Text-to-Speech.'); return; }
+            if (ttsPlaying) { synth.cancel(); setTtsPlaying(false); return; }
+
+            // Extract text from epub.js iframes (blob: URLs are same-origin in Electron)
+            let text = '';
+            const viewer = viewerRef.current;
+            if (viewer) {
+                const iframes = viewer.querySelectorAll('iframe');
+                iframes.forEach(iframe => {
+                    try {
+                        const doc = iframe.contentDocument || iframe.contentWindow?.document;
+                        if (doc?.body) text += doc.body.innerText + ' ';
+                    } catch (_) {}
+                });
+            }
+            // Fallback: get text from any rendered content divs
+            if (!text.trim() && viewer) {
+                text = viewer.innerText || '';
+            }
+            if (!text.trim()) {
+                alert('No se pudo extraer texto. Prueba cambiando a modo de lectura vertical (scroll).');
                 return;
             }
-            // Get text from the epub iframe
-            const iframes = viewerRef.current?.querySelectorAll('iframe');
-            let text = '';
-            iframes?.forEach(iframe => {
-                try { text += iframe.contentDocument?.body?.innerText || ''; } catch (_) {}
-            });
-            if (!text.trim()) return;
-            const utter = new SpeechSynthesisUtterance(text.slice(0, 5000));
-            utter.lang = 'es-ES';
-            utter.rate = 0.9;
-            utter.onend = () => setTtsPlaying(false);
-            utter.onerror = () => setTtsPlaying(false);
-            window.speechSynthesis.speak(utter);
-            setTtsPlaying(true);
-        }, [ttsPlaying]);
+
+            synth.cancel(); // clear any previous queue
+            // Small delay needed after cancel() for some browsers
+            setTimeout(() => {
+                const utter = new SpeechSynthesisUtterance(text.trim().slice(0, 8000));
+                utter.lang = lang === 'es' ? 'es-ES' : lang === 'en' ? 'en-US' : lang === 'zh' ? 'zh-CN' : 'es-ES';
+                utter.rate = 0.88;
+                utter.pitch = 1;
+                utter.onend = () => setTtsPlaying(false);
+                utter.onerror = (e) => { console.warn('TTS error:', e.error); setTtsPlaying(false); };
+                synth.speak(utter);
+                setTtsPlaying(true);
+            }, 120);
+        }, [ttsPlaying, lang]);
 
         useEffect(() => { isHighlightingRef.current = isHighlighting; }, [isHighlighting]);
 
@@ -385,7 +402,11 @@ import { Icons } from './icons';
 
         useEffect(() => { if (isReady && renditionRef.current) renditionRef.current.themes.select(theme); }, [theme, isReady]);
         useEffect(() => { if (isReady && renditionRef.current) renditionRef.current.themes.fontSize(`${fontSize}%`); }, [fontSize, isReady]);
-        useEffect(() => { if (isReady && renditionRef.current) renditionRef.current.themes.font(fontFamily); }, [fontFamily, isReady]);
+        useEffect(() => {
+            if (!isReady || !renditionRef.current) return;
+            const font = dyslexiaAddon ? 'OpenDyslexic' : fontFamily;
+            renditionRef.current.themes.font(font);
+        }, [fontFamily, dyslexiaAddon, isReady]);
         useEffect(() => {
             if (!isReady || !renditionRef.current) return;
             renditionRef.current.themes.override('line-height', `${lineHeight}`);
