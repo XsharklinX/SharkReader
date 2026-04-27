@@ -44,6 +44,36 @@ body {
     transition: background-color 0.4s ease, color 0.4s ease;
 }
 
+/* ── VIEW TRANSITIONS ── */
+.view-enter {
+    animation: viewEnter 0.25s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+.view-exit {
+    animation: viewExit 0.2s ease-in forwards;
+}
+@keyframes viewEnter {
+    from { opacity: 0; transform: translateY(12px) scale(0.99); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes viewExit {
+    from { opacity: 1; transform: scale(1); }
+    to   { opacity: 0; transform: scale(0.98); }
+}
+.view-slide-right {
+    animation: viewSlideRight 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+@keyframes viewSlideRight {
+    from { opacity: 0; transform: translateX(40px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+.view-slide-left {
+    animation: viewSlideLeft 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+@keyframes viewSlideLeft {
+    from { opacity: 0; transform: translateX(-40px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
 /* --- SPLASH SCREEN --- */
 #shark-preloader {
     position: fixed;
@@ -462,6 +492,22 @@ body {
     100% { opacity: 0; }
 }
 
+/* ── PDF TEXT LAYER ── */
+.pdf-text-layer span {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0% 0%;
+}
+.pdf-text-layer ::selection {
+    background: rgba(14, 165, 233, 0.35);
+}
+.pdf-text-layer .highlight {
+    background-color: rgba(250, 204, 21, 0.4);
+    border-radius: 2px;
+}
+
 /* ── FOCUS MODE (toolbar auto-hide) ── */
 .focus-mode-toolbar {
     transition: opacity 0.35s ease, transform 0.35s ease;
@@ -471,3 +517,64 @@ body {
     transform: translateY(-100%);
     pointer-events: none;
 }
+
+/* ── PAGE TRANSITIONS ─────────────────────────────────────────────────────── */
+
+/* --- FADE --- */
+@keyframes pt-fade-out { to { opacity: 0; } }
+@keyframes pt-fade-in  { from { opacity: 0; } }
+
+.pt-fade-exit { animation: pt-fade-out 0.13s ease-out forwards; }
+.pt-fade-enter { animation: pt-fade-in 0.22s ease-in forwards; }
+
+/* --- SLIDE (Moon Reader style — full-panel sweep) --- */
+@keyframes pt-slide-exit-next { to   { transform: translateX(-72%); } }
+@keyframes pt-slide-exit-prev { to   { transform: translateX(72%);  } }
+@keyframes pt-slide-enter-next { from { transform: translateX(72%);  } }
+@keyframes pt-slide-enter-prev { from { transform: translateX(-72%); } }
+
+.pt-slide-exit-next  { animation: pt-slide-exit-next  0.15s cubic-bezier(0.4,0,1,1) forwards; }
+.pt-slide-exit-prev  { animation: pt-slide-exit-prev  0.15s cubic-bezier(0.4,0,1,1) forwards; }
+.pt-slide-enter-next { animation: pt-slide-enter-next 0.26s cubic-bezier(0.16,1,0.3,1) forwards; }
+.pt-slide-enter-prev { animation: pt-slide-enter-prev 0.26s cubic-bezier(0.16,1,0.3,1) forwards; }
+
+/* --- FLIP (3-D page turn) --- */
+@keyframes pt-flip-exit-next {
+    to   { transform: perspective(1100px) rotateY(-18deg) scale(0.96); opacity: 0; }
+}
+@keyframes pt-flip-exit-prev {
+    to   { transform: perspective(1100px) rotateY(18deg)  scale(0.96); opacity: 0; }
+}
+@keyframes pt-flip-enter-next {
+    from { transform: perspective(1100px) rotateY(18deg)  scale(0.96); opacity: 0; }
+    to   { transform: perspective(1100px) rotateY(0deg)   scale(1);    opacity: 1; }
+}
+@keyframes pt-flip-enter-prev {
+    from { transform: perspective(1100px) rotateY(-18deg) scale(0.96); opacity: 0; }
+    to   { transform: perspective(1100px) rotateY(0deg)   scale(1);    opacity: 1; }
+}
+
+.pt-flip-exit-next  { animation: pt-flip-exit-next  0.13s ease-out forwards; transform-origin: right center; }
+.pt-flip-exit-prev  { animation: pt-flip-exit-prev  0.13s ease-out forwards; transform-origin: left center; }
+.pt-flip-enter-next { animation: pt-flip-enter-next 0.22s cubic-bezier(0.22,1,0.36,1) forwards; transform-origin: left center; }
+.pt-flip-enter-prev { animation: pt-flip-enter-prev 0.22s cubic-bezier(0.22,1,0.36,1) forwards; transform-origin: right center; }
+
+/* ── ZOOM transition ── */
+@keyframes pt-zoom-exit-next { to { transform: scale(1.08); opacity: 0; } }
+@keyframes pt-zoom-exit-prev { to { transform: scale(0.92); opacity: 0; } }
+@keyframes pt-zoom-enter-next { from { transform: scale(0.92); opacity: 0; } }
+@keyframes pt-zoom-enter-prev { from { transform: scale(1.08); opacity: 0; } }
+.pt-zoom-exit-next  { animation: pt-zoom-exit-next  0.13s ease-in forwards; }
+.pt-zoom-exit-prev  { animation: pt-zoom-exit-prev  0.13s ease-in forwards; }
+.pt-zoom-enter-next { animation: pt-zoom-enter-next 0.24s cubic-bezier(0.22,1,0.36,1) forwards; }
+.pt-zoom-enter-prev { animation: pt-zoom-enter-prev 0.24s cubic-bezier(0.22,1,0.36,1) forwards; }
+
+/* ── RISE transition (vertical reveal) ── */
+@keyframes pt-rise-exit-next { to   { transform: translateY(-12%); opacity: 0; } }
+@keyframes pt-rise-exit-prev { to   { transform: translateY(12%);  opacity: 0; } }
+@keyframes pt-rise-enter-next { from { transform: translateY(20%);  opacity: 0; } }
+@keyframes pt-rise-enter-prev { from { transform: translateY(-20%); opacity: 0; } }
+.pt-rise-exit-next  { animation: pt-rise-exit-next  0.14s ease-in forwards; }
+.pt-rise-exit-prev  { animation: pt-rise-exit-prev  0.14s ease-in forwards; }
+.pt-rise-enter-next { animation: pt-rise-enter-next 0.26s cubic-bezier(0.16,1,0.3,1) forwards; }
+.pt-rise-enter-prev { animation: pt-rise-enter-prev 0.26s cubic-bezier(0.16,1,0.3,1) forwards; }

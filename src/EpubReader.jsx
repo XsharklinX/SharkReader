@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ePub from 'epubjs';
 import { Icons } from './icons';
 
-    const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout, updateLocationAndProgress, toggleBookmark, isFullscreen, focusMode, ttsEnabled, pomodoroAddon, dyslexiaAddon, onClose, onOpenSettings, onStatsUpdate, onOpenBookInfo, onSaveWord, aiProvider, aiApiKey, tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary }) => {
+    const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout, updateLocationAndProgress, toggleBookmark, isFullscreen, focusMode, pageTransition, dyslexiaAddon, smartTocAddon, onClose, onOpenSettings, onStatsUpdate, onOpenBookInfo, onSaveWord, aiProvider, aiApiKey, tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary }) => {
         const viewerRef = useRef(null);
         const renditionRef = useRef(null);
         const bookRef = useRef(null);
@@ -17,6 +17,7 @@ import { Icons } from './icons';
         const [currentCfi, setCurrentCfi] = useState('');
         const [isLoading, setIsLoading] = useState(true);
         const [isReady, setIsReady] = useState(false);
+        const [epubError, setEpubError] = useState(null);
         const [locationsGenerating, setLocationsGenerating] = useState(false);
         const [currentPercent, setCurrentPercent] = useState(bookData.progress || 0);
         const [currentSection, setCurrentSection] = useState(0);
@@ -43,11 +44,10 @@ import { Icons } from './icons';
         const [isHighlighting, setIsHighlighting] = useState(false);
         const isHighlightingRef = useRef(isHighlighting);
 
-        // Pomodoro (auto-start when addon is active)
-        const [pomodoroActive, setPomodoroActive] = useState(!!pomodoroAddon);
-        const [pomodoroPhase, setPomodoroPhase] = useState('work');
-        const [pomodoroTimeLeft, setPomodoroTimeLeft] = useState(25 * 60);
-        const [showPomodoro, setShowPomodoro] = useState(false);
+        // Page transitions
+        const viewerWrapRef = useRef(null);
+        const pageTransitionRef = useRef(pageTransition || 'slide');
+        useEffect(() => { pageTransitionRef.current = pageTransition || 'none'; }, [pageTransition]);
 
         // AI Chat
         // Auto-scroll
@@ -63,10 +63,17 @@ import { Icons } from './icons';
         const aiInputRef = useRef(null);
         const aiScrollRef = useRef(null);
         const [currentChapterTitle, setCurrentChapterTitle] = useState('');
+        const [showChapterHint, setShowChapterHint] = useState(false);
+        const prevChapterRef = useRef(null);
+        const chapterHintTimerRef = useRef(null);
+        const [tocCollapsed, setTocCollapsed] = useState(false);
 
-        // TTS
-        const [ttsPlaying, setTtsPlaying] = useState(false);
-        const ttsRef = useRef(null);
+        // Block page-turn wheel while any panel/overlay is open
+        const anyPanelOpenRef = useRef(false);
+        useEffect(() => {
+            anyPanelOpenRef.current = showToc || showFontMenu || showBrightness || showSearch ||
+                showAiChat || showAutoScrollPanel || !!pendingBookmarkCfi;
+        }, [showToc, showFontMenu, showBrightness, showSearch, showAiChat, showAutoScrollPanel, pendingBookmarkCfi]);
 
         // Focus mode: hide toolbar on mouse idle, show on hover near top
         const focusToolbarHideTimer = useRef(null);
@@ -90,81 +97,14 @@ import { Icons } from './icons';
             };
         }, [focusMode]);
 
-        // TTS: stop when disabled or unmounted
-        useEffect(() => {
-            if (!ttsEnabled && ttsPlaying) {
-                window.speechSynthesis?.cancel();
-                setTtsPlaying(false);
-            }
-        }, [ttsEnabled]);
-        useEffect(() => () => { window.speechSynthesis?.cancel(); }, []);
-
-        const handleTtsToggle = useCallback(() => {
-            const synth = window.speechSynthesis;
-            if (!synth) { alert('Tu navegador/sistema no soporta Text-to-Speech.'); return; }
-            if (ttsPlaying) { synth.cancel(); setTtsPlaying(false); return; }
-
-            // Extract text from epub.js iframes (blob: URLs are same-origin in Electron)
-            let text = '';
-            const viewer = viewerRef.current;
-            if (viewer) {
-                const iframes = viewer.querySelectorAll('iframe');
-                iframes.forEach(iframe => {
-                    try {
-                        const doc = iframe.contentDocument || iframe.contentWindow?.document;
-                        if (doc?.body) text += doc.body.innerText + ' ';
-                    } catch (_) {}
-                });
-            }
-            // Fallback: get text from any rendered content divs
-            if (!text.trim() && viewer) {
-                text = viewer.innerText || '';
-            }
-            if (!text.trim()) {
-                alert('No se pudo extraer texto. Prueba cambiando a modo de lectura vertical (scroll).');
-                return;
-            }
-
-            synth.cancel(); // clear any previous queue
-            // Small delay needed after cancel() for some browsers
-            setTimeout(() => {
-                const utter = new SpeechSynthesisUtterance(text.trim().slice(0, 8000));
-                utter.lang = lang === 'es' ? 'es-ES' : lang === 'en' ? 'en-US' : lang === 'zh' ? 'zh-CN' : 'es-ES';
-                utter.rate = 0.88;
-                utter.pitch = 1;
-                utter.onend = () => setTtsPlaying(false);
-                utter.onerror = (e) => { console.warn('TTS error:', e.error); setTtsPlaying(false); };
-                synth.speak(utter);
-                setTtsPlaying(true);
-            }, 120);
-        }, [ttsPlaying, lang]);
-
         useEffect(() => { isHighlightingRef.current = isHighlighting; }, [isHighlighting]);
 
         // Cerrar popups al click fuera
         useEffect(() => {
-            const close = () => { setShowToc(false); setShowFontMenu(false); setShowBrightness(false); setShowPomodoro(false); };
+            const close = () => { setShowToc(false); setShowFontMenu(false); setShowBrightness(false); };
             document.addEventListener('click', close);
             return () => document.removeEventListener('click', close);
         }, []);
-
-        // Pomodoro countdown
-        useEffect(() => {
-            if (!pomodoroActive) return;
-            const id = setInterval(() => {
-                setPomodoroTimeLeft(prev => {
-                    if (prev <= 1) {
-                        const next = pomodoroPhase === 'work' ? 'break' : 'work';
-                        setPomodoroPhase(next);
-                        const nextTime = next === 'work' ? 25 * 60 : 5 * 60;
-                        try { new Notification(next === 'break' ? '☕ ¡Descanso! 5 min' : '📖 ¡A leer! 25 min', { body: 'Shark Reader' }); } catch (e) { }
-                        return nextTime;
-                    }
-                    return prev - 1;
-                });
-            }, 1000);
-            return () => clearInterval(id);
-        }, [pomodoroActive, pomodoroPhase]);
 
         // Auto-scroll AI chat
         useEffect(() => {
@@ -190,13 +130,32 @@ import { Icons } from './icons';
             return 0;
         }, []);
 
+        const doTransition = useCallback((direction, action) => {
+            const pt = pageTransitionRef.current;
+            if (pt === 'none' || !viewerWrapRef.current) { action(); return; }
+            const el = viewerWrapRef.current;
+            const exitClass = pt === 'fade' ? 'pt-fade-exit' : `pt-${pt}-exit-${direction}`;
+            const enterClass = pt === 'fade' ? 'pt-fade-enter' : `pt-${pt}-enter-${direction}`;
+            const exitMs = pt === 'slide' ? 150 : 130;
+            const enterMs = pt === 'slide' ? 260 : 220;
+            el.classList.add(exitClass);
+            setTimeout(() => {
+                action();
+                el.classList.remove(exitClass);
+                el.classList.add(enterClass);
+                setTimeout(() => el.classList.remove(enterClass), enterMs);
+            }, exitMs);
+        }, []);
+
         const prevPage = useCallback(() => {
-            if (renditionRef.current && readFlow === 'paginated') renditionRef.current.prev();
-        }, [readFlow]);
+            if (renditionRef.current && readFlow === 'paginated')
+                doTransition('prev', () => renditionRef.current.prev());
+        }, [readFlow, doTransition]);
 
         const nextPage = useCallback(() => {
-            if (renditionRef.current && readFlow === 'paginated') renditionRef.current.next();
-        }, [readFlow]);
+            if (renditionRef.current && readFlow === 'paginated')
+                doTransition('next', () => renditionRef.current.next());
+        }, [readFlow, doTransition]);
 
         useEffect(() => {
             if (!viewerRef.current) return;
@@ -238,15 +197,35 @@ import { Icons } from './icons';
                             el.addEventListener('wheel', (e) => {
                                 window.dispatchEvent(new CustomEvent('epub-wheel', { detail: { deltaY: e.deltaY } }));
                             }, { passive: true });
+                            // Relay arrow keys from inside the epub iframe to the parent
+                            el.addEventListener('keydown', (e) => {
+                                if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                                    e.preventDefault();
+                                    window.dispatchEvent(new CustomEvent('epub-keydown', { detail: { key: e.key } }));
+                                }
+                            }, { capture: true });
                         }
-                        // Inyectar Google Fonts dentro de cada iframe del epub
                         const head = contents.document.head;
-                        if (head && !head.querySelector('#shark-fonts')) {
-                            const link = contents.document.createElement('link');
-                            link.id = 'shark-fonts';
-                            link.rel = 'stylesheet';
-                            link.href = 'https://fonts.googleapis.com/css2?family=Merriweather:ital,wght@0,400;0,700;1,400&family=Roboto+Slab:wght@400;700&family=Crimson+Text:ital,wght@0,400;0,600;1,400&display=swap';
-                            head.appendChild(link);
+                        if (head) {
+                            // Google Fonts
+                            if (!head.querySelector('#shark-fonts')) {
+                                const link = contents.document.createElement('link');
+                                link.id = 'shark-fonts';
+                                link.rel = 'stylesheet';
+                                link.href = 'https://fonts.googleapis.com/css2?family=Merriweather:ital,wght@0,400;0,700;1,400&family=Roboto+Slab:wght@400;700&family=Crimson+Text:ital,wght@0,400;0,600;1,400&display=swap';
+                                head.appendChild(link);
+                            }
+                            // Pagination quality: orphans/widows, prevent breaks inside headings/figures
+                            if (!head.querySelector('#shark-pagination')) {
+                                const style = contents.document.createElement('style');
+                                style.id = 'shark-pagination';
+                                style.textContent = `
+                                    p { orphans: 3; widows: 3; }
+                                    h1,h2,h3,h4,h5,h6 { break-after: avoid; page-break-after: avoid; break-inside: avoid; page-break-inside: avoid; }
+                                    img, figure, table, pre { break-inside: avoid; page-break-inside: avoid; }
+                                `;
+                                head.appendChild(style);
+                            }
                         }
                     });
 
@@ -369,7 +348,15 @@ import { Icons } from './icons';
                                 return null;
                             };
                             const ch = findChapter(bookRef.current.navigation?.toc || []);
-                            if (ch) setCurrentChapterTitle(ch);
+                            if (ch) {
+                                setCurrentChapterTitle(ch);
+                                if (prevChapterRef.current !== null && prevChapterRef.current !== ch) {
+                                    setShowChapterHint(true);
+                                    clearTimeout(chapterHintTimerRef.current);
+                                    chapterHintTimerRef.current = setTimeout(() => setShowChapterHint(false), 6000);
+                                }
+                                prevChapterRef.current = ch;
+                            }
                         } catch (e) {}
                         const percent = getPercentage(bookRef.current, displayCfi);
                         setCurrentPercent(percent);
@@ -389,7 +376,10 @@ import { Icons } from './icons';
 
                 } catch (error) {
                     console.error("Error loading epub:", error);
-                    if (isMounted) setIsLoading(false);
+                    if (isMounted) {
+                        setIsLoading(false);
+                        setEpubError(error?.message || 'El archivo EPUB no se pudo abrir.');
+                    }
                 }
             };
 
@@ -425,6 +415,7 @@ import { Icons } from './icons';
             let wheelTimeout;
             const handleUniversalWheel = (e) => {
                 if (readFlow !== 'paginated') return;
+                if (anyPanelOpenRef.current) return;
                 if (wheelTimeout) return;
                 wheelTimeout = setTimeout(() => { wheelTimeout = null; }, 300);
                 const delta = e.deltaY || (e.detail && e.detail.deltaY);
@@ -432,16 +423,25 @@ import { Icons } from './icons';
             };
             const handleKeyDown = (e) => {
                 if (readFlow !== 'paginated') return;
+                if (anyPanelOpenRef.current) return;
                 if (e.key === 'ArrowLeft') prevPage();
                 if (e.key === 'ArrowRight') nextPage();
             };
+            const handleEpubKey = (e) => {
+                if (readFlow !== 'paginated') return;
+                if (anyPanelOpenRef.current) return;
+                if (e.detail?.key === 'ArrowLeft') prevPage();
+                if (e.detail?.key === 'ArrowRight') nextPage();
+            };
             document.addEventListener('keydown', handleKeyDown);
+            window.addEventListener('epub-keydown', handleEpubKey);
             if (readFlow === 'paginated') {
                 document.addEventListener('wheel', handleUniversalWheel);
                 window.addEventListener('epub-wheel', handleUniversalWheel);
             }
             return () => {
                 document.removeEventListener('keydown', handleKeyDown);
+                window.removeEventListener('epub-keydown', handleEpubKey);
                 document.removeEventListener('wheel', handleUniversalWheel);
                 window.removeEventListener('epub-wheel', handleUniversalWheel);
                 if (wheelTimeout) clearTimeout(wheelTimeout);
@@ -517,22 +517,33 @@ import { Icons } from './icons';
             else if (document.exitFullscreen) document.exitFullscreen();
         };
 
-        const formatPomodoroTime = (secs) => {
-            const m = Math.floor(secs / 60).toString().padStart(2, '0');
-            const s = (secs % 60).toString().padStart(2, '0');
-            return `${m}:${s}`;
-        };
-
         const sendAiMessage = async (overrideText) => {
             const text = (overrideText || aiInput).trim();
             if (!text || aiLoading || !aiApiKey) return;
-            const userMsg = { role: 'user', content: text };
+
+            // Extract current chapter text for summary/recap requests
+            let chapterText = '';
+            if (/resume|resum|capítulo|chapter|leído|leido/i.test(text) && renditionRef.current) {
+                try {
+                    const contents = renditionRef.current.getContents();
+                    if (contents?.[0]) {
+                        const raw = contents[0].document?.body?.innerText || '';
+                        chapterText = raw.replace(/\s+/g, ' ').trim().slice(0, 4000);
+                    }
+                } catch (_) {}
+            }
+
+            const userMsg = { role: 'user', content: text }; // shown in UI
+            const apiUserContent = chapterText
+                ? `${text}\n\n[Texto actual del capítulo para que puedas resumirlo]:\n${chapterText}`
+                : text;
             const newMessages = [...aiMessages, userMsg];
+            const apiMessages = [...aiMessages, { role: 'user', content: apiUserContent }];
             setAiMessages(newMessages);
             setAiInput('');
             setAiLoading(true);
             const currentChapter = currentChapterTitle || (toc.length > 0 ? toc[0].label : '');
-            const systemPrompt = `Eres un asistente de lectura para el libro "${bookData.name}"${bookData.author ? ` de ${bookData.author}` : ''}. ${currentChapter ? `Capítulo actual: ${currentChapter}.` : ''} Responde de forma concisa en español.`;
+            const systemPrompt = `Eres un asistente de lectura para el libro "${bookData.name}"${bookData.author ? ` de ${bookData.author}` : ''}. ${currentChapter ? `Capítulo actual: "${currentChapter}". ` : ''}Usa tu conocimiento del libro para responder sobre trama, personajes y temas. Cuando recibes texto del capítulo, úsalo para dar un resumen concreto y útil. Responde siempre en español de forma concisa.`;
             try {
                 let response;
                 if (aiProvider === 'gemini') {
@@ -541,7 +552,7 @@ import { Icons } from './icons';
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             system_instruction: { parts: [{ text: systemPrompt }] },
-                            contents: newMessages.map(m => ({
+                            contents: apiMessages.map(m => ({
                                 role: m.role === 'assistant' ? 'model' : 'user',
                                 parts: [{ text: m.content }]
                             }))
@@ -554,7 +565,7 @@ import { Icons } from './icons';
                     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiApiKey}`, 'HTTP-Referer': 'https://sharkreader.app', 'X-Title': 'SharkReader' },
-                        body: JSON.stringify({ model: 'meta-llama/llama-3.2-3b-instruct:free', messages: [{ role: 'system', content: systemPrompt }, ...newMessages], max_tokens: 500 })
+                        body: JSON.stringify({ model: 'meta-llama/llama-3.2-3b-instruct:free', messages: [{ role: 'system', content: systemPrompt }, ...apiMessages], max_tokens: 600 })
                     });
                     const data = await res.json();
                     console.log('[OpenRouter response]', res.status, JSON.stringify(data));
@@ -564,7 +575,7 @@ import { Icons } from './icons';
                     const res = await fetch('https://api.x.ai/v1/chat/completions', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiApiKey}` },
-                        body: JSON.stringify({ model: 'grok-3-mini', messages: [{ role: 'system', content: systemPrompt }, ...newMessages], max_tokens: 500 })
+                        body: JSON.stringify({ model: 'grok-3-mini', messages: [{ role: 'system', content: systemPrompt }, ...apiMessages], max_tokens: 600 })
                     });
                     const data = await res.json();
                     console.log('[xAI response]', res.status, JSON.stringify(data));
@@ -574,7 +585,7 @@ import { Icons } from './icons';
                     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiApiKey}` },
-                        body: JSON.stringify({ model: 'llama-3.1-8b-instant', messages: [{ role: 'system', content: systemPrompt }, ...newMessages], max_tokens: 500 })
+                        body: JSON.stringify({ model: 'llama-3.1-8b-instant', messages: [{ role: 'system', content: systemPrompt }, ...apiMessages], max_tokens: 600 })
                     });
                     const data = await res.json();
                     if (data.error) throw new Error(data.error.message || 'Groq API error');
@@ -625,7 +636,7 @@ import { Icons } from './icons';
                     title="Tipografía"
                 >Aa</button>
                 {showFontMenu && (
-                    <div className={dock ? "dock-popup active" : "topbar-popup active"} style={{ minWidth: '260px', maxHeight: '480px', overflowY: 'auto' }}>
+                    <div className={dock ? "dock-popup active" : "topbar-popup active"} style={{ minWidth: '260px', maxHeight: '480px', overflowY: 'auto' }} onWheel={e => e.stopPropagation()}>
                         {/* Fuentes */}
                         <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-2">Fuente</p>
                         <div className="grid grid-cols-2 gap-1 mb-3">
@@ -690,7 +701,7 @@ import { Icons } from './icons';
                     title="Brillo"
                 ><Icons.Sun /></button>
                 {showBrightness && (
-                    <div className={dock ? "dock-popup active" : "topbar-popup active"} style={{ minWidth: '200px' }}>
+                    <div className={dock ? "dock-popup active" : "topbar-popup active"} style={{ minWidth: '200px' }} onWheel={e => e.stopPropagation()}>
                         <p className="text-[10px] font-black uppercase opacity-50 tracking-widest mb-3">Brillo de pantalla</p>
                         <div className="flex items-center gap-2">
                             <span className="text-xs opacity-50">🌑</span>
@@ -738,7 +749,7 @@ import { Icons } from './icons';
                     {autoScroll ? '⏸' : '▶'}
                 </button>
                 {showAutoScrollPanel && (
-                    <div className={dock ? "dock-popup active" : "topbar-popup active"} style={{ minWidth: '200px' }}>
+                    <div className={dock ? "dock-popup active" : "topbar-popup active"} style={{ minWidth: '200px' }} onWheel={e => e.stopPropagation()}>
                         <p className="text-[10px] font-black uppercase opacity-50 tracking-widest mb-3">Auto-scroll</p>
                         <div className="flex items-center gap-2 mb-3">
                             <span className="text-xs opacity-50">🐢</span>
@@ -758,50 +769,6 @@ import { Icons } from './icons';
             </div>
         ) : null;
 
-        const PomodoroBtn = ({ dock }) => (
-            <div className="relative" onClick={e => e.stopPropagation()}>
-                <button
-                    onClick={() => { setShowPomodoro(p => !p); setShowToc(false); setShowFontMenu(false); setShowBrightness(false); }}
-                    className={`p-2 rounded-xl transition text-base leading-none ${showPomodoro ? 'bg-white/25' : 'hover:bg-white/15'} ${pomodoroActive ? 'text-red-400' : ''}`}
-                    title="Pomodoro">
-                    🍅
-                </button>
-                {showPomodoro && (
-                    <div className={dock ? "dock-popup active" : "topbar-popup active"} style={{ minWidth: '200px' }}>
-                        <p className="text-[10px] font-black uppercase opacity-50 tracking-widest mb-3">
-                            {pomodoroPhase === 'work' ? '🍅 Sesión de lectura' : '☕ Descanso'}
-                        </p>
-                        <div className="text-center mb-4">
-                            <span className={`text-3xl font-black tabular-nums ${pomodoroActive ? (pomodoroPhase === 'work' ? 'text-red-400' : 'text-green-400') : 'opacity-60'}`}>
-                                {formatPomodoroTime(pomodoroTimeLeft)}
-                            </span>
-                        </div>
-                        <div className="flex gap-2">
-                            <button
-                                onClick={() => {
-                                    if (!pomodoroActive) { try { Notification.requestPermission(); } catch (e) { } }
-                                    setPomodoroActive(p => !p);
-                                }}
-                                className="flex-1 py-2 rounded-xl font-bold text-xs text-white transition"
-                                style={{ backgroundColor: 'var(--highlight)' }}>
-                                {pomodoroActive ? 'Pausar' : 'Iniciar'}
-                            </button>
-                            <button
-                                onClick={() => { setPomodoroActive(false); setPomodoroPhase('work'); setPomodoroTimeLeft(25 * 60); }}
-                                className="px-3 py-2 rounded-xl font-bold text-xs bg-black/10 dark:bg-white/10 hover:opacity-80 transition">
-                                Reset
-                            </button>
-                        </div>
-                        {pomodoroActive && (
-                            <p className="text-center text-[10px] opacity-40 mt-3 font-medium">
-                                {pomodoroPhase === 'work' ? 'Sigue leyendo...' : '¡Tómate un descanso!'}
-                            </p>
-                        )}
-                    </div>
-                )}
-            </div>
-        );
-
         const TocBtn = ({ dock }) => (
             <div className="relative" onClick={e => e.stopPropagation()}>
                 <button
@@ -813,7 +780,7 @@ import { Icons } from './icons';
                     {!dock && <span className="hidden lg:inline text-xs font-bold uppercase">Índice</span>}
                 </button>
                 {showToc && (
-                    <div className={dock ? "dock-popup active text-left" : "topbar-popup active text-left"}>
+                    <div className={dock ? "dock-popup active text-left" : "topbar-popup active text-left"} onWheel={e => e.stopPropagation()}>
                         <h4 className="font-black text-[10px] uppercase opacity-50 px-2 py-1 border-b border-slate-700/50 mb-2 tracking-widest">{t.toc}</h4>
                         <div className="max-h-72 overflow-y-auto pr-1">
                             {toc.length === 0
@@ -841,7 +808,26 @@ import { Icons } from './icons';
                     transition: 'opacity 0.3s ease'
                 }} />
 
-                {isLoading && (
+                {epubError && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center z-50 gap-5 p-8 text-center"
+                        style={{ backgroundColor: 'var(--bg-color)' }}>
+                        <span className="text-6xl">📕</span>
+                        <h2 className="text-xl font-black" style={{ color: 'var(--text-color)' }}>Error al cargar el libro</h2>
+                        <p className="text-sm opacity-60 max-w-sm font-medium" style={{ color: 'var(--text-color)' }}>
+                            {epubError}
+                        </p>
+                        <p className="text-xs opacity-40 max-w-xs" style={{ color: 'var(--text-color)' }}>
+                            El archivo puede estar dañado, tener DRM, o no ser un EPUB válido.
+                        </p>
+                        <button onClick={onClose}
+                            className="px-6 py-3 rounded-2xl font-black text-sm text-white transition hover:opacity-80"
+                            style={{ backgroundColor: 'var(--highlight)' }}>
+                            ← Volver a la biblioteca
+                        </button>
+                    </div>
+                )}
+
+                {isLoading && !epubError && (
                     <div className="absolute inset-0 flex items-center justify-center z-50 bg-black/10 backdrop-blur-sm">
                         <div className="loader"></div>
                     </div>
@@ -924,19 +910,11 @@ import { Icons } from './icons';
                                     <Icons.Search />
                                 </button>
                                 <AutoScrollBtn dock={false} />
-                                <PomodoroBtn dock={false} />
                                 {aiApiKey && (
                                     <button onClick={() => { setShowAiChat(p => !p); setShowSearch(false); }}
                                         className={`p-1.5 rounded-xl transition text-base leading-none ${showAiChat ? 'bg-white/25' : 'hover:bg-white/15'}`}
                                         title="Asistente IA">
                                         🤖
-                                    </button>
-                                )}
-                                {ttsEnabled && (
-                                    <button onClick={handleTtsToggle}
-                                        className={`p-1.5 rounded-xl transition ${ttsPlaying ? 'bg-green-500/30 text-green-300' : 'hover:bg-white/15'}`}
-                                        title={ttsPlaying ? 'Detener lectura en voz alta' : 'Leer en voz alta (TTS)'}>
-                                        {ttsPlaying ? '⏹' : '🔊'}
                                     </button>
                                 )}
                                 <button onClick={onOpenSettings} className="p-1.5 hover:bg-white/15 rounded-xl transition hidden sm:block" title={t.settings}>
@@ -993,7 +971,6 @@ import { Icons } from './icons';
                             </button>
 
                             <AutoScrollBtn dock={true} />
-                            <PomodoroBtn dock={true} />
 
                             {aiApiKey && (
                                 <button onClick={() => { setShowAiChat(p => !p); setShowSearch(false); }}
@@ -1025,7 +1002,7 @@ import { Icons } from './icons';
                 )}
 
                 {/* Área del libro */}
-                <div className="flex-1 relative flex items-center justify-center overflow-hidden w-full pt-2">
+                <div ref={viewerWrapRef} className="flex-1 relative flex items-center justify-center overflow-hidden w-full pt-2">
                     <div
                         id="viewer"
                         ref={viewerRef}
@@ -1033,7 +1010,8 @@ import { Icons } from './icons';
                         style={{
                             maxWidth: maxWidthStr,
                             margin: '0 auto',
-                            overflowY: readFlow === 'scrolled-doc' ? 'auto' : 'hidden'
+                            overflowY: readFlow === 'scrolled-doc' ? 'auto' : 'hidden',
+                            scrollBehavior: readFlow === 'scrolled-doc' ? 'smooth' : 'auto',
                         }}
                     ></div>
 
@@ -1095,7 +1073,7 @@ import { Icons } from './icons';
                 {showSearch && (
                     <div className="absolute right-0 bottom-7 w-80 z-50 flex flex-col shadow-2xl border-l fade-in"
                         style={{ top: tabs ? '88px' : '64px', backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)' }}
-                        onClick={e => e.stopPropagation()}>
+                        onClick={e => e.stopPropagation()} onWheel={e => e.stopPropagation()}>
                         <div className="flex items-center gap-2 p-3 border-b" style={{ borderColor: 'var(--border-color)' }}>
                             <div className="flex-1 flex items-center gap-2 bg-black/5 dark:bg-white/5 rounded-xl px-3 py-2">
                                 <Icons.Search />
@@ -1158,11 +1136,28 @@ import { Icons } from './icons';
                     </div>
                 )}
 
+                {/* ── CHAPTER CHANGE HINT ── */}
+                {showChapterHint && currentChapterTitle && !showAiChat && (
+                    <div className="fixed bottom-16 left-1/2 z-[200] fade-in"
+                        style={{ transform: 'translateX(-50%)', animation: 'fadeInUp 0.35s ease' }}>
+                        <button
+                            onClick={() => { setShowChapterHint(false); setShowAiChat(true); setTimeout(() => sendAiMessage(`📖 Resume el capítulo: "${currentChapterTitle}"`), 100); }}
+                            className="flex items-center gap-2 px-4 py-2.5 rounded-2xl text-white text-sm font-bold shadow-2xl hover:brightness-110 transition"
+                            style={{ background: 'linear-gradient(135deg, var(--topbar-bg), var(--highlight))' }}>
+                            ✨ Resumir capítulo: "{currentChapterTitle.length > 30 ? currentChapterTitle.slice(0, 30) + '…' : currentChapterTitle}"
+                        </button>
+                        <button onClick={() => setShowChapterHint(false)}
+                            className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-gray-700 text-white text-[10px] font-black flex items-center justify-center hover:bg-gray-600 transition">
+                            ×
+                        </button>
+                    </div>
+                )}
+
                 {/* ── PANEL DE CHAT IA ── */}
                 {showAiChat && (
                     <div className="absolute right-0 bottom-7 w-80 z-50 flex flex-col shadow-2xl border-l fade-in"
                         style={{ top: tabs ? '88px' : '64px', backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)' }}
-                        onClick={e => e.stopPropagation()}>
+                        onClick={e => e.stopPropagation()} onWheel={e => e.stopPropagation()}>
                         <div className="flex items-center justify-between p-3 border-b flex-shrink-0" style={{ borderColor: 'var(--border-color)' }}>
                             <div className="flex items-center gap-2">
                                 <span className="text-base">🤖</span>
@@ -1246,6 +1241,48 @@ import { Icons } from './icons';
                             </div>
                         </div>
                     </div>
+                )}
+
+                {/* ── SMART TOC FLOTANTE ── */}
+                {smartTocAddon && toc.length > 0 && (
+                    <>
+                        {tocCollapsed ? (
+                            <button
+                                onClick={() => setTocCollapsed(false)}
+                                className="absolute left-0 z-40 flex flex-col items-center justify-center gap-1 shadow-xl border-r py-4 px-1.5 hover:opacity-100 transition"
+                                style={{ top: tabs ? '88px' : '64px', backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)', opacity: 0.8 }}
+                                title="Mostrar índice">
+                                <span className="text-xs">›</span>
+                                <span className="text-[9px] font-black uppercase tracking-widest opacity-40" style={{ writingMode: 'vertical-rl' }}>Índice</span>
+                            </button>
+                        ) : (
+                            <div className="absolute left-0 z-40 flex flex-col shadow-xl border-r"
+                                style={{ top: tabs ? '88px' : '64px', bottom: '28px', width: '200px', backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)', opacity: 0.96 }}
+                                onWheel={e => e.stopPropagation()}>
+                                <div className="px-3 py-2 border-b flex-shrink-0 flex items-center justify-between" style={{ borderColor: 'var(--border-color)' }}>
+                                    <span className="text-[10px] font-black uppercase tracking-widest opacity-50">Índice</span>
+                                    <div className="flex items-center gap-1">
+                                        {currentChapterTitle && (
+                                            <span className="text-[9px] font-bold opacity-40 truncate max-w-[80px]">{currentChapterTitle}</span>
+                                        )}
+                                        <button onClick={() => setTocCollapsed(true)} className="p-0.5 opacity-40 hover:opacity-100 transition text-base leading-none" title="Colapsar">‹</button>
+                                    </div>
+                                </div>
+                                <div className="flex-1 overflow-y-auto py-1 px-1">
+                                    {toc.map((item, i) => {
+                                        const isActive = currentChapterTitle && item.label === currentChapterTitle;
+                                        return (
+                                            <button key={i} onClick={() => { if (renditionRef.current) renditionRef.current.display(item.href); }}
+                                                className={`w-full text-left text-[11px] px-2 py-1.5 rounded-lg transition font-medium mb-0.5 truncate ${isActive ? 'text-white font-black' : 'opacity-60 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5'}`}
+                                                style={isActive ? { backgroundColor: 'var(--highlight)' } : {}}>
+                                                {item.label}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+                    </>
                 )}
 
                 {/* ── BARRA DE PROGRESO ── */}

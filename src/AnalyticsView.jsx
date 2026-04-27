@@ -32,7 +32,12 @@ const AchievementCard = ({ achievement, unlocked, unlockedAt }) => {
                 </div>
                 <p className="text-[11px] opacity-60 leading-tight mt-0.5">{achievement.desc}</p>
             </div>
-            {unlocked && <div className="flex-shrink-0 text-lg">✅</div>}
+            {unlocked && (
+                <div className="flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
+                    style={{ backgroundColor: r.color, opacity: 0.9 }}>
+                    <span className="text-white text-[10px] font-black leading-none">✓</span>
+                </div>
+            )}
         </div>
     );
 };
