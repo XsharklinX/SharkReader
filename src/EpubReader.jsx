@@ -68,6 +68,9 @@ import { Icons } from './icons';
         const chapterHintTimerRef = useRef(null);
         const [tocCollapsed, setTocCollapsed] = useState(false);
 
+        // Cleanup chapter hint timer on unmount
+        useEffect(() => () => clearTimeout(chapterHintTimerRef.current), []);
+
         // Block page-turn wheel while any panel/overlay is open
         const anyPanelOpenRef = useRef(false);
         useEffect(() => {

@@ -8,7 +8,6 @@ import EpubReader from './EpubReader';
 import PdfReader from './PdfReader';
 import AnalyticsView from './AnalyticsView';
 import WorkshopPanel from './WorkshopPanel';
-import AmbientPlayer from './AmbientPlayer';
 import SettingsPanel from './SettingsPanel';
 import UserMenu from './UserMenu';
 import { checkNewAchievements, ACHIEVEMENTS, RARITY } from './achievements';
@@ -1989,8 +1988,6 @@ import { useBooks } from './hooks/useBooks';
                     />
                 )}
 
-                {/* ── AMBIENT PLAYER ── */}
-                {addons.ambientMusic && <AmbientPlayer />}
 
                 {/* ── DRAG & DROP ZONE ── */}
                 {draggedBookId && (

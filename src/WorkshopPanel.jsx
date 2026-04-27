@@ -65,18 +65,9 @@ const ADDONS = [
         context: 'reader',
         status: 'active',
     },
-    {
-        id: 'ambientMusic',
-        emoji: '🎵',
-        name: 'Sonido Ambiente',
-        desc: 'Reproduce lluvia, bosque, café u océano mientras lees. Control de volumen incluido.',
-        category: 'Ambiente',
-        context: 'global',
-        status: 'active',
-    },
 ];
 
-const CATEGORIES = ['Todos', 'Lectura', 'Accesibilidad', 'Interfaz', 'Estadísticas', 'Productividad', 'Ambiente', 'Navegación'];
+const CATEGORIES = ['Todos', 'Lectura', 'Accesibilidad', 'Interfaz', 'Estadísticas', 'Productividad', 'Navegación'];
 const CONTEXT_LABELS = {
     reader: { label: 'En el lector', color: '#3b82f6' },
     library: { label: 'En biblioteca', color: '#22c55e' },
