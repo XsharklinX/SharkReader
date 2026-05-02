@@ -30,6 +30,7 @@ import { Icons } from './icons';
         const [showBrightness, setShowBrightness] = useState(false);
         const [brightness, setBrightness] = useState(100);
         const [dictionaryPopup, setDictionaryPopup] = useState(null);
+        const dictCacheRef = useRef({});
 
         const [showSearch, setShowSearch] = useState(false);
         const [searchQuery, setSearchQuery] = useState('');
@@ -139,8 +140,8 @@ import { Icons } from './icons';
             const el = viewerWrapRef.current;
             const exitClass = pt === 'fade' ? 'pt-fade-exit' : `pt-${pt}-exit-${direction}`;
             const enterClass = pt === 'fade' ? 'pt-fade-enter' : `pt-${pt}-enter-${direction}`;
-            const exitMs = pt === 'slide' ? 150 : 130;
-            const enterMs = pt === 'slide' ? 260 : 220;
+            const exitMs = pt === 'slide' ? 150 : pt === 'rise' ? 140 : 130;
+            const enterMs = pt === 'zoom' ? 240 : pt === 'fade' ? 220 : 260;
             el.classList.add(exitClass);
             setTimeout(() => {
                 action();
@@ -257,13 +258,19 @@ import { Icons } from './icons';
                         } else if (text && text.length > 2 && text.split(' ').length === 1) {
                             try {
                                 const langCode = lang === 'es' ? 'es' : 'en';
-                                const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/${langCode}/${text}`);
-                                if (!res.ok) throw new Error('not found');
-                                const data = await res.json();
-                                if (data && data[0] && data[0].meanings[0]) {
+                                const cacheKey = `${langCode}:${text.toLowerCase()}`;
+                                let def = dictCacheRef.current[cacheKey];
+                                if (!def) {
+                                    const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/${langCode}/${text}`);
+                                    if (!res.ok) throw new Error('not found');
+                                    const data = await res.json();
+                                    def = data?.[0]?.meanings?.[0]?.definitions?.[0]?.definition;
+                                    if (def) dictCacheRef.current[cacheKey] = def;
+                                }
+                                if (def) {
                                     const range = selection.getRangeAt(0);
                                     const rect = range.getBoundingClientRect();
-                                    setDictionaryPopup({ word: text, def: data[0].meanings[0].definitions[0].definition, x: rect.left, y: rect.bottom + 10 });
+                                    setDictionaryPopup({ word: text, def, x: rect.left, y: rect.bottom + 10 });
                                 }
                             } catch (e) { }
                             contents.window.getSelection().removeAllRanges();

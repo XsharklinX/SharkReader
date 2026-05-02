@@ -437,7 +437,9 @@ import { useBooks } from './hooks/useBooks';
                             const dates = Object.keys(history).filter(k => history[k] === 'read' || history[k] === 'saved').sort((a, b) => new Date(a) - new Date(b));
                             const lastDateStr = dates[dates.length - 1];
                             if (lastDateStr) {
-                                const diffDays = Math.ceil(Math.abs(today - new Date(lastDateStr)) / 86400000);
+                                const lastDate = new Date(lastDateStr); lastDate.setHours(0, 0, 0, 0);
+                                const todayMidnight = new Date(today); todayMidnight.setHours(0, 0, 0, 0);
+                                const diffDays = Math.round((todayMidnight - lastDate) / 86400000);
                                 if (diffDays === 1) { streak++; }
                                 else if (diffDays > 1) {
                                     const missed = diffDays - 1;
@@ -633,12 +635,22 @@ import { useBooks } from './hooks/useBooks';
         useEffect(() => { addonsRef.current = addons; }, [addons]);
 
         // ── REMINDER DIARIO ──────────────────────────────────────────────────────
+        // Track session open times so the reminder can measure elapsed time
+        useEffect(() => {
+            const prev = localStorage.getItem('sharkreader_last_open');
+            if (prev) localStorage.setItem('sharkreader_prev_open', prev);
+            localStorage.setItem('sharkreader_last_open', Date.now().toString());
+        }, []);
+
         useEffect(() => {
             if (!addons.reminders || !userProfile) return;
             if (!('Notification' in window)) return;
             const todayStr = new Date().toLocaleDateString();
-            // Only remind if user hasn't read today
             if (stats.lastActiveDate === todayStr) return;
+            const prevOpen = parseInt(localStorage.getItem('sharkreader_prev_open') || '0', 10);
+            const hoursSincePrev = prevOpen ? (Date.now() - prevOpen) / 3600000 : Infinity;
+            // Only remind if more than 1 hour has passed since last session
+            if (hoursSincePrev < 1) return;
             const fire = () => {
                 Notification.requestPermission().then(perm => {
                     if (perm !== 'granted') return;
@@ -648,7 +660,6 @@ import { useBooks } from './hooks/useBooks';
                     });
                 });
             };
-            // Small delay so the app finishes loading before showing notification
             const t = setTimeout(fire, 4000);
             return () => clearTimeout(t);
         // eslint-disable-next-line react-hooks/exhaustive-deps
