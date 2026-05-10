@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design Research: Ebook Reader UI — SharkReader</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f8f9fa; color: #1a1a2e; line-height: 1.7; }
+  .container { max-width: 900px; margin: 0 auto; padding: 48px 32px; }
+
+  h1 { font-size: 2rem; font-weight: 900; color: #0f172a; margin-bottom: 6px; }
+  .subtitle { font-size: 0.85rem; color: #64748b; font-weight: 500; margin-bottom: 40px; letter-spacing: 0.03em; }
+
+  h2 { font-size: 1.2rem; font-weight: 800; color: #0f172a; margin: 40px 0 16px; padding-bottom: 8px; border-bottom: 2px solid #e2e8f0; }
+  h3 { font-size: 1rem; font-weight: 700; color: #1e40af; margin: 28px 0 10px; }
+  p { margin-bottom: 14px; font-size: 0.95rem; }
+  ul, ol { padding-left: 22px; margin-bottom: 14px; }
+  li { margin-bottom: 6px; font-size: 0.95rem; }
+  strong { color: #0f172a; }
+
+  .tldr {
+    background: linear-gradient(135deg, #eff6ff, #dbeafe);
+    border-left: 4px solid #3b82f6;
+    border-radius: 0 12px 12px 0;
+    padding: 20px 24px;
+    margin: 24px 0 40px;
+    font-size: 1rem;
+    color: #1e40af;
+    font-weight: 500;
+  }
+
+  .rec-block {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 16px;
+    padding: 24px;
+    margin-bottom: 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  }
+  .rec-block h3 { margin-top: 0; }
+  .rec-number {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: #3b82f6; color: white; font-size: 0.8rem; font-weight: 900;
+    margin-right: 10px; flex-shrink: 0; vertical-align: middle;
+  }
+
+  pre {
+    background: #0f172a;
+    color: #e2e8f0;
+    border-radius: 10px;
+    padding: 16px 20px;
+    font-size: 0.78rem;
+    line-height: 1.6;
+    overflow-x: auto;
+    margin: 14px 0;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  }
+
+  .screenshot-card {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 16px;
+    overflow: hidden;
+    margin: 24px 0;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+  }
+  .screenshot-card img {
+    display: block;
+    max-width: 360px;
+    margin: 0 auto;
+  }
+  .screenshot-caption {
+    padding: 16px 20px;
+    border-top: 1px solid #f1f5f9;
+    font-size: 0.85rem;
+    color: #475569;
+  }
+  .screenshot-caption strong { color: #0f172a; font-weight: 700; }
+  .source-tag {
+    display: inline-block;
+    background: #dbeafe;
+    color: #1e40af;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 100px;
+    margin-left: 6px;
+    letter-spacing: 0.03em;
+  }
+
+  .pattern-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 16px 0;
+  }
+  .pattern-item {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .pattern-item .icon { font-size: 1.4rem; margin-bottom: 8px; }
+  .pattern-item h4 { font-size: 0.85rem; font-weight: 800; margin-bottom: 4px; color: #0f172a; }
+  .pattern-item p { font-size: 0.82rem; color: #64748b; margin: 0; }
+
+  .antipattern {
+    background: #fff7f7;
+    border-left: 3px solid #ef4444;
+    border-radius: 0 8px 8px 0;
+    padding: 10px 16px;
+    margin: 8px 0;
+    font-size: 0.88rem;
+  }
+
+  .unique-angle {
+    background: linear-gradient(135deg, #faf5ff, #f3e8ff);
+    border: 1px solid #e9d5ff;
+    border-radius: 12px;
+    padding: 16px 20px;
+    margin: 12px 0;
+  }
+  .unique-angle h4 { color: #7c3aed; font-size: 0.9rem; font-weight: 800; margin-bottom: 6px; }
+  .unique-angle p { font-size: 0.86rem; margin: 0; }
+
+  .sources-list { list-style: none; padding: 0; }
+  .sources-list li { font-size: 0.83rem; padding: 6px 0; border-bottom: 1px solid #f1f5f9; }
+  .sources-list a { color: #3b82f6; text-decoration: none; }
+  .sources-list a:hover { text-decoration: underline; }
+
+  @media (max-width: 600px) {
+    .container { padding: 24px 16px; }
+    .pattern-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.5rem; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <h1>Design Research: Ebook Reader UI</h1>
+  <div class="subtitle">SharkReader-main · Layout, Tipografía y Controles · 2026-05-09</div>
+
+  <div class="tldr">
+    <strong>TL;DR —</strong> Los mejores readers (Kindle, Kobo, KOReader, Apple Books) comparten tres principios
+    irrompibles: <strong>controles emergentes</strong> (se ocultan solos en paginado),
+    <strong>tipografía como feature de primer orden</strong> (no un afterthought), y
+    <strong>ancho de columna estrecho por defecto</strong> (60-75 ch máximo ≈ 560-760px).
+    SharkReader ya tiene buenas bases — lo que falta es pulir la jerarquía del panel de fuentes,
+    afinar el toolbar en modo scroll, y añadir el capítulo actual a la barra de progreso.
+  </div>
+
+  <h2>Recomendaciones prioritarias</h2>
+
+  <div class="rec-block">
+    <h3><span class="rec-number">1</span>Panel de tipografía — reorganizar con categorías</h3>
+    <p>El menú Aa de SharkReader apila todo en vertical. Kindle usa tabs; Apple Books agrupa por sección; KOReader usa una barra persistente inferior. La clave es <strong>separar por categoría</strong> para que cada control sea encontrable en menos de 2 segundos.</p>
+    <pre>┌────────────────────────────────────────────┐
+│  Aa  ·  Tipografía                    [×]  │
+├────────────────────────────────────────────┤
+│  FUENTE                                    │
+│  [Inter] [Georgia] [Merriweather] [Lora]   │
+│  [Crimson] [Slab]  [OpenDyslexic]          │
+├────────────────────────────────────────────┤
+│  TAMAÑO          [−] ─────●─── [+]  110%  │
+│  INTERLINEADO    [−] ─────●─── [+]  1.6×  │
+├────────────────────────────────────────────┤
+│  TEXTO                                     │
+│  [✓ Justificado] [  Sangría] [  Sílabas]  │
+│  Interletraje   A·A ─────●──────   +0‰   │
+├────────────────────────────────────────────┤
+│  COLUMNA         [Estrecha] [Normal] [Ancha]│
+├────────────────────────────────────────────┤
+│  TEMA DE COLOR                             │
+│  [⬜ Claro] [🟤 Sepia] [⬛ Oscuro] [▒ Carbón]│
+└────────────────────────────────────────────┘</pre>
+    <p><strong>Añadir:</strong> preset "Carbón" (<code>#262626</code> bg + <code>#cccccc</code> texto) — Kobo lo lanzó en 2025 como alternativa entre Sepia y Dark total. Muy solicitado por lectores nocturnos.</p>
+  </div>
+
+  <div class="rec-block">
+    <h3><span class="rec-number">2</span>Ancho de columna — estrecho en scroll, normal en paginado</h3>
+    <p>Ya implementado: 640px (estrecha), 760px (normal), 960px (ancha). El default de 640px para scroll y 760px para paginado está alineado con los estándares de la industria.</p>
+    <pre>Estrecha  640px  →  scroll/continuo, pantallas pequeñas
+Normal    760px  →  paginado simple, laptops      ← default paginado
+Ancha     960px  →  spread doble, pantallas 4K
+
+Referencia industria:
+  Kindle Paperwhite    ~480px texto efectivo
+  Apple Books iPad     ~560px texto efectivo
+  Kobo Libra           ~520px texto efectivo</pre>
+  </div>
+
+  <div class="rec-block">
+    <h3><span class="rec-number">3</span>Barra de progreso — mostrar capítulo actual, no el nombre del libro</h3>
+    <p>El nombre del libro ya aparece en el toolbar. La barra de progreso debería mostrar el capítulo actual — dato que <code>currentChapterTitle</code> ya contiene.</p>
+    <pre>Actual:
+┌─────────────────────────────────────────────┐
+│ ████████████░░░░░░░░░  (barra de progreso)  │
+│ El nombre del libro (repetido)       42%    │
+└─────────────────────────────────────────────┘
+
+Propuesto:
+┌─────────────────────────────────────────────┐
+│ ████████████░░░░░░░░░  (barra de progreso)  │
+│ Cap. 3: El regreso                   42%    │
+└─────────────────────────────────────────────┘</pre>
+  </div>
+
+  <div class="rec-block">
+    <h3><span class="rec-number">4</span>Toolbar — auto-hide en paginado, visible en scroll</h3>
+    <p>En modo paginado, el toolbar debería ocultarse automáticamente tras 3-4 segundos de inactividad, exactamente como Kindle y Apple Books. En modo scroll, puede mantenerse visible ya que el usuario tiene menos referencia de posición.</p>
+    <pre>Paginado:  tap → toolbar aparece → 3s inactividad → se oculta
+Scroll:    toolbar siempre visible (el usuario necesita anclaje)
+Fullscreen: tap centro → dock aparece 3s → desaparece</pre>
+    <p>Esto requiere un timer de auto-hide para el modo paginado normal (no solo fullscreen).</p>
+  </div>
+
+  <div class="rec-block">
+    <h3><span class="rec-number">5</span>TOC panel — animación slide-in desde la izquierda</h3>
+    <p>Todos los readers top (Kindle, Apple Books, Kobo) animan el TOC entrando desde la izquierda con un overlay semitransparente. La animación actual del TOC de SharkReader es un popover vertical sin profundidad espacial.</p>
+    <pre>┌──────────────────┐    ┌────────┬─────────────┐
+│                  │    │ TOC    │             │
+│   [libro]        │ →  │ Cap 1  │   [libro]   │
+│                  │    │ Cap 2  │             │
+└──────────────────┘    └────────┴─────────────┘
+                         ←240px→
+CSS: transition: transform 0.25s cubic-bezier(0.16,1,0.3,1)
+     transform: translateX(-100%) → translateX(0)</pre>
+  </div>
+
+  <div class="rec-block">
+    <h3><span class="rec-number">6</span>Modo Zen — área de hover más grande y visible en reposo</h3>
+    <p>KOReader ZenUI y Readest/ZenReader muestran un indicador <strong>siempre visible a baja opacidad</strong> (0.25-0.35) para que el usuario descubra cómo salir. El botón completamente invisible es un problema de discoverability.</p>
+    <pre>Actual:   opacity 0 en reposo → invisible → no discoverable
+
+Propuesto:
+┌─────────────────────────────────────┐
+│              [· · ·]                │  ← opacity 0.3, siempre visible
+│           (48px hit area)           │  ← área de click grande
+└─────────────────────────────────────┘
+Al hover: opacity 1, scale(1.05), translateY(-2px), 0.15s ease</pre>
+  </div>
+
+  <h2>Key Example — KOReader Font Panel</h2>
+
+  <div class="screenshot-card">
+    <img src="references/koreader-reading.png" alt="KOReader font settings panel" />
+    <div class="screenshot-caption">
+      <strong>KOReader</strong> — Panel de tipografía como barra persistente inferior: Contraste, Font Weight (-1 a +3), Font Hinting (off/native/auto) y Font Kerning (off/fast/good/best). Los controles son <em>steps discretos</em>, no sliders continuos — más precisos para ajustes de peso y kerning.
+      <span class="source-tag">Web</span>
+      <br><br>
+      <strong>Insight clave para SharkReader:</strong> KOReader expone Font Kerning como opción visible (off / fast / good / best). Añadir <code>font-kerning: normal</code> y <code>font-feature-settings: "kern" 1</code> en el CSS de tipografía mejoraría visiblemente los textos serif.
+    </div>
+  </div>
+
+  <h2>Patterns comunes</h2>
+
+  <div class="pattern-grid">
+    <div class="pattern-item">
+      <div class="icon">👁️</div>
+      <h4>Tap-to-reveal en paginado</h4>
+      <p>Ningún reader top muestra chrome permanente en modo paginado. El usuario quiere leer, no ver UI.</p>
+    </div>
+    <div class="pattern-item">
+      <div class="icon">🎨</div>
+      <h4>4-5 presets de color</h4>
+      <p>Claro, Sepia, Oscuro, Carbón. Sin picker RGB — reduce parálisis de elección. Kobo, Kindle, Apple Books todos hacen esto.</p>
+    </div>
+    <div class="pattern-item">
+      <div class="icon">📏</div>
+      <h4>Controles independientes</h4>
+      <p>Tamaño, interlineado, márgenes, caracter-spacing son sliders separados. Nunca un único "más grande/pequeño".</p>
+    </div>
+    <div class="pattern-item">
+      <div class="icon">📖</div>
+      <h4>Columna estrecha por defecto</h4>
+      <p>Nadie lee a 1000px. El estándar es 60-75 ch (~560-720px según tamaño de fuente). Kindle Paperwhite: ~480px.</p>
+    </div>
+    <div class="pattern-item">
+      <div class="icon">☰</div>
+      <h4>TOC como panel lateral</h4>
+      <p>Slide-in desde la izquierda, no modal. Con overlay semitransparente. Toca fuera para cerrar.</p>
+    </div>
+    <div class="pattern-item">
+      <div class="icon">📍</div>
+      <h4>Capítulo en la barra</h4>
+      <p>Kindle, Kobo y KOReader muestran el capítulo actual en el footer/progress bar — no el título del libro.</p>
+    </div>
+  </div>
+
+  <h2>Anti-Patterns</h2>
+
+  <div class="antipattern">❌ <strong>Toolbar siempre visible en modo paginado</strong> — rompe la inmersión. Todos los readers top la ocultan por defecto.</div>
+  <div class="antipattern">❌ <strong>Blanco puro (#fff) sobre negro puro (#000)</strong> en dark mode — genera halation visual. Usar off-white #e8e8e8 sobre dark gray #1a1a1a.</div>
+  <div class="antipattern">❌ <strong>Columna >800px para prosa</strong> — nadie en la industria lo hace. Incluso Kindle en tablet limita a ~560px de texto efectivo.</div>
+  <div class="antipattern">❌ <strong>Progress bar que repite el nombre del libro</strong> — redundante con el toolbar. Usar ese espacio para el capítulo actual.</div>
+  <div class="antipattern">❌ <strong>Panel de fuentes sin categorías</strong> — cuando hay muchos controles, FUENTE / TEXTO / COLUMNA / COLOR como headers reduce el tiempo de búsqueda.</div>
+  <div class="antipattern">❌ <strong>Botón de salida de zen mode completamente invisible</strong> — problema de discoverability. Debe ser visible a baja opacidad en reposo.</div>
+
+  <h2>Unique Angles</h2>
+
+  <div class="unique-angle">
+    <h4>🔡 KOReader — Font Kerning explícito (off/fast/good/best)</h4>
+    <p>El único reader que expone kerning como opción. "Best" usa OpenType completo con hinting óptimo — diferencia visual notable en serif. Para SharkReader: <code>font-kerning: normal; font-feature-settings: "kern" 1, "liga" 1;</code> en el CSS de tipografía.</p>
+  </div>
+
+  <div class="unique-angle">
+    <h4>📐 Kindle — Paragraph spacing separado del line spacing</h4>
+    <p>Kindle separa el espaciado entre párrafos del interlineado interno. Para libros sin sangría, el paragraph spacing extra es esencial. SharkReader podría añadir <code>margin-bottom</code> en párrafos como control separado.</p>
+  </div>
+
+  <div class="unique-angle">
+    <h4>🌑 Kobo Charcoal (2025) — Dark mode amable</h4>
+    <p>Más oscuro que Sepia, menos agresivo que Dark total. Fondo <code>#2b2b2b</code>, texto <code>#d4d4d4</code>, ratio ~7:1. Resuelve el problema de lectores nocturnos que encuentran dark mode muy contrastado. Añadirlo como 4º preset de color en SharkReader.</p>
+  </div>
+
+  <div class="unique-angle">
+    <h4>⬇️ KOReader ZenUI — Swipe-down para mini-menú</h4>
+    <p>En modo zen, un swipe hacia abajo desde cualquier punto de la pantalla muestra un overlay circular con controles (brillo, modo noche, WiFi). Más ergonómico que un botón fijo — cualquier zona del libro se convierte en el trigger.</p>
+  </div>
+
+  <h2>Sources</h2>
+
+  <ul class="sources-list">
+    <li><a href="https://www.kobo.com/blog/">Kobo Winter 2025 Update</a></li>
+    <li><a href="https://www.amazon.com/gp/help/customer/display.html?nodeId=T5Y94BzSCGwm0vd75W">Kindle Text Formatting Help</a></li>
+    <li><a href="https://support.apple.com/guide/books/change-a-books-appearance-ibks8923126d/mac">Apple Books Appearance Guide</a></li>
+    <li><a href="https://www.technipages.com/moon-reader-pro-complete-guide/">Moon+ Reader Pro Complete Guide</a></li>
+    <li><a href="https://anthonygress.github.io/zen_ui.koplugin/">KOReader ZenUI Plugin</a></li>
+    <li><a href="https://atmos.style/blog/dark-mode-ui-best-practices">Dark Mode UI Best Practices — Atmos</a></li>
+    <li><a href="https://developerux.com/2025/02/12/typography-in-ux-best-practices-guide/">Typography UX Best Practices 2025</a></li>
+    <li><a href="https://blog.logrocket.com/ux-design/pagination-vs-infinite-scroll-ux/">Pagination vs Infinite Scroll UX — LogRocket</a></li>
+    <li><a href="https://readest.com/">Readest Open Source Reader</a></li>
+    <li><a href="https://manual.calibre-ebook.com/viewer.html">Calibre Viewer Documentation</a></li>
+  </ul>
+
+</div>
+</body>
+</html>

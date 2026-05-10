@@ -2,12 +2,41 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ePub from 'epubjs';
 import { Icons } from './icons';
+import { getCachedLocations, setCachedLocations } from './locationsCache';
+
+function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing }) {
+    const fontStack =
+        fontFamily === 'Georgia' ? 'Georgia,"Times New Roman",serif' :
+        fontFamily === 'Lora' ? '"Lora",Georgia,serif' :
+        fontFamily === 'Merriweather' ? '"Merriweather",Georgia,serif' :
+        fontFamily === 'Crimson Text' ? '"Crimson Text",Georgia,serif' :
+        fontFamily === 'Roboto Slab' ? '"Roboto Slab",Georgia,serif' :
+        fontFamily === 'OpenDyslexic' ? '"OpenDyslexic",sans-serif' :
+        'Inter,system-ui,-apple-system,sans-serif';
+    const bgRule = customBg ? `background-color:${customBg}!important;` : '';
+    const pExtras = [];
+    if (textJustify) pExtras.push('text-align:justify!important');
+    if (firstLineIndent) pExtras.push('text-indent:1.5em!important');
+    if (letterSpacing !== 0) pExtras.push(`letter-spacing:${letterSpacing}em!important`);
+    if (hyphenation) pExtras.push('hyphens:auto!important;-webkit-hyphens:auto!important');
+    if (paragraphSpacing > 0) pExtras.push(`margin-bottom:${paragraphSpacing}em!important`);
+    return `html,body,p,span,div,li,blockquote,td,th,a,em,strong,h1,h2,h3,h4,h5,h6{font-family:${fontStack}!important}
+html{font-size:${fontSize}%!important;${bgRule}}
+body{padding-left:${pageMargins}px!important;padding-right:${pageMargins}px!important}
+p,li,blockquote{line-height:${lineHeight}!important;font-kerning:normal!important;font-feature-settings:"kern" 1,"liga" 1,"calt" 1!important${pExtras.length ? ';' + pExtras.join(';') : ''}}`;
+}
 
     const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout, updateLocationAndProgress, toggleBookmark, isFullscreen, focusMode, pageTransition, dyslexiaAddon, smartTocAddon, onClose, onOpenSettings, onStatsUpdate, onOpenBookInfo, onSaveWord, aiProvider, aiApiKey, tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary }) => {
         const viewerRef = useRef(null);
         const renditionRef = useRef(null);
         const bookRef = useRef(null);
         const locationsReadyRef = useRef(false);
+        const tocMapRef = useRef(new Map());          // href → chapter label, built once on load
+        const saveCfiThrottleRef = useRef(0);         // timestamp of last CFI+stats save in scroll mode
+        const autoScrollRafRef = useRef(null);         // rAF id for auto-scroll
+        const autoScrollLastTsRef = useRef(0);
+        const navDirectionRef = useRef('next');        // 'next' | 'prev' | 'jump'
+        const currentPercentRef = useRef(bookData.progress || 0);
 
         const [fontSize, setFontSize] = useState(110);
         const [fontFamily, setFontFamily] = useState('Inter');
@@ -31,6 +60,7 @@ import { Icons } from './icons';
         const [brightness, setBrightness] = useState(100);
         const [dictionaryPopup, setDictionaryPopup] = useState(null);
         const dictCacheRef = useRef({});
+        const stylesRef = useRef({ fontFamily: 'Inter', fontSize: 110, lineHeight: 1.6, pageMargins: 20, customBg: '', textJustify: false, firstLineIndent: false, letterSpacing: 0, hyphenation: false, paragraphSpacing: 0 });
 
         const [showSearch, setShowSearch] = useState(false);
         const [searchQuery, setSearchQuery] = useState('');
@@ -50,24 +80,25 @@ import { Icons } from './icons';
         const pageTransitionRef = useRef(pageTransition || 'slide');
         useEffect(() => { pageTransitionRef.current = pageTransition || 'none'; }, [pageTransition]);
 
-        // AI Chat
         // Auto-scroll
         const [autoScroll, setAutoScroll] = useState(false);
         const [autoScrollSpeed, setAutoScrollSpeed] = useState(2);
         const [showAutoScrollPanel, setShowAutoScrollPanel] = useState(false);
-        const autoScrollIntervalRef = useRef(null);
 
-        const [showAiChat, setShowAiChat] = useState(false);
-        const [aiMessages, setAiMessages] = useState([]);
-        const [aiInput, setAiInput] = useState('');
-        const [aiLoading, setAiLoading] = useState(false);
-        const aiInputRef = useRef(null);
-        const aiScrollRef = useRef(null);
         const [currentChapterTitle, setCurrentChapterTitle] = useState('');
-        const [showChapterHint, setShowChapterHint] = useState(false);
         const prevChapterRef = useRef(null);
         const chapterHintTimerRef = useRef(null);
         const [tocCollapsed, setTocCollapsed] = useState(false);
+
+        // Typography — defaults are all "off" so we never override the book's own CSS
+        const [textJustify, setTextJustify] = useState(false);
+        const [firstLineIndent, setFirstLineIndent] = useState(false);
+        const [letterSpacing, setLetterSpacing] = useState(0);
+        const [hyphenation, setHyphenation] = useState(false);
+        const [paragraphSpacing, setParagraphSpacing] = useState(0);
+        const [columnWidth, setColumnWidth] = useState(() => readFlow === 'scrolled-doc' ? 'narrow' : 'normal');
+        const [zenMode, setZenMode] = useState(false);
+
 
         // Cleanup chapter hint timer on unmount
         useEffect(() => () => clearTimeout(chapterHintTimerRef.current), []);
@@ -76,8 +107,8 @@ import { Icons } from './icons';
         const anyPanelOpenRef = useRef(false);
         useEffect(() => {
             anyPanelOpenRef.current = showToc || showFontMenu || showBrightness || showSearch ||
-                showAiChat || showAutoScrollPanel || !!pendingBookmarkCfi;
-        }, [showToc, showFontMenu, showBrightness, showSearch, showAiChat, showAutoScrollPanel, pendingBookmarkCfi]);
+                showAutoScrollPanel || !!pendingBookmarkCfi;
+        }, [showToc, showFontMenu, showBrightness, showSearch, showAutoScrollPanel, pendingBookmarkCfi]);
 
         // Focus mode: hide toolbar on mouse idle, show on hover near top
         const focusToolbarHideTimer = useRef(null);
@@ -86,7 +117,11 @@ import { Icons } from './icons';
         useEffect(() => {
             if (!focusMode) { setFocusToolbarVisible(true); return; }
             const onMove = (e) => {
-                setFocusToolbarVisible(true);
+                // Avoid setState on every pixel — only act on state transitions
+                setFocusToolbarVisible(prev => {
+                    if (!prev) return true;
+                    return prev;
+                });
                 clearTimeout(focusToolbarHideTimer.current);
                 if (e.clientY > 80) {
                     focusToolbarHideTimer.current = setTimeout(() => setFocusToolbarVisible(false), 2500);
@@ -110,18 +145,13 @@ import { Icons } from './icons';
             return () => document.removeEventListener('click', close);
         }, []);
 
-        // Auto-scroll AI chat
-        useEffect(() => {
-            if (aiScrollRef.current) aiScrollRef.current.scrollTop = aiScrollRef.current.scrollHeight;
-        }, [aiMessages, aiLoading]);
-
         useEffect(() => {
             if (showSearch && searchInputRef.current) searchInputRef.current.focus();
         }, [showSearch]);
 
         const getPercentage = useCallback((book, cfi) => {
             if (!book || !cfi) return 0;
-            if (locationsReadyRef.current && book.locations && book.locations.length > 0) {
+            if (locationsReadyRef.current && book.locations && book.locations.total > 0) {
                 const pct = book.locations.percentageFromCfi(cfi);
                 if (pct !== null && pct >= 0) return Math.round(pct * 100);
             }
@@ -140,8 +170,8 @@ import { Icons } from './icons';
             const el = viewerWrapRef.current;
             const exitClass = pt === 'fade' ? 'pt-fade-exit' : `pt-${pt}-exit-${direction}`;
             const enterClass = pt === 'fade' ? 'pt-fade-enter' : `pt-${pt}-enter-${direction}`;
-            const exitMs = pt === 'slide' ? 150 : pt === 'rise' ? 140 : 130;
-            const enterMs = pt === 'zoom' ? 240 : pt === 'fade' ? 220 : 260;
+            const exitMs = pt === 'slide' ? 150 : pt === 'rise' ? 140 : pt === 'curl' ? 180 : pt === 'cover' ? 80 : 130;
+            const enterMs = pt === 'zoom' ? 240 : pt === 'fade' ? 220 : pt === 'curl' ? 300 : pt === 'cover' ? 320 : 260;
             el.classList.add(exitClass);
             setTimeout(() => {
                 action();
@@ -152,13 +182,17 @@ import { Icons } from './icons';
         }, []);
 
         const prevPage = useCallback(() => {
-            if (renditionRef.current && readFlow === 'paginated')
+            if (renditionRef.current && readFlow === 'paginated') {
+                navDirectionRef.current = 'prev';
                 doTransition('prev', () => renditionRef.current.prev());
+            }
         }, [readFlow, doTransition]);
 
         const nextPage = useCallback(() => {
-            if (renditionRef.current && readFlow === 'paginated')
+            if (renditionRef.current && readFlow === 'paginated') {
+                navDirectionRef.current = 'next';
                 doTransition('next', () => renditionRef.current.next());
+            }
         }, [readFlow, doTransition]);
 
         useEffect(() => {
@@ -186,7 +220,9 @@ import { Icons } from './icons';
                     });
                     renditionRef.current = rendition;
 
-                    const paddingPx = readLayout === 'auto' ? "0 40px" : "0 20px";
+                    // In spread/auto mode epubjs manages its own column layout;
+                    // adding body padding causes text to overflow outside the virtual page.
+                    const paddingPx = readLayout === 'auto' ? "0 8px" : "0 20px";
                     rendition.themes.register("light", { "body": { "background": "transparent", "color": "#0f172a", "padding": `${paddingPx} !important` } });
                     rendition.themes.register("dark", { "body": { "background": "transparent", "color": "#f1f5f9", "padding": `${paddingPx} !important` } });
                     rendition.themes.register("sepia", { "body": { "background": "transparent", "color": "#451a03", "padding": `${paddingPx} !important` } });
@@ -229,6 +265,18 @@ import { Icons } from './icons';
                                     img, figure, table, pre { break-inside: avoid; page-break-inside: avoid; }
                                 `;
                                 head.appendChild(style);
+                            }
+                            if (!head.querySelector('#shark-styles')) {
+                                const sStyle = contents.document.createElement('style');
+                                sStyle.id = 'shark-styles';
+                                sStyle.textContent = buildSharkCss(stylesRef.current);
+                                head.appendChild(sStyle);
+                            }
+                            if (readFlow === 'scrolled-doc' && !head.querySelector('#shark-scroll')) {
+                                const sStyle = contents.document.createElement('style');
+                                sStyle.id = 'shark-scroll';
+                                sStyle.textContent = `* { page-break-before: auto !important; page-break-after: auto !important; break-before: auto !important; break-after: auto !important; } body { padding-bottom: 2rem !important; }`;
+                                head.appendChild(sStyle);
                             }
                         }
                     });
@@ -278,7 +326,17 @@ import { Icons } from './icons';
                     });
 
                     book.loaded.navigation.then((nav) => {
-                        if (isMounted && nav && nav.toc) setToc(nav.toc);
+                        if (!isMounted || !nav?.toc) return;
+                        setToc(nav.toc);
+                        // Build flat href→label Map for O(1) chapter lookup in relocated
+                        tocMapRef.current = new Map();
+                        const buildTocMap = (items) => {
+                            items.forEach(item => {
+                                if (item.href) tocMapRef.current.set(item.href.split('#')[0], item.label);
+                                if (item.subitems?.length) buildTocMap(item.subitems);
+                            });
+                        };
+                        buildTocMap(nav.toc);
                     });
 
                     book.ready.then(() => {
@@ -323,9 +381,8 @@ import { Icons } from './icons';
                     setIsReady(true);
                     setIsLoading(false);
 
-                    // Generar locations en background para % preciso
-                    setLocationsGenerating(true);
-                    book.locations.generate(1024).then(() => {
+                    // Locations: load from cache or generate once then cache
+                    const finishLocations = () => {
                         if (!isMounted) return;
                         locationsReadyRef.current = true;
                         setLocationsGenerating(false);
@@ -336,28 +393,46 @@ import { Icons } from './icons';
                             const saveCfi = (loc.end && loc.end.cfi) ? loc.end.cfi : loc.start.cfi;
                             updateLocationAndProgress(bookData.id, saveCfi, pct);
                         }
-                    }).catch(() => { if (isMounted) setLocationsGenerating(false); });
+                    };
+
+                    setLocationsGenerating(true);
+                    getCachedLocations(bookData.id).then(cached => {
+                        if (!isMounted) return;
+                        if (cached && cached.length > 0) {
+                            // Restore from cache — zero CPU cost
+                            book.locations.load(cached);
+                            finishLocations();
+                        } else {
+                            // First open: generate and cache for future opens
+                            book.locations.generate(1024).then(() => {
+                                if (!isMounted) return;
+                                // Persist to IDB in background (non-blocking)
+                                setCachedLocations(bookData.id, book.locations.save());
+                                finishLocations();
+                            }).catch(() => { if (isMounted) setLocationsGenerating(false); });
+                        }
+                    }).catch(() => {
+                        // Cache unavailable — fall back to generate
+                        book.locations.generate(1024)
+                            .then(finishLocations)
+                            .catch(() => { if (isMounted) setLocationsGenerating(false); });
+                    });
 
                     rendition.on('relocated', (location) => {
                         if (!isMounted) return;
                         const displayCfi = location.start.cfi;
                         const saveCfi = (location.end && location.end.cfi) ? location.end.cfi : displayCfi;
                         setCurrentCfi(displayCfi);
+
+                        // Cheap UI updates — always run
                         try {
                             const spineItem = bookRef.current.spine.get(displayCfi);
                             if (spineItem && spineItem.index !== undefined) {
                                 setCurrentSection(spineItem.index + 1);
                             }
-                            // Buscar capítulo actual en TOC por href
-                            const findChapter = (items) => {
-                                for (const item of items) {
-                                    if (item.href && spineItem && spineItem.href &&
-                                        item.href.split('#')[0] === spineItem.href.split('#')[0]) return item.label;
-                                    if (item.subitems) { const s = findChapter(item.subitems); if (s) return s; }
-                                }
-                                return null;
-                            };
-                            const ch = findChapter(bookRef.current.navigation?.toc || []);
+                            // O(1) chapter lookup via pre-built Map (was O(n) recursive traversal)
+                            const spineHref = spineItem?.href?.split('#')[0];
+                            const ch = spineHref ? tocMapRef.current.get(spineHref) : null;
                             if (ch) {
                                 setCurrentChapterTitle(ch);
                                 if (prevChapterRef.current !== null && prevChapterRef.current !== ch) {
@@ -368,20 +443,43 @@ import { Icons } from './icons';
                                 prevChapterRef.current = ch;
                             }
                         } catch (e) {}
-                        const percent = getPercentage(bookRef.current, displayCfi);
-                        setCurrentPercent(percent);
-                        // En modo scroll, guardar también el porcentaje de scroll como fallback
-                        let finalCfi = saveCfi;
-                        if (readFlow === 'scrolled-doc' && viewerRef.current) {
-                            const el = viewerRef.current;
-                            const scrollPct = el.scrollHeight > el.clientHeight
-                                ? el.scrollTop / (el.scrollHeight - el.clientHeight)
-                                : 0;
-                            // Codificar pct de scroll en el CFI como sufijo para restauración
-                            finalCfi = `${saveCfi}|scrollpct:${scrollPct.toFixed(4)}`;
+
+                        // Expensive saves — throttle to once per 2s in scroll mode to avoid
+                        // flooding setBooks+setStats → persist effect on every section boundary
+                        const now = Date.now();
+                        const isPaginated = readFlow !== 'scrolled-doc';
+                        const shouldSave = isPaginated || (now - saveCfiThrottleRef.current > 2000);
+
+                        if (shouldSave) {
+                            saveCfiThrottleRef.current = now;
+                            let percent = undefined;
+                            if (locationsReadyRef.current) {
+                                const raw = getPercentage(bookRef.current, displayCfi);
+                                const prev = currentPercentRef.current;
+                                const delta = raw - prev;
+                                // Clamp forward nav to prevent % going backwards at chapter boundaries.
+                                // Large jumps (>8%) are TOC/explicit nav — trust them unconditionally.
+                                if (Math.abs(delta) > 8 || navDirectionRef.current === 'jump') {
+                                    percent = raw;
+                                } else if (navDirectionRef.current === 'prev') {
+                                    percent = Math.min(prev, raw);
+                                } else {
+                                    percent = Math.max(prev, raw);
+                                }
+                                currentPercentRef.current = percent;
+                                setCurrentPercent(percent);
+                            }
+                            let finalCfi = saveCfi;
+                            if (!isPaginated && viewerRef.current) {
+                                const el = viewerRef.current;
+                                const scrollPct = el.scrollHeight > el.clientHeight
+                                    ? el.scrollTop / (el.scrollHeight - el.clientHeight)
+                                    : 0;
+                                finalCfi = `${saveCfi}|scrollpct:${scrollPct.toFixed(4)}`;
+                            }
+                            updateLocationAndProgress(bookData.id, finalCfi, percent);
+                            onStatsUpdate(1);
                         }
-                        updateLocationAndProgress(bookData.id, finalCfi, percent);
-                        onStatsUpdate(1);
                     });
 
                 } catch (error) {
@@ -401,25 +499,20 @@ import { Icons } from './icons';
         }, [bookData.file, readFlow, readLayout]);
 
         useEffect(() => { if (isReady && renditionRef.current) renditionRef.current.themes.select(theme); }, [theme, isReady]);
-        useEffect(() => { if (isReady && renditionRef.current) renditionRef.current.themes.fontSize(`${fontSize}%`); }, [fontSize, isReady]);
         useEffect(() => {
-            if (!isReady || !renditionRef.current) return;
-            const font = dyslexiaAddon ? 'OpenDyslexic' : fontFamily;
-            renditionRef.current.themes.font(font);
-        }, [fontFamily, dyslexiaAddon, isReady]);
-        useEffect(() => {
-            if (!isReady || !renditionRef.current) return;
-            renditionRef.current.themes.override('line-height', `${lineHeight}`);
-        }, [lineHeight, isReady]);
-        useEffect(() => {
-            if (!isReady || !renditionRef.current) return;
-            renditionRef.current.themes.override('padding-left', `${pageMargins}px`);
-            renditionRef.current.themes.override('padding-right', `${pageMargins}px`);
-        }, [pageMargins, isReady]);
-        useEffect(() => {
-            if (!isReady || !renditionRef.current) return;
-            if (customBg) renditionRef.current.themes.override('background-color', customBg);
-        }, [customBg, isReady]);
+            const effectiveFont = dyslexiaAddon ? 'OpenDyslexic' : fontFamily;
+            const opts = { fontFamily: effectiveFont, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing };
+            stylesRef.current = opts;
+            if (!renditionRef.current || !isReady) return;
+            const css = buildSharkCss(opts);
+            try {
+                renditionRef.current.getContents().forEach(c => {
+                    let el = c.document.head.querySelector('#shark-styles');
+                    if (!el) { el = c.document.createElement('style'); el.id = 'shark-styles'; c.document.head.appendChild(el); }
+                    el.textContent = css;
+                });
+            } catch (e) {}
+        }, [fontFamily, dyslexiaAddon, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, isReady]);
 
         useEffect(() => {
             let wheelTimeout;
@@ -432,6 +525,8 @@ import { Icons } from './icons';
                 if (delta > 0) nextPage(); else if (delta < 0) prevPage();
             };
             const handleKeyDown = (e) => {
+                if (e.key === 'z' || e.key === 'Z') { setZenMode(p => !p); return; }
+                if (e.key === 'Escape') { setZenMode(false); return; }
                 if (readFlow !== 'paginated') return;
                 if (anyPanelOpenRef.current) return;
                 if (e.key === 'ArrowLeft') prevPage();
@@ -458,18 +553,31 @@ import { Icons } from './icons';
             };
         }, [readFlow, prevPage, nextPage]);
 
-        // Auto-scroll en modo continuo
+        // Auto-scroll — requestAnimationFrame (smooth 60fps, replaces jittery setInterval)
         useEffect(() => {
-            if (autoScrollIntervalRef.current) clearInterval(autoScrollIntervalRef.current);
-            if (!autoScroll || readFlow !== 'scrolled-doc' || !viewerRef.current) return;
-            autoScrollIntervalRef.current = setInterval(() => {
-                if (viewerRef.current) viewerRef.current.scrollTop += autoScrollSpeed;
-            }, 50);
-            return () => clearInterval(autoScrollIntervalRef.current);
+            if (autoScrollRafRef.current) cancelAnimationFrame(autoScrollRafRef.current);
+            autoScrollLastTsRef.current = 0;
+            if (!autoScroll || readFlow !== 'scrolled-doc') return;
+            const tick = (ts) => {
+                if (!viewerRef.current) { autoScrollRafRef.current = requestAnimationFrame(tick); return; }
+                if (autoScrollLastTsRef.current) {
+                    // Keep same px/s rate as the old setInterval(50ms): speed px per 50ms = speed*20 px/s
+                    const dt = Math.min(ts - autoScrollLastTsRef.current, 100);
+                    viewerRef.current.scrollTop += autoScrollSpeed * dt / 50;
+                }
+                autoScrollLastTsRef.current = ts;
+                autoScrollRafRef.current = requestAnimationFrame(tick);
+            };
+            autoScrollRafRef.current = requestAnimationFrame(tick);
+            return () => cancelAnimationFrame(autoScrollRafRef.current);
         }, [autoScroll, autoScrollSpeed, readFlow]);
 
         const jumpToToc = (href) => {
-            if (renditionRef.current) { renditionRef.current.display(href); setShowToc(false); }
+            if (renditionRef.current) {
+                navDirectionRef.current = 'jump';
+                renditionRef.current.display(href);
+                setShowToc(false);
+            }
         };
 
         const runSearch = async (query) => {
@@ -527,89 +635,10 @@ import { Icons } from './icons';
             else if (document.exitFullscreen) document.exitFullscreen();
         };
 
-        const sendAiMessage = async (overrideText) => {
-            const text = (overrideText || aiInput).trim();
-            if (!text || aiLoading || !aiApiKey) return;
-
-            // Extract current chapter text for summary/recap requests
-            let chapterText = '';
-            if (/resume|resum|capítulo|chapter|leído|leido/i.test(text) && renditionRef.current) {
-                try {
-                    const contents = renditionRef.current.getContents();
-                    if (contents?.[0]) {
-                        const raw = contents[0].document?.body?.innerText || '';
-                        chapterText = raw.replace(/\s+/g, ' ').trim().slice(0, 4000);
-                    }
-                } catch (_) {}
-            }
-
-            const userMsg = { role: 'user', content: text }; // shown in UI
-            const apiUserContent = chapterText
-                ? `${text}\n\n[Texto actual del capítulo para que puedas resumirlo]:\n${chapterText}`
-                : text;
-            const newMessages = [...aiMessages, userMsg];
-            const apiMessages = [...aiMessages, { role: 'user', content: apiUserContent }];
-            setAiMessages(newMessages);
-            setAiInput('');
-            setAiLoading(true);
-            const currentChapter = currentChapterTitle || (toc.length > 0 ? toc[0].label : '');
-            const systemPrompt = `Eres un asistente de lectura para el libro "${bookData.name}"${bookData.author ? ` de ${bookData.author}` : ''}. ${currentChapter ? `Capítulo actual: "${currentChapter}". ` : ''}Usa tu conocimiento del libro para responder sobre trama, personajes y temas. Cuando recibes texto del capítulo, úsalo para dar un resumen concreto y útil. Responde siempre en español de forma concisa.`;
-            try {
-                let response;
-                if (aiProvider === 'gemini') {
-                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${aiApiKey}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            system_instruction: { parts: [{ text: systemPrompt }] },
-                            contents: apiMessages.map(m => ({
-                                role: m.role === 'assistant' ? 'model' : 'user',
-                                parts: [{ text: m.content }]
-                            }))
-                        })
-                    });
-                    const data = await res.json();
-                    if (data.error) throw new Error(data.error.message || 'Gemini API error');
-                    response = data.candidates?.[0]?.content?.parts?.[0]?.text || 'Sin respuesta.';
-                } else if (aiProvider === 'openrouter') {
-                    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiApiKey}`, 'HTTP-Referer': 'https://sharkreader.app', 'X-Title': 'SharkReader' },
-                        body: JSON.stringify({ model: 'meta-llama/llama-3.2-3b-instruct:free', messages: [{ role: 'system', content: systemPrompt }, ...apiMessages], max_tokens: 600 })
-                    });
-                    const data = await res.json();
-                    console.log('[OpenRouter response]', res.status, JSON.stringify(data));
-                    if (!res.ok || data.error) throw new Error(`HTTP ${res.status}: ${typeof data.error === 'string' ? data.error : data.error?.message || JSON.stringify(data)}`);
-                    response = data.choices?.[0]?.message?.content || 'Sin respuesta.';
-                } else if (aiProvider === 'xai') {
-                    const res = await fetch('https://api.x.ai/v1/chat/completions', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiApiKey}` },
-                        body: JSON.stringify({ model: 'grok-3-mini', messages: [{ role: 'system', content: systemPrompt }, ...apiMessages], max_tokens: 600 })
-                    });
-                    const data = await res.json();
-                    console.log('[xAI response]', res.status, JSON.stringify(data));
-                    if (!res.ok || data.error) throw new Error(`HTTP ${res.status}: ${typeof data.error === 'string' ? data.error : data.error?.message || JSON.stringify(data)}`);
-                    response = data.choices?.[0]?.message?.content || 'Sin respuesta.';
-                } else {
-                    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiApiKey}` },
-                        body: JSON.stringify({ model: 'llama-3.1-8b-instant', messages: [{ role: 'system', content: systemPrompt }, ...apiMessages], max_tokens: 600 })
-                    });
-                    const data = await res.json();
-                    if (data.error) throw new Error(data.error.message || 'Groq API error');
-                    response = data.choices?.[0]?.message?.content || 'Sin respuesta.';
-                }
-                setAiMessages(prev => [...prev, { role: 'assistant', content: response }]);
-            } catch (e) {
-                setAiMessages(prev => [...prev, { role: 'assistant', content: `Error: ${e.message || 'Verifica tu clave API.'}` }]);
-            }
-            setAiLoading(false);
-        };
 
         const isBookmarked = currentCfi && bookData.bookmarks.some(b => b.cfi === currentCfi);
-        const maxWidthStr = readFlow === 'paginated' && readLayout === 'auto' ? '1800px' : '1000px';
+        const colWidths = { narrow: '640px', normal: '760px', wide: '960px' };
+        const maxWidthStr = readFlow === 'paginated' && readLayout === 'auto' ? '1800px' : (colWidths[columnWidth] || '760px');
 
         // --- Sub-componentes de controles compartidos ---
         const ZoomControls = ({ small }) => (
@@ -684,7 +713,7 @@ import { Icons } from './icons';
                         <div className="border-t my-2" style={{ borderColor: 'rgba(128,128,128,0.2)' }}></div>
                         <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-2">Color de fondo</p>
                         <div className="flex items-center gap-2 flex-wrap">
-                            {['', '#fafafa', '#f5f0e8', '#1e1e2e', '#0f1117', '#1a2332', '#2d1b1b'].map(c => (
+                            {['', '#fafafa', '#f5f0e8', '#262626', '#1e1e2e', '#0f1117', '#1a2332', '#2d1b1b'].map(c => (
                                 <button key={c || 'auto'} onClick={() => setCustomBg(c)}
                                     title={c || 'Automático (según tema)'}
                                     className={`w-6 h-6 rounded-full border-2 transition ${customBg === c ? 'border-[var(--highlight)] scale-125' : 'border-transparent hover:scale-110'}`}
@@ -697,6 +726,48 @@ import { Icons } from './icons';
                                 title="Color personalizado"
                                 className="w-6 h-6 rounded-full border-0 cursor-pointer p-0"
                                 style={{ outline: '2px solid rgba(128,128,128,0.3)' }} />
+                        </div>
+                        <div className="border-t my-2" style={{ borderColor: 'rgba(128,128,128,0.2)' }}></div>
+                        <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-2">Tipografía</p>
+                        <div className="flex flex-wrap gap-1.5 mb-3">
+                            <button onClick={() => setTextJustify(p => !p)}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex-1 ${textJustify ? 'bg-[var(--highlight)] text-white' : 'hover:bg-black/5 dark:hover:bg-white/10 opacity-60'}`}>
+                                Justificado
+                            </button>
+                            <button onClick={() => setFirstLineIndent(p => !p)}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex-1 ${firstLineIndent ? 'bg-[var(--highlight)] text-white' : 'hover:bg-black/5 dark:hover:bg-white/10 opacity-60'}`}>
+                                Sangría
+                            </button>
+                            <button onClick={() => setHyphenation(p => !p)}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex-1 ${hyphenation ? 'bg-[var(--highlight)] text-white' : 'hover:bg-black/5 dark:hover:bg-white/10 opacity-60'}`}>
+                                Separación
+                            </button>
+                        </div>
+                        <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-1">Interletraje</p>
+                        <div className="flex items-center gap-2 mb-2">
+                            <span className="text-xs opacity-50">A·A</span>
+                            <input type="range" min="-0.05" max="0.15" step="0.01" value={letterSpacing}
+                                onChange={e => setLetterSpacing(parseFloat(e.target.value))}
+                                className="flex-1 accent-[var(--highlight)]" />
+                            <span className="text-xs font-black opacity-70 min-w-[36px] text-right">{letterSpacing > 0 ? '+' : ''}{(letterSpacing * 1000).toFixed(0)}‰</span>
+                        </div>
+                        <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-1">Espacio entre párrafos</p>
+                        <div className="flex items-center gap-2 mb-3">
+                            <span className="text-xs opacity-50">¶</span>
+                            <input type="range" min="0" max="1.5" step="0.1" value={paragraphSpacing}
+                                onChange={e => setParagraphSpacing(parseFloat(e.target.value))}
+                                className="flex-1 accent-[var(--highlight)]" />
+                            <span className="text-xs font-black opacity-70 min-w-[32px] text-right">{paragraphSpacing > 0 ? `+${paragraphSpacing.toFixed(1)}` : '0'}em</span>
+                        </div>
+                        <div className="border-t my-2" style={{ borderColor: 'rgba(128,128,128,0.2)' }}></div>
+                        <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-2">Ancho de columna</p>
+                        <div className="flex gap-1.5">
+                            {[['narrow', 'Estrecha'], ['normal', 'Normal'], ['wide', 'Ancha']].map(([id, lbl]) => (
+                                <button key={id} onClick={() => setColumnWidth(id)}
+                                    className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition ${columnWidth === id ? 'bg-[var(--highlight)] text-white' : 'hover:bg-black/5 dark:hover:bg-white/10 opacity-60'}`}>
+                                    {lbl}
+                                </button>
+                            ))}
                         </div>
                     </div>
                 )}
@@ -844,7 +915,7 @@ import { Icons } from './icons';
                 )}
 
                 {/* ── BARRA SUPERIOR — Modo Normal ── */}
-                {!isFullscreen && (
+                {!isFullscreen && !zenMode && (
                     <div className={`flex-shrink-0 flex flex-col text-white shadow-md z-40 focus-mode-toolbar ${focusMode && !focusToolbarVisible ? 'hidden' : ''}`} style={{ background: 'linear-gradient(to right, var(--topbar-bg), var(--highlight))' }}>
 
                         {/* Fila 1: pestañas (solo cuando se pasan tabs) */}
@@ -914,21 +985,17 @@ import { Icons } from './icons';
                                     title={t.highlight}>
                                     <Icons.Highlighter />
                                 </button>
-                                <button onClick={() => { setShowSearch(p => !p); setShowAiChat(false); }}
+                                <button onClick={() => setShowSearch(p => !p)}
                                     className={`p-1.5 rounded-xl transition ${showSearch ? 'bg-white/25' : 'hover:bg-white/15'}`}
                                     title="Buscar en el libro">
                                     <Icons.Search />
                                 </button>
                                 <AutoScrollBtn dock={false} />
-                                {aiApiKey && (
-                                    <button onClick={() => { setShowAiChat(p => !p); setShowSearch(false); }}
-                                        className={`p-1.5 rounded-xl transition text-base leading-none ${showAiChat ? 'bg-white/25' : 'hover:bg-white/15'}`}
-                                        title="Asistente IA">
-                                        🤖
-                                    </button>
-                                )}
                                 <button onClick={onOpenSettings} className="p-1.5 hover:bg-white/15 rounded-xl transition hidden sm:block" title={t.settings}>
                                     <Icons.Settings />
+                                </button>
+                                <button onClick={() => setZenMode(true)} className="p-1.5 hover:bg-white/15 rounded-xl transition hidden sm:block" title="Modo Zen (Z)">
+                                    <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M4 8V6a2 2 0 012-2h2M4 16v2a2 2 0 002 2h2M16 4h2a2 2 0 012 2v2M16 20h2a2 2 0 002-2v-2"/></svg>
                                 </button>
                                 <button onClick={toggleFullscreen} className="p-1.5 hover:bg-white/15 rounded-xl transition" title={t.fullscreen}>
                                     <Icons.Fullscreen />
@@ -939,15 +1006,11 @@ import { Icons } from './icons';
                 )}
 
                 {/* ── DOCK FLOTANTE — Modo Fullscreen ── */}
-                {isFullscreen && (
+                {isFullscreen && !zenMode && (
                     <>
-                        <div className={`absolute top-4 left-4 right-4 flex items-center justify-between text-white z-40 transition-all duration-500 ${showToolbar ? 'translate-y-0 opacity-100' : '-translate-y-16 opacity-0 pointer-events-none'}`}>
-                            <button onClick={onClose} className="p-3 bg-slate-900/80 backdrop-blur-xl border border-white/10 hover:bg-black/60 rounded-full transition shadow-xl"><Icons.Back /></button>
-                            <button onClick={onOpenBookInfo} className="bg-slate-900/80 backdrop-blur-xl border border-white/10 px-5 py-2 rounded-full shadow-xl flex items-center gap-2 hover:bg-black/60 transition">
-                                <span className="font-bold text-sm truncate max-w-[180px] sm:max-w-sm opacity-90">{bookData.name}</span>
-                                <Icons.Info />
-                            </button>
-                            <button onClick={toggleFullscreen} className="p-3 bg-slate-900/80 backdrop-blur-xl border border-white/10 hover:bg-black/60 rounded-full transition shadow-xl"><Icons.FullscreenExit /></button>
+                        <div className={`absolute top-4 left-4 right-4 flex items-center justify-between text-white z-40 pointer-events-none transition-all duration-500 ${showToolbar ? 'translate-y-0 opacity-100' : '-translate-y-16 opacity-0'}`}>
+                            <button onClick={onClose} className="p-3 bg-slate-900/80 backdrop-blur-xl border border-white/10 hover:bg-black/60 rounded-full transition shadow-xl pointer-events-auto" title="Cerrar"><Icons.Back /></button>
+                            <button onClick={toggleFullscreen} className="p-3 bg-slate-900/80 backdrop-blur-xl border border-white/10 hover:bg-black/60 rounded-full transition shadow-xl pointer-events-auto" title="Salir de pantalla completa"><Icons.FullscreenExit /></button>
                         </div>
 
                         <div className={`absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-slate-900/85 backdrop-blur-2xl border border-white/10 text-white z-40 rounded-full px-3 py-2 shadow-[0_20px_50px_rgba(0,0,0,0.5)] transition-all duration-500 ${showToolbar ? 'translate-y-0 opacity-100 scale-100' : 'translate-y-24 opacity-0 scale-95 pointer-events-none'}`}>
@@ -974,7 +1037,7 @@ import { Icons } from './icons';
                                 <Icons.Highlighter />
                             </button>
 
-                            <button onClick={() => { setShowSearch(p => !p); setShowAiChat(false); }}
+                            <button onClick={() => setShowSearch(p => !p)}
                                 className={`p-2.5 rounded-full transition ${showSearch ? 'bg-white/25' : 'hover:bg-white/15'}`}
                                 title="Buscar en el libro">
                                 <Icons.Search />
@@ -982,18 +1045,13 @@ import { Icons } from './icons';
 
                             <AutoScrollBtn dock={true} />
 
-                            {aiApiKey && (
-                                <button onClick={() => { setShowAiChat(p => !p); setShowSearch(false); }}
-                                    className={`p-2.5 rounded-full transition text-base leading-none ${showAiChat ? 'bg-white/25' : 'hover:bg-white/15'}`}
-                                    title="Asistente IA">
-                                    🤖
-                                </button>
-                            )}
-
                             <div className="w-px h-5 bg-white/10 mx-1"></div>
 
                             <button onClick={onOpenSettings} className="p-2.5 hover:bg-white/15 rounded-full transition" title={t.settings}>
                                 <Icons.Settings />
+                            </button>
+                            <button onClick={onOpenBookInfo} className="p-2.5 hover:bg-white/15 rounded-full transition" title="Info del libro">
+                                <Icons.Info />
                             </button>
                         </div>
                     </>
@@ -1016,12 +1074,11 @@ import { Icons } from './icons';
                     <div
                         id="viewer"
                         ref={viewerRef}
-                        className="w-full h-full px-8 sm:px-16"
+                        className={`w-full h-full ${readLayout === 'auto' && readFlow === 'paginated' ? '' : 'px-8 sm:px-16'}`}
                         style={{
                             maxWidth: maxWidthStr,
                             margin: '0 auto',
                             overflowY: readFlow === 'scrolled-doc' ? 'auto' : 'hidden',
-                            scrollBehavior: readFlow === 'scrolled-doc' ? 'smooth' : 'auto',
                         }}
                     ></div>
 
@@ -1146,112 +1203,6 @@ import { Icons } from './icons';
                     </div>
                 )}
 
-                {/* ── CHAPTER CHANGE HINT ── */}
-                {showChapterHint && currentChapterTitle && !showAiChat && (
-                    <div className="fixed bottom-16 left-1/2 z-[200] fade-in"
-                        style={{ transform: 'translateX(-50%)', animation: 'fadeInUp 0.35s ease' }}>
-                        <button
-                            onClick={() => { setShowChapterHint(false); setShowAiChat(true); setTimeout(() => sendAiMessage(`📖 Resume el capítulo: "${currentChapterTitle}"`), 100); }}
-                            className="flex items-center gap-2 px-4 py-2.5 rounded-2xl text-white text-sm font-bold shadow-2xl hover:brightness-110 transition"
-                            style={{ background: 'linear-gradient(135deg, var(--topbar-bg), var(--highlight))' }}>
-                            ✨ Resumir capítulo: "{currentChapterTitle.length > 30 ? currentChapterTitle.slice(0, 30) + '…' : currentChapterTitle}"
-                        </button>
-                        <button onClick={() => setShowChapterHint(false)}
-                            className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-gray-700 text-white text-[10px] font-black flex items-center justify-center hover:bg-gray-600 transition">
-                            ×
-                        </button>
-                    </div>
-                )}
-
-                {/* ── PANEL DE CHAT IA ── */}
-                {showAiChat && (
-                    <div className="absolute right-0 bottom-7 w-80 z-50 flex flex-col shadow-2xl border-l fade-in"
-                        style={{ top: tabs ? '88px' : '64px', backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)' }}
-                        onClick={e => e.stopPropagation()} onWheel={e => e.stopPropagation()}>
-                        <div className="flex items-center justify-between p-3 border-b flex-shrink-0" style={{ borderColor: 'var(--border-color)' }}>
-                            <div className="flex items-center gap-2">
-                                <span className="text-base">🤖</span>
-                                <span className="font-black text-sm">Asistente IA</span>
-                                {aiProvider && <span className="text-[10px] opacity-40 font-bold uppercase bg-black/10 dark:bg-white/10 px-2 py-0.5 rounded-full">{aiProvider}</span>}
-                            </div>
-                            <div className="flex items-center gap-1">
-                                {aiMessages.length > 0 && (
-                                    <button onClick={() => setAiMessages([])} className="text-[10px] opacity-40 hover:opacity-80 px-2 py-1 rounded-lg transition font-bold">Limpiar</button>
-                                )}
-                                <button onClick={() => setShowAiChat(false)} className="p-1.5 opacity-50 hover:opacity-100 transition"><Icons.Close /></button>
-                            </div>
-                        </div>
-
-                        <div ref={aiScrollRef} className="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
-                            {aiMessages.length === 0 && (
-                                <div className="text-center opacity-40 mt-8 px-4">
-                                    <p className="text-3xl mb-3">🤖</p>
-                                    <p className="text-xs font-medium leading-relaxed">Pregúntame sobre el libro,<br/>el autor o los personajes</p>
-                                    <div className="mt-4 flex flex-col gap-2">
-                                        {[
-                                            '¿De qué trata este libro?',
-                                            '¿Quiénes son los personajes principales?',
-                                            currentChapterTitle
-                                                ? `📖 Resume el capítulo: "${currentChapterTitle}"`
-                                                : '📖 Resume lo que he leído hasta ahora',
-                                            '💡 Dame una reflexión sobre lo que he leído'
-                                        ].map(q => (
-                                            <button key={q} onClick={() => sendAiMessage(q)}
-                                                className="text-left text-[11px] px-3 py-2 rounded-xl bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition font-medium opacity-70 hover:opacity-100">
-                                                {q}
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
-                            {aiMessages.map((msg, i) => (
-                                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                    <div className={`max-w-[85%] px-3 py-2.5 rounded-2xl text-xs font-medium leading-relaxed ${msg.role === 'user' ? 'text-white rounded-tr-sm' : 'bg-black/5 dark:bg-white/5 rounded-tl-sm'}`}
-                                        style={msg.role === 'user' ? { backgroundColor: 'var(--highlight)' } : {}}>
-                                        {msg.content}
-                                    </div>
-                                </div>
-                            ))}
-                            {aiLoading && (
-                                <div className="flex justify-start">
-                                    <div className="bg-black/5 dark:bg-white/5 px-4 py-3 rounded-2xl rounded-tl-sm">
-                                        <div className="flex gap-1.5 items-center">
-                                            <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                                            <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                                            <span className="w-1.5 h-1.5 rounded-full bg-current opacity-60 animate-bounce" style={{ animationDelay: '300ms' }}></span>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-
-                        <div className="p-3 border-t flex-shrink-0" style={{ borderColor: 'var(--border-color)' }}>
-                            {!aiApiKey && (
-                                <p className="text-xs text-center opacity-50 mb-2 font-medium">Configura tu API key en ⚙️ Ajustes</p>
-                            )}
-                            <div className="flex gap-2">
-                                <input
-                                    ref={aiInputRef}
-                                    type="text"
-                                    value={aiInput}
-                                    onChange={e => setAiInput(e.target.value)}
-                                    onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendAiMessage()}
-                                    placeholder="Pregunta sobre el libro..."
-                                    disabled={!aiApiKey || aiLoading}
-                                    className="flex-1 bg-black/5 dark:bg-white/5 rounded-xl px-3 py-2 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition disabled:opacity-40"
-                                    style={{ color: 'var(--text-color)' }}
-                                />
-                                <button
-                                    onClick={sendAiMessage}
-                                    disabled={!aiApiKey || aiLoading || !aiInput.trim()}
-                                    className="px-3 py-2 rounded-xl text-white text-sm font-black transition disabled:opacity-40 flex-shrink-0"
-                                    style={{ backgroundColor: 'var(--highlight)' }}>
-                                    ›
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                )}
 
                 {/* ── SMART TOC FLOTANTE ── */}
                 {smartTocAddon && toc.length > 0 && (
@@ -1295,8 +1246,19 @@ import { Icons } from './icons';
                     </>
                 )}
 
+                {/* Zen mode exit hint */}
+                {zenMode && (
+                    <button
+                        onClick={() => setZenMode(false)}
+                        className="absolute top-3 left-1/2 -translate-x-1/2 z-50 px-5 py-1.5 rounded-full text-[11px] font-bold opacity-30 hover:opacity-100 hover:scale-105 transition-all duration-200 select-none"
+                        style={{ backgroundColor: 'rgba(0,0,0,0.55)', color: 'white', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.12)' }}
+                        title="Salir del modo Zen (Esc o Z)">
+                        · · ·
+                    </button>
+                )}
+
                 {/* ── BARRA DE PROGRESO ── */}
-                <div className="flex-shrink-0 relative" style={{ height: '28px', backgroundColor: 'var(--surface-bg)', borderTop: '1px solid var(--border-color)' }}>
+                {!zenMode && <div className="flex-shrink-0 relative" style={{ height: '28px', backgroundColor: 'var(--surface-bg)', borderTop: '1px solid var(--border-color)' }}>
                     <div className="h-1.5 absolute top-0 left-0 right-0" style={{ backgroundColor: 'var(--border-color)' }}>
                         <div
                             className="h-full transition-all duration-700 ease-out"
@@ -1307,7 +1269,7 @@ import { Icons } from './icons';
                         />
                     </div>
                     <div className="absolute inset-0 flex items-end justify-between px-4 pb-1">
-                        <span className="text-[10px] font-black opacity-40 uppercase tracking-widest truncate max-w-[50%]">{bookData.name}</span>
+                        <span className="text-[10px] font-black opacity-40 truncate max-w-[55%]">{currentChapterTitle || bookData.name}</span>
                         <div className="flex items-center gap-3">
                             {locationsGenerating && (
                                 <span className="text-[9px] font-bold opacity-40 animate-pulse">Calculando...</span>
@@ -1320,7 +1282,7 @@ import { Icons } from './icons';
                             <span className="text-[11px] font-black" style={{ color: 'var(--highlight)' }}>{currentPercent}%</span>
                         </div>
                     </div>
-                </div>
+                </div>}
             </div>
         );
     };

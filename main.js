@@ -3,6 +3,15 @@ const path = require('path');
 const fs = require('fs');
 const { execSync } = require('child_process');
 
+// ── Perf flags (set before app.ready) ────────────────────────────────────────
+// Enable GPU rasterization for smoother UI compositing
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+// Prefer integrated GPU for battery; remove this line if you want discrete GPU
+// app.commandLine.appendSwitch('force_low_power_gpu');
+// Use V8 code cache to speed up repeated JS parsing
+app.commandLine.appendSwitch('js-flags', '--harmony');
+// ─────────────────────────────────────────────────────────────────────────────
+
 let mainWindow = null;
 
 // Extraer ruta de archivo epub/mobi de los argumentos
@@ -35,10 +44,14 @@ function createWindow() {
         minHeight: 600,
         autoHideMenuBar: true,
         icon: path.join(__dirname, 'icon_build.ico'),
+        backgroundColor: '#0f172a', // paint background before renderer loads (reduces white flash)
         webPreferences: {
-            nodeIntegration: true,
-            contextIsolation: false,
-            webSecurity: false
+            nodeIntegration: false,
+            contextIsolation: true,
+            webSecurity: false,
+            preload: path.join(__dirname, 'preload.js'),
+            backgroundThrottling: false,   // keep timers/RAF accurate when window is hidden
+            v8CacheOptions: 'bypassHeatCheck', // cache V8 bytecode from first run
         }
     });
 

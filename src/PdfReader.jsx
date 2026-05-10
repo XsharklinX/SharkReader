@@ -125,6 +125,10 @@ const PdfReader = ({
         const containerW = containerRef.current?.clientWidth || 800;
 
         const doRender = async () => {
+            // dualPage just enabled: canvas2 may not be in the DOM yet — wait one frame
+            if (dualPage && !canvasRef2.current) {
+                await new Promise(r => requestAnimationFrame(r));
+            }
             await renderPage(currentPage, canvasRef.current, textLayerRef.current, renderTaskRef, containerW, isMountedCheck, dualPage);
             if (!isMounted) return;
             if (dualPage && currentPage + 1 <= totalPages && canvasRef2.current) {

@@ -20,6 +20,8 @@ const PAGE_TRANSITIONS = [
     { id: 'flip',  label: 'Voltear',  emoji: '📖' },
     { id: 'zoom',  label: 'Zoom',     emoji: '🔍' },
     { id: 'rise',  label: 'Subir',    emoji: '⬆️' },
+    { id: 'curl',  label: 'Rizar',    emoji: '🌀' },
+    { id: 'cover', label: 'Cubrir',   emoji: '🃏' },
 ];
 
 const SettingsPanel = ({
@@ -191,7 +193,7 @@ const SettingsPanel = ({
                 </div>
 
                 {/* ── SYNC CARPETA LOCAL ── */}
-                {typeof require !== 'undefined' && (
+                {typeof window !== 'undefined' && window.electronAPI && (
                     <div className="mb-6 pt-5 border-t" style={{ borderColor: 'var(--border-color)' }}>
                         <label className="block text-xs font-black mb-1 opacity-50 uppercase tracking-widest pl-1">📁 Sync de progreso local</label>
                         <p className="text-xs opacity-50 mb-3 px-1">Guarda tu progreso en una carpeta (Dropbox, OneDrive, etc.)</p>
@@ -205,8 +207,7 @@ const SettingsPanel = ({
                         <div className="flex gap-2">
                             <button onClick={async () => {
                                 try {
-                                    const { ipcRenderer } = require('electron');
-                                    const folder = await ipcRenderer.invoke('pick-folder');
+                                    const folder = await window.electronAPI.pickFolder();
                                     if (folder) { setSyncFolder(folder); setAssocStatus('sync_ok'); setTimeout(() => setAssocStatus(''), 2500); }
                                 } catch (e) { setAssocStatus('sync_err'); }
                             }} className="flex-1 py-2.5 rounded-xl font-bold text-sm text-white hover:brightness-110 transition"
@@ -220,15 +221,15 @@ const SettingsPanel = ({
                 )}
 
                 {/* ── ASOCIACIÓN DE ARCHIVOS ── */}
-                {typeof require !== 'undefined' && (
+                {typeof window !== 'undefined' && window.electronAPI && (
                     <div className="pt-5 border-t" style={{ borderColor: 'var(--border-color)' }}>
                         <label className="block text-xs font-black mb-3 opacity-50 uppercase tracking-widest pl-1">Asociación de archivos</label>
                         <div className="flex gap-2">
-                            <button onClick={async () => { try { const { ipcRenderer } = require('electron'); const r = await ipcRenderer.invoke('register-file-associations'); setAssocStatus(r.ok ? '✓ Registrado' : '✗ ' + r.msg); } catch (e) { setAssocStatus('✗ ' + e.message); } }}
+                            <button onClick={async () => { try { const r = await window.electronAPI.registerFileAssociations(); setAssocStatus(r.ok ? '✓ Registrado' : '✗ ' + r.msg); } catch (e) { setAssocStatus('✗ ' + e.message); } }}
                                 className="flex-1 py-3 rounded-xl font-bold text-sm text-white hover:brightness-110 transition" style={{ backgroundColor: 'var(--highlight)' }}>
                                 🔗 Registrar .epub y .mobi
                             </button>
-                            <button onClick={async () => { try { const { ipcRenderer } = require('electron'); await ipcRenderer.invoke('remove-file-associations'); setAssocStatus('✓ Eliminado'); } catch (e) { setAssocStatus('✗ ' + e.message); } }}
+                            <button onClick={async () => { try { await window.electronAPI.removeFileAssociations(); setAssocStatus('✓ Eliminado'); } catch (e) { setAssocStatus('✗ ' + e.message); } }}
                                 className="py-3 px-4 rounded-xl font-bold text-sm bg-black/5 dark:bg-white/5 hover:opacity-70 transition">
                                 Eliminar
                             </button>

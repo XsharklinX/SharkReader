@@ -20,6 +20,7 @@
     },
     "files": [
       "main.js",
+      "preload.js",
       "dist-renderer/**",
       "icon_build.ico",
       "node_modules/**",

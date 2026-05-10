@@ -75,14 +75,6 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, ini
         return result;
     }, [stats.minutesByDay]);
 
-    // ── Top 5 books ──────────────────────────────────────────────────────────
-    const topBooks = useMemo(() =>
-        [...books].filter(b => (b.readingMinutes || 0) > 0)
-            .sort((a, b) => (b.readingMinutes || 0) - (a.readingMinutes || 0))
-            .slice(0, 5),
-        [books]);
-    const maxBookTime = topBooks[0]?.readingMinutes || 1;
-
     // ── Weekly data (last 12 weeks) ───────────────────────────────────────
     const weeklyData = useMemo(() => {
         return Array.from({ length: 12 }, (_, w) => {
@@ -99,18 +91,12 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, ini
     }, [stats.minutesByDay]);
     const maxWeekly = Math.max(...weeklyData.map(w => w.minutes), 1);
 
-    // ── Hourly pattern ────────────────────────────────────────────────────
-    const hourlyData = useMemo(() =>
-        Array.from({ length: 24 }, (_, i) => ({ hour: i, minutes: (stats.hourlyLog || {})[i] || 0 })),
-        [stats.hourlyLog]);
-    const maxHourly = Math.max(...hourlyData.map(h => h.minutes), 1);
-
     // ── Summary stats ─────────────────────────────────────────────────────
     const totalMins = stats.timeRead || 0;
     const daysRead = Object.keys(stats.minutesByDay || {}).filter(k => (stats.minutesByDay[k] || 0) >= 5).length;
     const avgSession = daysRead > 0 ? Math.round(totalMins / daysRead) : 0;
     const booksFinished = books.filter(b => b.isFinished).length;
-    const wpm = totalMins > 10 ? Math.round(((stats.pagesTurned || 0) * 250) / totalMins) : 0;
+
     const totalBookmarks = books.reduce((s, b) => s + (b.bookmarks?.length || 0), 0);
 
     // ── Reading personality ───────────────────────────────────────────────
@@ -118,13 +104,12 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, ini
         const hl = stats.hourlyLog || {};
         const night = (hl[22] || 0) + (hl[23] || 0) + (hl[0] || 0) + (hl[1] || 0);
         const morning = (hl[5] || 0) + (hl[6] || 0) + (hl[7] || 0) + (hl[8] || 0);
-        if (wpm >= 300) return { title: 'Lector Veloz', emoji: '🚀', color: '#a855f7' };
         if (night > morning && night > 5) return { title: 'Búho Nocturno', emoji: '🦉', color: '#6366f1' };
         if (morning > night && morning > 5) return { title: 'Madrugador', emoji: '🌅', color: '#f59e0b' };
         if (avgSession >= 60) return { title: 'Lector de Maratón', emoji: '⚡', color: '#22c55e' };
         if (stats.streak >= 7) return { title: 'Lector Constante', emoji: '🔥', color: '#f97316' };
         return { title: 'Explorador', emoji: '📚', color: 'var(--highlight)' };
-    }, [stats.hourlyLog, wpm, avgSession, stats.streak]);
+    }, [stats.hourlyLog, avgSession, stats.streak]);
 
     // ── Month labels for heatmap ──────────────────────────────────────────
     const monthLabels = useMemo(() => {
@@ -178,12 +163,11 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, ini
                 {activeTab === 'stats' && (
                     <div className="p-5 space-y-5 max-w-5xl mx-auto w-full">
                         {/* Summary cards */}
-                        <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                             {[
                                 { label: 'Tiempo Total', value: fmtTime(totalMins), icon: '⏱️', color: 'var(--highlight)' },
                                 { label: 'Terminados', value: booksFinished, icon: '✅', color: '#22c55e' },
                                 { label: 'Racha', value: `${stats.streak || 0}d`, icon: '🔥', color: '#f97316' },
-                                { label: 'Velocidad', value: wpm > 0 ? `${wpm}wpm` : '—', icon: '🚀', color: '#a855f7' },
                                 { label: 'Sesión Media', value: fmtTime(avgSession), icon: '📈', color: '#3b82f6' },
                                 { label: 'Anotaciones', value: totalBookmarks, icon: '🔖', color: '#f59e0b' },
                             ].map(s => (
@@ -240,55 +224,6 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, ini
                             </div>
                         </div>
 
-                        {/* Top 5 + Hourly */}
-                        <div className="grid md:grid-cols-2 gap-5">
-                            {/* Top 5 */}
-                            <div className="rounded-2xl p-5" style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}>
-                                <h2 className="font-black text-sm mb-4 opacity-80">🏆 Top 5 por Tiempo Leído</h2>
-                                {topBooks.length === 0 ? (
-                                    <p className="text-sm opacity-40 italic text-center py-6">Aún no hay datos.</p>
-                                ) : (
-                                    <div className="space-y-3">
-                                        {topBooks.map((book, i) => {
-                                            const pct = Math.round((book.readingMinutes / maxBookTime) * 100);
-                                            return (
-                                                <div key={book.id} className="space-y-1.5">
-                                                    <div className="flex justify-between items-center gap-2">
-                                                        <span className="text-xs font-bold truncate flex-1">{i + 1}. {book.name}</span>
-                                                        <span className="text-xs font-black opacity-60 flex-shrink-0">{fmtTime(book.readingMinutes)}</span>
-                                                    </div>
-                                                    <div className="w-full h-1.5 rounded-full" style={{ backgroundColor: 'var(--border-color)' }}>
-                                                        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: 'linear-gradient(90deg, var(--progress-bg), var(--highlight))' }} />
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Hourly pattern */}
-                            <div className="rounded-2xl p-5" style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}>
-                                <h2 className="font-black text-sm mb-4 opacity-80">🕐 ¿Cuándo Lees Más?</h2>
-                                {maxHourly <= 0 ? (
-                                    <p className="text-sm opacity-40 italic text-center py-6">Aún sin datos horarios.</p>
-                                ) : (
-                                    <div className="flex items-end gap-0.5" style={{ height: 90 }}>
-                                        {hourlyData.map(h => (
-                                            <div key={h.hour} className="flex-1 flex flex-col items-center group relative" style={{ height: '100%', justifyContent: 'flex-end' }}>
-                                                <div className="w-full rounded-t-sm"
-                                                    style={{ height: `${Math.max(3, (h.minutes / maxHourly) * 72)}px`, background: h.minutes > 0 ? 'linear-gradient(to top, var(--progress-bg), var(--highlight))' : 'rgba(128,128,128,0.12)' }} />
-                                                {h.minutes > 0 && (
-                                                    <div className="absolute bottom-full mb-1 bg-slate-900 text-white text-[8px] px-1 py-0.5 rounded font-black opacity-0 group-hover:opacity-100 transition pointer-events-none whitespace-nowrap z-10">{h.minutes}m</div>
-                                                )}
-                                                {h.hour % 6 === 0 && <div className="text-[8px] opacity-30 font-bold mt-0.5">{h.hour}h</div>}
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-
                         {/* Weekly line chart */}
                         <div className="rounded-2xl p-5" style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}>
                             <h2 className="font-black text-sm mb-4 opacity-80">📈 Minutos por Semana — Últimas 12</h2>
@@ -323,44 +258,53 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, ini
                             })()}
                         </div>
 
-                        {/* Book comparison table */}
-                        <div className="rounded-2xl p-5" style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}>
-                            <h2 className="font-black text-sm mb-4 opacity-80">📚 Comparativa de Libros</h2>
-                            {books.filter(b => b.lastReadDate > 0).length === 0 ? (
-                                <p className="text-sm opacity-40 italic text-center py-4">Abre libros para ver comparativas.</p>
-                            ) : (
-                                <div className="overflow-x-auto">
-                                    <table className="w-full text-xs min-w-[480px]">
-                                        <thead>
-                                            <tr style={{ opacity: 0.4 }}>
-                                                <th className="text-left pb-3 font-black uppercase tracking-wider">Libro</th>
-                                                <th className="text-right pb-3 font-black uppercase tracking-wider">Progreso</th>
-                                                <th className="text-right pb-3 font-black uppercase tracking-wider">Tiempo</th>
-                                                <th className="text-right pb-3 font-black uppercase tracking-wider">WPM</th>
-                                                <th className="text-right pb-3 font-black uppercase tracking-wider">Estado</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {[...books].filter(b => b.lastReadDate > 0)
-                                                .sort((a, b) => (b.readingMinutes || 0) - (a.readingMinutes || 0))
-                                                .slice(0, 12)
-                                                .map(book => {
-                                                    const wpmBook = (book.readingMinutes || 0) > 5 ? Math.round(((book.progress || 0) / 100 * 60000) / book.readingMinutes) : 0;
-                                                    return (
-                                                        <tr key={book.id} className="border-t" style={{ borderColor: 'var(--border-color)' }}>
-                                                            <td className="py-2 font-semibold max-w-[160px] truncate pr-4">{book.name}</td>
-                                                            <td className="py-2 text-right font-black" style={{ color: 'var(--highlight)' }}>{book.progress || 0}%</td>
-                                                            <td className="py-2 text-right opacity-60">{fmtTime(book.readingMinutes)}</td>
-                                                            <td className="py-2 text-right opacity-60">{wpmBook > 0 ? wpmBook : '—'}</td>
-                                                            <td className="py-2 text-right">{book.isFinished ? '✅' : book.lastReadDate > 0 ? '📖' : '📚'}</td>
-                                                        </tr>
-                                                    );
-                                                })}
-                                        </tbody>
-                                    </table>
+                        {/* Annual goal projection */}
+                        {yearlyGoal > 0 && (() => {
+                            const today = new Date();
+                            const dayOfYear = Math.floor((today - new Date(today.getFullYear(), 0, 1)) / 86400000) + 1;
+                            const daysInYear = today.getFullYear() % 4 === 0 ? 366 : 365;
+                            const daysLeft = daysInYear - dayOfYear;
+                            const rate = dayOfYear > 0 ? booksFinished / dayOfYear : 0;
+                            const projected = Math.round(rate * daysInYear);
+                            const pctGoal = Math.min(100, Math.round((booksFinished / yearlyGoal) * 100));
+                            const onTrack = projected >= yearlyGoal;
+                            const booksNeeded = Math.max(0, yearlyGoal - booksFinished);
+                            const daysPerBook = booksNeeded > 0 && daysLeft > 0 ? Math.round(daysLeft / booksNeeded) : null;
+                            return (
+                                <div className="rounded-2xl p-5" style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}>
+                                    <div className="flex items-center justify-between mb-3">
+                                        <h2 className="font-black text-sm opacity-80">🎯 Proyección de Meta Anual</h2>
+                                        <span className="text-xs font-black px-2 py-0.5 rounded-full" style={{ backgroundColor: onTrack ? 'rgba(34,197,94,0.15)' : 'rgba(249,115,22,0.15)', color: onTrack ? '#22c55e' : '#f97316' }}>
+                                            {onTrack ? 'En camino ✓' : 'Necesitas acelerar'}
+                                        </span>
+                                    </div>
+                                    <div className="flex items-end gap-6 mb-4">
+                                        <div>
+                                            <div className="text-3xl font-black" style={{ color: 'var(--highlight)' }}>{booksFinished}<span className="text-base opacity-50"> / {yearlyGoal}</span></div>
+                                            <div className="text-[10px] font-bold opacity-40 uppercase tracking-wider">libros terminados</div>
+                                        </div>
+                                        <div>
+                                            <div className="text-2xl font-black" style={{ color: onTrack ? '#22c55e' : '#f97316' }}>{projected}</div>
+                                            <div className="text-[10px] font-bold opacity-40 uppercase tracking-wider">proyección fin de año</div>
+                                        </div>
+                                        {daysPerBook !== null && (
+                                            <div>
+                                                <div className="text-2xl font-black" style={{ color: '#a855f7' }}>{daysPerBook}d</div>
+                                                <div className="text-[10px] font-bold opacity-40 uppercase tracking-wider">por libro para cumplir</div>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="w-full h-2 rounded-full" style={{ backgroundColor: 'var(--border-color)' }}>
+                                        <div className="h-full rounded-full transition-all" style={{ width: `${pctGoal}%`, background: onTrack ? 'linear-gradient(90deg,#22c55e,#16a34a)' : 'linear-gradient(90deg,#f97316,#ea580c)' }} />
+                                    </div>
+                                    <div className="flex justify-between mt-1">
+                                        <span className="text-[9px] opacity-40">{pctGoal}% completado</span>
+                                        <span className="text-[9px] opacity-40">{daysLeft}d restantes en el año</span>
+                                    </div>
                                 </div>
-                            )}
-                        </div>
+                            );
+                        })()}
+
                     </div>
                 )}
 

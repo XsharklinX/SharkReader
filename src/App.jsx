@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import ePub from 'epubjs';
 import { Icons, renderAvatar } from './icons';
 import { translations, languageNames, RANDOM_EMOJIS } from './translations';
-import { safeParse, loadFilesFromDB, saveFileToDB, deleteFileFromDB, fileToBase64 } from './db';
+import { safeParse, loadFilesFromDB, saveFileToDB, deleteFileFromDB, fileToBase64, saveAppData, loadAppData } from './db';
 import EpubReader from './EpubReader';
 import PdfReader from './PdfReader';
 import AnalyticsView from './AnalyticsView';
@@ -12,133 +12,10 @@ import SettingsPanel from './SettingsPanel';
 import UserMenu from './UserMenu';
 import { checkNewAchievements, ACHIEVEMENTS, RARITY } from './achievements';
 import { useBooks } from './hooks/useBooks';
+import BookCard from './BookCard';
+import TabBar from './TabBar';
+import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
 
-    // ─────────────────────────────────────────
-    // EPUB ERROR BOUNDARY
-    // ─────────────────────────────────────────
-    class EpubReaderBoundary extends React.Component {
-        constructor(props) { super(props); this.state = { error: null }; }
-        static getDerivedStateFromError(error) { return { error }; }
-        componentDidCatch(error, info) { console.error('[EpubReaderBoundary]', error, info); }
-        render() {
-            if (this.state.error) {
-                return (
-                    <div className="flex flex-col items-center justify-center h-full gap-5 p-8 text-center" style={{ backgroundColor: 'var(--bg-color)', color: 'var(--text-color)' }}>
-                        <span className="text-6xl">📕</span>
-                        <h2 className="text-xl font-black">Error inesperado en el lector</h2>
-                        <p className="text-sm opacity-60 max-w-sm font-medium">{this.state.error.message}</p>
-                        <button onClick={this.props.onClose}
-                            className="px-6 py-3 rounded-2xl font-black text-sm text-white"
-                            style={{ backgroundColor: 'var(--highlight)' }}>
-                            ← Volver a la biblioteca
-                        </button>
-                    </div>
-                );
-            }
-            return this.props.children;
-        }
-    }
-
-    // ─────────────────────────────────────────
-    // BOOK CARD — memoized + lazy cover load
-    // ─────────────────────────────────────────
-    const BookCard = React.memo(({ book, isOpen, onOpen, onContextMenu }) => {
-        const cardRef = useRef(null);
-        const [coverLoaded, setCoverLoaded] = useState(false);
-
-        useEffect(() => {
-            if (!book.coverUrl || !cardRef.current) return;
-            const obs = new IntersectionObserver(
-                ([e]) => { if (e.isIntersecting) { setCoverLoaded(true); obs.disconnect(); } },
-                { rootMargin: '200px' }
-            );
-            obs.observe(cardRef.current);
-            return () => obs.disconnect();
-        }, [book.coverUrl]);
-
-        const showCover = coverLoaded && book.coverUrl;
-        return (
-            <div ref={cardRef} className={`book-container ${isOpen ? 'ring-2 ring-[var(--highlight)] ring-offset-2 ring-offset-[var(--bg-color)] rounded-lg' : ''}`}
-                onClick={() => onOpen(book.id)} onContextMenu={(e) => onContextMenu(e, book)}>
-                {book.isFav && <div className="favorite-badge"><Icons.Heart fill="white" className="w-3 h-3" /></div>}
-                <div className={`book-cover ${showCover ? 'has-image' : ''} ${book.loading ? 'skeleton-loader' : ''}`}
-                    style={{ backgroundImage: showCover ? `url(${book.coverUrl})` : 'none', backgroundColor: showCover ? 'transparent' : book.color }}>
-                    {!showCover && !book.loading && <span className="px-3 leading-snug">{book.name}</span>}
-                    {!book.loading && (book.progress > 0 || book.lastReadDate > 0) && (
-                        <div className="cover-progress-wrapper">
-                            <div className="cover-progress-fill" style={{ width: `${book.progress || 0}%` }}></div>
-                            <div className="cover-progress-text">{book.progress || 0}%</div>
-                        </div>
-                    )}
-                </div>
-                <div className="book-info-under">
-                    <div className="title" title={book.name}>{book.name}</div>
-                    <div className="author" title={book.author}>{book.author}</div>
-                    {book.series && <div className="text-[10px] opacity-45 mt-0.5 truncate italic">{book.series}{book.seriesIndex ? ` #${book.seriesIndex}` : ''}</div>}
-                    {book.rating > 0 && <div className="text-xs mt-1" style={{ color: '#f59e0b', letterSpacing: '-1px' }}>{'★'.repeat(book.rating)}{'☆'.repeat(5 - book.rating)}</div>}
-                </div>
-            </div>
-        );
-    });
-
-    // ─────────────────────────────────────────
-    // TAB BAR
-    // ─────────────────────────────────────────
-    const TabBar = React.memo(({ tabs, activeTabId, books, onSwitch, onClose, onGoToLibrary }) => (
-        <div className="flex items-stretch flex-shrink-0 overflow-x-auto overflow-y-hidden select-none"
-            style={{ height: '36px', backgroundColor: 'rgba(0,0,0,0.35)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-            {tabs.map(tab => {
-                const book = books.find(b => b.id === tab.bookId);
-                const isActive = tab.id === activeTabId;
-                return (
-                    <div key={tab.id}
-                        title={book?.name || 'Libro'}
-                        className={`flex items-center gap-1.5 px-3 flex-shrink-0 max-w-[180px] min-w-[80px] cursor-pointer group border-r border-white/10 relative transition-all ${isActive ? 'bg-white/15' : 'hover:bg-white/8'}`}
-                        onClick={() => onSwitch(tab.id)}>
-                        {isActive && <div className="absolute bottom-0 left-0 right-0 h-0.5" style={{ backgroundColor: 'var(--highlight)' }} />}
-                        <span className="text-white text-[11px] font-semibold truncate flex-1 leading-none">
-                            {book?.name || 'Cargando…'}
-                        </span>
-                        <button
-                            onClick={(e) => onClose(tab.id, e)}
-                            className="opacity-0 group-hover:opacity-60 hover:!opacity-100 text-white hover:bg-white/20 rounded w-4 h-4 flex items-center justify-center flex-shrink-0 transition text-xs leading-none">
-                            ×
-                        </button>
-                    </div>
-                );
-            })}
-            <button
-                onClick={onGoToLibrary}
-                title="Abrir biblioteca / añadir libro"
-                className="px-3 h-full text-white/50 hover:text-white hover:bg-white/10 transition flex-shrink-0 flex items-center justify-center text-xl font-light leading-none">
-                +
-            </button>
-        </div>
-    ));
-
-    // ─────────────────────────────────────────
-    // ERROR BOUNDARY
-    // ─────────────────────────────────────────
-    class ErrorBoundary extends React.Component {
-        constructor(props) { super(props); this.state = { hasError: false, errorInfo: null }; }
-        static getDerivedStateFromError(error) { return { hasError: true, errorInfo: error }; }
-        componentDidCatch(error, info) { console.error("ErrorBoundary:", error, info); }
-        render() {
-            if (this.state.hasError) return (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0f172a', color: 'white', textAlign: 'center', padding: '20px' }}>
-                    <h1 style={{ fontSize: '2.5rem', color: '#ef4444', marginBottom: '10px' }}>¡Error Crítico! 🦈</h1>
-                    <p style={{ background: 'rgba(255,0,0,0.1)', padding: '15px', borderRadius: '10px', fontFamily: 'monospace', fontSize: '12px', marginBottom: '30px' }}>
-                        {this.state.errorInfo && this.state.errorInfo.toString()}
-                    </p>
-                    <button onClick={() => { localStorage.clear(); indexedDB.deleteDatabase('SharkReaderDB_v4'); window.location.reload(); }}
-                        style={{ padding: '15px 30px', background: '#ef4444', border: 'none', borderRadius: '12px', color: 'white', fontSize: '1.1rem', fontWeight: 'bold', cursor: 'pointer' }}>
-                        Resetear Datos y Reiniciar
-                    </button>
-                </div>
-            );
-            return this.props.children;
-        }
-    }
 
     // ─────────────────────────────────────────
     // APP PRINCIPAL
@@ -238,7 +115,9 @@ import { useBooks } from './hooks/useBooks';
         const folderInputRef = useRef(null);
         const importInputRef = useRef(null);
         const avatarInputRef = useRef(null);
-        const persistTimerRef = useRef(null);
+        const persistTimerRef = useRef(null);       // books debounce
+        const persistStatsRef = useRef(null);       // stats debounce
+        const persistSettingsRef = useRef(null);    // settings debounce
         const activeBookIdRef = useRef(null);
 
         // ── LOGROS / WORKSHOP / ANALYTICS ──
@@ -337,29 +216,67 @@ import { useBooks } from './hooks/useBooks';
             });
         }, []);
 
-        // Persistencia debounced (800ms)
+        // Cargar datos pesados desde IDB (async, override de localStorage si hay datos más recientes)
+        useEffect(() => {
+            loadAppData('stats').then(s => { if (s) setStats(s); });
+            loadAppData('journalEntries').then(j => { if (j) setJournalEntries(j); });
+            loadAppData('vocabulary').then(v => { if (v) setVocabulary(v); });
+        }, []);
+
+        // ── PERSIST: books + categories (debounce 2000ms + idle so it never blocks reading)
         useEffect(() => {
             if (!isDbLoaded) return;
-            if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+            clearTimeout(persistTimerRef.current);
             persistTimerRef.current = setTimeout(() => {
-                const metaToSave = {};
-                books.forEach(b => {
-                    if (b.loading) return;
-                    const k = b.originalTitle + '|' + b.originalAuthor;
-                    metaToSave[k] = {
-                        progress: b.progress, lastLocation: b.lastLocation, lastReadDate: b.lastReadDate,
-                        bookmarks: b.bookmarks, notes: b.notes || '',
-                        isFinished: b.isFinished || false, dateStarted: b.dateStarted || null,
-                        dateFinished: b.dateFinished || null, readingMinutes: b.readingMinutes || 0,
-                        category: b.category, customTitle: b.name,
-                        customAuthor: b.author, customCover: b.coverUrl, description: b.description,
-                        publisher: b.publisher, tags: b.tags, isFav: b.isFav, rating: b.rating || 0,
-                        dateAdded: b.dateAdded, series: b.series || '', seriesIndex: b.seriesIndex || 0
-                    };
-                });
-                localStorage.setItem('sharkreader_meta', JSON.stringify(metaToSave));
-                localStorage.setItem('sharkreader_categories', JSON.stringify(customCategories));
+                // Use requestIdleCallback so JSON serialization doesn't block page turns
+                const doSave = () => {
+                    const metaToSave = {};
+                    books.forEach(b => {
+                        if (b.loading) return;
+                        const k = b.originalTitle + '|' + b.originalAuthor;
+                        metaToSave[k] = {
+                            progress: b.progress, lastLocation: b.lastLocation, lastReadDate: b.lastReadDate,
+                            bookmarks: b.bookmarks, notes: b.notes || '',
+                            isFinished: b.isFinished || false, dateStarted: b.dateStarted || null,
+                            dateFinished: b.dateFinished || null, readingMinutes: b.readingMinutes || 0,
+                            category: b.category, customTitle: b.name,
+                            customAuthor: b.author, customCover: b.coverUrl, description: b.description,
+                            publisher: b.publisher, tags: b.tags, isFav: b.isFav, rating: b.rating || 0,
+                            dateAdded: b.dateAdded, series: b.series || '', seriesIndex: b.seriesIndex || 0
+                        };
+                    });
+                    localStorage.setItem('sharkreader_meta', JSON.stringify(metaToSave));
+                    localStorage.setItem('sharkreader_categories', JSON.stringify(customCategories));
+                    if (syncFolder && window.electronAPI) {
+                        const syncData = JSON.stringify({ meta: metaToSave, exportedAt: new Date().toISOString() }, null, 2);
+                        window.electronAPI.writeSyncFile(syncFolder, syncData).catch(() => {});
+                    }
+                };
+                if ('requestIdleCallback' in window) {
+                    requestIdleCallback(doSave, { timeout: 5000 });
+                } else {
+                    doSave();
+                }
+            }, 2000);
+            return () => clearTimeout(persistTimerRef.current);
+        }, [books, customCategories, isDbLoaded, syncFolder]);
+
+        // ── PERSIST: stats only (changes every page turn + every 60s — debounce 3000ms)
+        useEffect(() => {
+            if (!isDbLoaded) return;
+            clearTimeout(persistStatsRef.current);
+            persistStatsRef.current = setTimeout(() => {
                 localStorage.setItem('sharkreader_stats', JSON.stringify(stats));
+                saveAppData('stats', stats);
+            }, 3000);
+            return () => clearTimeout(persistStatsRef.current);
+        }, [stats, isDbLoaded]);
+
+        // ── PERSIST: settings (change only on user interaction — debounce 1000ms)
+        useEffect(() => {
+            if (!isDbLoaded) return;
+            clearTimeout(persistSettingsRef.current);
+            persistSettingsRef.current = setTimeout(() => {
                 if (userProfile) localStorage.setItem('sharkreader_user', JSON.stringify(userProfile));
                 else localStorage.removeItem('sharkreader_user');
                 localStorage.setItem('sharkreader_theme', JSON.stringify(theme));
@@ -368,6 +285,7 @@ import { useBooks } from './hooks/useBooks';
                 localStorage.setItem('sharkreader_layout', JSON.stringify(readLayout));
                 localStorage.setItem('sharkreader_warm', JSON.stringify(warmMode));
                 localStorage.setItem('sharkreader_vocab', JSON.stringify(vocabulary));
+                saveAppData('vocabulary', vocabulary);
                 localStorage.setItem('sharkreader_ai_provider', JSON.stringify(aiProvider));
                 localStorage.setItem('sharkreader_ai_key', JSON.stringify(aiApiKey));
                 localStorage.setItem('sharkreader_sync_folder', JSON.stringify(syncFolder));
@@ -377,17 +295,11 @@ import { useBooks } from './hooks/useBooks';
                 localStorage.setItem('sharkreader_achievements', JSON.stringify(achievements));
                 localStorage.setItem('sharkreader_addons', JSON.stringify(addons));
                 localStorage.setItem('sharkreader_journal', JSON.stringify(journalEntries));
-                // Escribir sync a carpeta local si está configurada
-                if (syncFolder) {
-                    try {
-                        const { ipcRenderer } = require('electron');
-                        const syncData = JSON.stringify({ meta: metaToSave, stats: safeParse('sharkreader_stats', {}), exportedAt: new Date().toISOString() }, null, 2);
-                        ipcRenderer.invoke('write-sync-file', syncFolder, syncData);
-                    } catch (_) {}
-                }
-            }, 800);
-            return () => { if (persistTimerRef.current) clearTimeout(persistTimerRef.current); };
-        }, [books, customCategories, stats, userProfile, isDbLoaded, theme, lang, readFlow, readLayout, warmMode, vocabulary, aiProvider, aiApiKey]);
+                saveAppData('journalEntries', journalEntries);
+            }, 1000);
+            return () => clearTimeout(persistSettingsRef.current);
+        }, [userProfile, theme, lang, readFlow, readLayout, warmMode, vocabulary, aiProvider, aiApiKey,
+            syncFolder, libraryView, dailyGoalMins, yearlyGoal, achievements, addons, journalEntries, isDbLoaded]);
 
         // Cleanup blob URLs al desmontar
         useEffect(() => {
@@ -405,18 +317,16 @@ import { useBooks } from './hooks/useBooks';
 
         // IPC: abrir archivo desde Windows (asociación de archivos)
         useEffect(() => {
-            try {
-                const { ipcRenderer } = require('electron');
-                const handler = async (_e, filePath) => {
-                    if (!filePath) return;
-                    const resp = await fetch(filePath.startsWith('file://') ? filePath : `file:///${filePath.replace(/\\/g, '/')}`);
-                    const blob = await resp.blob();
-                    const file = new File([blob], filePath.split(/[\\/]/).pop(), { type: blob.type });
-                    await processFiles([file]);
-                };
-                ipcRenderer.on('open-file', handler);
-                return () => ipcRenderer.removeListener('open-file', handler);
-            } catch (_) { }
+            if (!window.electronAPI) return;
+            const handler = async (filePath) => {
+                if (!filePath) return;
+                const resp = await fetch(filePath.startsWith('file://') ? filePath : `file:///${filePath.replace(/\\/g, '/')}`);
+                const blob = await resp.blob();
+                const file = new File([blob], filePath.split(/[\\/]/).pop(), { type: blob.type });
+                await processFiles([file]);
+            };
+            window.electronAPI.onOpenFile(handler);
+            return () => window.electronAPI.offOpenFile();
         }, []);
 
         // Racha de lectura + minutos por libro
@@ -426,11 +336,13 @@ import { useBooks } from './hooks/useBooks';
                 interval = setInterval(() => {
                     const today = new Date();
                     const todayStr = today.toDateString();
-                    // Actualizar stats globales
+                    // Actualizar stats globales — un solo setStats para evitar dos re-renders por minuto
+                    const hour = today.getHours();
                     setStats(prev => {
-                        let { timeRead = 0, pagesTurned = 0, streak = 0, currentDailyMins = 0, lastActiveDate = '', streakSavers = 0, history = {}, minutesByDay = {} } = prev;
+                        let { timeRead = 0, pagesTurned = 0, streak = 0, currentDailyMins = 0, lastActiveDate = '', streakSavers = 0, history = {}, minutesByDay = {}, hourlyLog = {} } = prev;
                         timeRead++;
                         minutesByDay = { ...minutesByDay, [todayStr]: (minutesByDay[todayStr] || 0) + 1 };
+                        hourlyLog = { ...hourlyLog, [hour]: (hourlyLog[hour] || 0) + 1 };
                         if (lastActiveDate !== todayStr) { currentDailyMins = 1; lastActiveDate = todayStr; }
                         else { currentDailyMins++; }
                         if (currentDailyMins === 5 && history[todayStr] !== 'read') {
@@ -455,14 +367,8 @@ import { useBooks } from './hooks/useBooks';
                             history[todayStr] = 'read';
                             if (streak > 0 && streak % 5 === 0) streakSavers = Math.min(2, streakSavers + 1);
                         }
-                        return { timeRead, pagesTurned, streak, currentDailyMins, lastActiveDate, streakSavers, history, minutesByDay };
+                        return { timeRead, pagesTurned, streak, currentDailyMins, lastActiveDate, streakSavers, history, minutesByDay, hourlyLog };
                     });
-                    // Rastrear hora del día para analíticas
-                    const hour = new Date().getHours();
-                    setStats(prev => ({
-                        ...prev,
-                        hourlyLog: { ...(prev.hourlyLog || {}), [hour]: ((prev.hourlyLog || {})[hour] || 0) + 1 }
-                    }));
                     // Acumular minuto en el libro activo
                     if (activeBookIdRef.current) {
                         setBooks(prev => prev.map(b => {
@@ -485,15 +391,16 @@ import { useBooks } from './hooks/useBooks';
             activeBookIdRef.current = tab?.bookId || null;
         }, [activeTabId, tabs]);
 
-        // Detectar aniversarios de lectura al abrir libro
+        // Detectar aniversarios de lectura al abrir libro (solo para libros ya empezados)
         useEffect(() => {
             if (!lastReadId) return;
             const bk = books.find(b => b.id === lastReadId);
-            if (!bk || !bk.dateAdded) return;
-            const daysSince = Math.floor((Date.now() - bk.dateAdded) / 86400000);
+            // Solo mostrar si el libro ha sido leído al menos 1 minuto
+            if (!bk || !bk.dateStarted || !(bk.readingMinutes > 0)) return;
+            const daysSince = Math.floor((Date.now() - bk.dateStarted) / 86400000);
             const milestones = [7, 14, 30, 60, 100, 180, 365];
             if (milestones.includes(daysSince)) {
-                setAnniversaryInfo({ name: bk.name, days: daysSince });
+                setAnniversaryInfo({ name: bk.name, days: daysSince, readingMinutes: bk.readingMinutes || 0 });
             }
         }, [lastReadId]); // eslint-disable-line
 
@@ -801,8 +708,13 @@ import { useBooks } from './hooks/useBooks';
         const updateBookLocation = useCallback((bookId, cfi, percent) => {
             setBooks(prev => {
                 const book = prev.find(b => b.id === bookId);
-                if (!book || (book.lastLocation === cfi && book.progress === percent)) return prev;
-                return prev.map(b => b.id === bookId ? { ...b, lastLocation: cfi, progress: percent, lastReadDate: Date.now() } : b);
+                if (!book) return prev;
+                const hasPercent = percent !== null && percent !== undefined;
+                const newProgress = hasPercent ? percent : book.progress;
+                if (book.lastLocation === cfi && book.progress === newProgress) return prev;
+                return prev.map(b => b.id === bookId
+                    ? { ...b, lastLocation: cfi, progress: newProgress, lastReadDate: Date.now() }
+                    : b);
             });
             // Clear the initial CFI target once relocated
             setTabTargetCfi(prev => {
@@ -1194,17 +1106,24 @@ import { useBooks } from './hooks/useBooks';
                                 {anniversaryInfo.days >= 365 ? '🎉' : anniversaryInfo.days >= 100 ? '🏆' : anniversaryInfo.days >= 30 ? '🔥' : '📅'}
                             </div>
                             <h2 className="text-2xl font-black mb-2" style={{ color: 'var(--highlight)' }}>
-                                {anniversaryInfo.days >= 365 ? '¡Un año!' : `¡${anniversaryInfo.days} días!`}
+                                {anniversaryInfo.days >= 365 ? '¡Un año leyendo este libro!' : `¡${anniversaryInfo.days} días leyendo!`}
                             </h2>
-                            <p className="opacity-70 text-sm mb-6 leading-relaxed">
+                            <p className="opacity-70 text-sm mb-4 leading-relaxed">
                                 Llevas <b>{anniversaryInfo.days} días</b> con<br/>
-                                <span className="font-bold" style={{ color: 'var(--highlight)' }}>"{anniversaryInfo.name}"</span><br/>
-                                en tu biblioteca. ¡Sigue leyendo!
+                                <span className="font-bold" style={{ color: 'var(--highlight)' }}>"{anniversaryInfo.name}"</span>
                             </p>
+                            <div className="bg-black/5 dark:bg-white/5 rounded-2xl px-6 py-3 mb-6 inline-block">
+                                <span className="text-2xl font-black" style={{ color: 'var(--highlight)' }}>
+                                    {anniversaryInfo.readingMinutes >= 60
+                                        ? `${Math.floor(anniversaryInfo.readingMinutes / 60)}h ${anniversaryInfo.readingMinutes % 60}m`
+                                        : `${anniversaryInfo.readingMinutes} min`}
+                                </span>
+                                <p className="text-[11px] font-bold opacity-50 uppercase tracking-widest mt-1">de lectura real</p>
+                            </div>
                             <button onClick={() => setAnniversaryInfo(null)}
                                 className="w-full py-3 rounded-xl font-bold text-white transition hover:brightness-110"
                                 style={{ backgroundColor: 'var(--highlight)' }}>
-                                ¡A leer! 📖
+                                ¡Seguir leyendo! 📖
                             </button>
                         </div>
                     </div>
@@ -1830,7 +1749,6 @@ import { useBooks } from './hooks/useBooks';
                                     <div className="grid grid-cols-2 gap-3 text-sm">
                                         {[
                                             { label: 'Tiempo leído', value: activeBookModal.readingMinutes >= 60 ? `${Math.floor(activeBookModal.readingMinutes / 60)}h ${activeBookModal.readingMinutes % 60}m` : `${activeBookModal.readingMinutes || 0} min` },
-                                            { label: 'Vel. aprox.', value: activeBookModal.readingMinutes > 5 ? `~${Math.round(((activeBookModal.progress || 0) / 100 * 60000) / activeBookModal.readingMinutes)} WPM` : '—' },
                                             { label: 'Inicio', value: activeBookModal.dateStarted ? new Date(activeBookModal.dateStarted).toLocaleDateString() : '—' },
                                             { label: 'Fin', value: activeBookModal.dateFinished ? new Date(activeBookModal.dateFinished).toLocaleDateString() : '—' }
                                         ].map(s => (

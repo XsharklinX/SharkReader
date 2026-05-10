@@ -154,6 +154,7 @@ body {
     align-items: center;
     cursor: pointer;
     transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    will-change: transform;
 }
 
 .book-container:hover {
@@ -473,11 +474,17 @@ body {
     border-radius: 10px;
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 }
+.netflix-grid .book-info-under {
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.22s ease, transform 0.22s ease;
+}
 .netflix-grid .book-container:hover {
     transform: translateY(-10px) scale(1.03);
 }
 .netflix-grid .book-container:hover .book-info-under {
     opacity: 1;
+    transform: translateY(0);
 }
 
 /* ── ACHIEVEMENT TOAST ── */
@@ -519,6 +526,12 @@ body {
 }
 
 /* ── PAGE TRANSITIONS ─────────────────────────────────────────────────────── */
+
+/* Pre-promote to GPU composite layer when any transition class is active */
+[class*="pt-fade-"],[class*="pt-slide-"],[class*="pt-flip-"],
+[class*="pt-zoom-"],[class*="pt-rise-"],[class*="pt-curl-"],[class*="pt-cover-"] {
+    will-change: transform, opacity;
+}
 
 /* --- FADE --- */
 @keyframes pt-fade-out { to { opacity: 0; } }
@@ -578,3 +591,29 @@ body {
 .pt-rise-exit-prev  { animation: pt-rise-exit-prev  0.14s ease-in forwards; }
 .pt-rise-enter-next { animation: pt-rise-enter-next 0.26s cubic-bezier(0.16,1,0.3,1) forwards; }
 .pt-rise-enter-prev { animation: pt-rise-enter-prev 0.26s cubic-bezier(0.16,1,0.3,1) forwards; }
+
+/* ── CURL transition (deep page-peel — same axis as flip but 60° for a dramatic book-turn feel) ── */
+@keyframes pt-curl-exit-next { to { transform: perspective(1200px) rotateY(-60deg); opacity: 0; } }
+@keyframes pt-curl-exit-prev { to { transform: perspective(1200px) rotateY(60deg);  opacity: 0; } }
+@keyframes pt-curl-enter-next {
+    from { transform: perspective(1200px) rotateY(60deg);  opacity: 0; }
+    to   { transform: perspective(1200px) rotateY(0deg);   opacity: 1; }
+}
+@keyframes pt-curl-enter-prev {
+    from { transform: perspective(1200px) rotateY(-60deg); opacity: 0; }
+    to   { transform: perspective(1200px) rotateY(0deg);   opacity: 1; }
+}
+.pt-curl-exit-next  { animation: pt-curl-exit-next  0.18s ease-in  forwards; transform-origin: right center; }
+.pt-curl-exit-prev  { animation: pt-curl-exit-prev  0.18s ease-in  forwards; transform-origin: left center; }
+.pt-curl-enter-next { animation: pt-curl-enter-next 0.30s cubic-bezier(0.16,1,0.3,1) forwards; transform-origin: left center; }
+.pt-curl-enter-prev { animation: pt-curl-enter-prev 0.30s cubic-bezier(0.16,1,0.3,1) forwards; transform-origin: right center; }
+
+/* ── COVER transition (MoonReader style — new page sweeps in over old) ── */
+@keyframes pt-cover-exit-next { to { transform: scale(0.96); opacity: 0.15; } }
+@keyframes pt-cover-exit-prev { to { transform: scale(0.96); opacity: 0.15; } }
+@keyframes pt-cover-enter-next { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@keyframes pt-cover-enter-prev { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+.pt-cover-exit-next  { animation: pt-cover-exit-next  0.08s ease-out forwards; }
+.pt-cover-exit-prev  { animation: pt-cover-exit-prev  0.08s ease-out forwards; }
+.pt-cover-enter-next { animation: pt-cover-enter-next 0.32s cubic-bezier(0.16,1,0.3,1) forwards; }
+.pt-cover-enter-prev { animation: pt-cover-enter-prev 0.32s cubic-bezier(0.16,1,0.3,1) forwards; }

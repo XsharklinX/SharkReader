@@ -1,7 +1,7 @@
 // SharkReader - Database & Storage utilities
 
 const DB_NAME = 'SharkReaderDB';
-const DB_VERSION = 2; // increment when schema changes
+const DB_VERSION = 3; // v3: appData store for heavy key-value data
 
 export const safeParse = (key, fallbackValue) => {
     try {
@@ -13,7 +13,12 @@ export const safeParse = (key, fallbackValue) => {
     }
 };
 
-export const initDB = () => new Promise((resolve, reject) => {
+// Cache the DB connection promise — only open once per session
+let _dbPromise = null;
+
+export const initDB = () => {
+    if (_dbPromise) return _dbPromise;
+    _dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
 
     req.onupgradeneeded = (e) => {
@@ -24,19 +29,20 @@ export const initDB = () => new Promise((resolve, reject) => {
         if (oldVersion < 1) {
             db.createObjectStore('files', { keyPath: 'id' });
         }
-        // v2: añadir store para notas y sincronización (no-op, datos en localStorage)
-        // Reservado para futuras migraciones de datos en IDB
         if (oldVersion < 2) {
-            // Migraciones de datos que no requieren cambios de schema aquí
+            // v2: no schema changes
+        }
+        // v3: appData store for heavy key-value data (stats, journal, vocab)
+        if (oldVersion < 3) {
+            db.createObjectStore('appData', { keyPath: 'key' });
         }
     };
 
-    req.onsuccess = () => {
-        // Migrar desde DB vieja si existe
-        migrateFromLegacyDB().then(() => resolve(req.result));
-    };
-    req.onerror = () => reject(req.error);
-});
+        req.onsuccess = () => { migrateFromLegacyDB().then(() => resolve(req.result)); };
+        req.onerror = () => { _dbPromise = null; reject(req.error); };
+    });
+    return _dbPromise;
+};
 
 // Migra registros de 'SharkReaderDB_v4' (DB vieja) si existen
 const migrateFromLegacyDB = () => new Promise((resolve) => {
@@ -97,6 +103,26 @@ export const loadFilesFromDB = async () => {
             req.onerror = () => resolve([]);
         });
     } catch { return []; }
+};
+
+export const saveAppData = async (key, value) => {
+    try {
+        const db = await initDB();
+        const tx = db.transaction('appData', 'readwrite');
+        tx.objectStore('appData').put({ key, value });
+    } catch (e) { console.error('saveAppData', e); }
+};
+
+export const loadAppData = async (key) => {
+    try {
+        const db = await initDB();
+        return new Promise((resolve) => {
+            const tx = db.transaction('appData', 'readonly');
+            const req = tx.objectStore('appData').get(key);
+            req.onsuccess = () => resolve(req.result ? req.result.value : null);
+            req.onerror = () => resolve(null);
+        });
+    } catch { return null; }
 };
 
 export const fileToBase64 = (blob) => new Promise((resolve) => {

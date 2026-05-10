@@ -38,12 +38,11 @@ const UserMenu = ({ userProfile, stats, achievements, books, onNavigate, onExpor
             </div>
 
             {/* Stats grid */}
-            <div className="p-4 grid grid-cols-4 gap-2 text-center border-b border-[var(--border-color)]">
+            <div className="p-4 grid grid-cols-3 gap-2 text-center border-b border-[var(--border-color)]">
                 {[
                     { v: stats.timeRead >= 60 ? `${Math.floor(stats.timeRead / 60)}h` : `${stats.timeRead || 0}m`, l: 'Tiempo', c: 'var(--highlight)' },
                     { v: stats.pagesTurned || 0, l: 'Páginas', c: '#22c55e' },
                     { v: stats.streak || 0, l: 'Racha 🔥', c: '#f97316' },
-                    { v: stats.timeRead > 0 ? Math.round((stats.pagesTurned * 250) / stats.timeRead) : '—', l: 'WPM', c: '#a855f7' },
                 ].map(s => (
                     <div key={s.l} className="bg-black/5 dark:bg-white/5 rounded-xl p-2">
                         <div className="text-lg font-black" style={{ color: s.c }}>{s.v}</div>
