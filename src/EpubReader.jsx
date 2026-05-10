@@ -4,29 +4,32 @@ import ePub from 'epubjs';
 import { Icons } from './icons';
 import { getCachedLocations, setCachedLocations } from './locationsCache';
 
-function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing }) {
+function buildSharkCss({ fontFamily, fontSize, lineHeight, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing }) {
     const fontStack =
         fontFamily === 'Georgia' ? 'Georgia,"Times New Roman",serif' :
         fontFamily === 'Lora' ? '"Lora",Georgia,serif' :
         fontFamily === 'Merriweather' ? '"Merriweather",Georgia,serif' :
         fontFamily === 'Crimson Text' ? '"Crimson Text",Georgia,serif' :
         fontFamily === 'Roboto Slab' ? '"Roboto Slab",Georgia,serif' :
-        fontFamily === 'OpenDyslexic' ? '"OpenDyslexic",sans-serif' :
-        'Inter,system-ui,-apple-system,sans-serif';
-    const bgRule = customBg ? `background-color:${customBg}!important;` : '';
+        fontFamily === 'OpenDyslexic' ? '"OpenDyslexic",Arial,sans-serif' :
+        'Inter,"Helvetica Neue",Arial,sans-serif';
+    const bgRule = customBg ? `background-color:${customBg} !important;` : '';
     const pExtras = [];
-    if (textJustify) pExtras.push('text-align:justify!important');
-    if (firstLineIndent) pExtras.push('text-indent:1.5em!important');
-    if (letterSpacing !== 0) pExtras.push(`letter-spacing:${letterSpacing}em!important`);
-    if (hyphenation) pExtras.push('hyphens:auto!important;-webkit-hyphens:auto!important');
-    if (paragraphSpacing > 0) pExtras.push(`margin-bottom:${paragraphSpacing}em!important`);
-    return `html,body,p,span,div,li,blockquote,td,th,a,em,strong,h1,h2,h3,h4,h5,h6{font-family:${fontStack}!important}
-html{font-size:${fontSize}%!important;${bgRule}}
-body{padding-left:${pageMargins}px!important;padding-right:${pageMargins}px!important}
-p,li,blockquote{line-height:${lineHeight}!important;font-kerning:normal!important;font-feature-settings:"kern" 1,"liga" 1,"calt" 1!important${pExtras.length ? ';' + pExtras.join(';') : ''}}`;
+    if (textJustify) pExtras.push('text-align:justify !important');
+    if (firstLineIndent) pExtras.push('text-indent:1.5em !important');
+    if (letterSpacing !== 0) pExtras.push(`letter-spacing:${letterSpacing}em !important`);
+    if (hyphenation) pExtras.push('hyphens:auto !important;-webkit-hyphens:auto !important');
+    if (paragraphSpacing > 0) pExtras.push(`margin-bottom:${paragraphSpacing}em !important`);
+    // font-size on html root so all em/rem in the book scale from our base
+    return [
+        `html { font-size:${fontSize}% !important; }`,
+        `body { font-size:1rem !important; ${bgRule} }`,
+        `html,body,p,span,div,li,blockquote,td,th,a,em,strong,h1,h2,h3,h4,h5,h6,cite,q,small { font-family:${fontStack} !important; }`,
+        `p,li,blockquote,div { line-height:${lineHeight} !important; font-kerning:normal !important; font-feature-settings:"kern" 1,"liga" 1,"calt" 1 !important; ${pExtras.join(' ')} }`,
+    ].join('\n');
 }
 
-    const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout, updateLocationAndProgress, toggleBookmark, isFullscreen, focusMode, pageTransition, dyslexiaAddon, smartTocAddon, onClose, onOpenSettings, onStatsUpdate, onOpenBookInfo, onSaveWord, aiProvider, aiApiKey, tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary }) => {
+const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout, updateLocationAndProgress, toggleBookmark, isFullscreen, focusMode, pageTransition, smartTocAddon, onClose, onOpenSettings, onStatsUpdate, onOpenBookInfo, onSaveWord, aiProvider, aiApiKey, tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary }) => {
         const viewerRef = useRef(null);
         const renditionRef = useRef(null);
         const bookRef = useRef(null);
@@ -216,7 +219,7 @@ p,li,blockquote{line-height:${lineHeight}!important;font-kerning:normal!importan
                     if (!isMounted) return;
 
                     const rendition = book.renderTo(viewerRef.current, {
-                        width: "100%", height: "100%", spread: readLayout, manager: "continuous", flow: readFlow
+                        width: "100%", height: "100%", spread: readLayout, manager: "continuous", flow: readFlow, allowScriptedContent: true
                     });
                     renditionRef.current = rendition;
 
@@ -247,13 +250,15 @@ p,li,blockquote{line-height:${lineHeight}!important;font-kerning:normal!importan
                         }
                         const head = contents.document.head;
                         if (head) {
-                            // Google Fonts
+                            // Google Fonts via @font-face (more reliable in Electron than <link>)
                             if (!head.querySelector('#shark-fonts')) {
-                                const link = contents.document.createElement('link');
-                                link.id = 'shark-fonts';
-                                link.rel = 'stylesheet';
-                                link.href = 'https://fonts.googleapis.com/css2?family=Merriweather:ital,wght@0,400;0,700;1,400&family=Roboto+Slab:wght@400;700&family=Crimson+Text:ital,wght@0,400;0,600;1,400&display=swap';
-                                head.appendChild(link);
+                                const fontStyle = contents.document.createElement('style');
+                                fontStyle.id = 'shark-fonts';
+                                fontStyle.textContent = `
+                                    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,700;1,400&family=Merriweather:ital,wght@0,400;0,700;1,400&family=Crimson+Text:ital,wght@0,400;0,600;1,400&family=Roboto+Slab:wght@400;700&display=swap');
+                                    @font-face { font-family: 'OpenDyslexic'; src: url('https://fonts.cdnfonts.com/s/14614/OpenDyslexic-Regular.woff') format('woff'), url('https://fonts.gstatic.com/s/opendyslexic/v2/LYjAdGzzklQtCMp9pgfFx7HnLzA.woff2') format('woff2'); }
+                                `;
+                                head.appendChild(fontStyle);
                             }
                             // Pagination quality: orphans/widows, prevent breaks inside headings/figures
                             if (!head.querySelector('#shark-pagination')) {
@@ -480,6 +485,17 @@ p,li,blockquote{line-height:${lineHeight}!important;font-kerning:normal!importan
                             updateLocationAndProgress(bookData.id, finalCfi, percent);
                             onStatsUpdate(1);
                         }
+
+                        // Re-apply user styles after every page render (getContents returns fresh content here)
+                        try {
+                            const css = buildSharkCss(stylesRef.current);
+                            renditionRef.current.getContents().forEach(c => {
+                                if (!c?.document?.head) return;
+                                let el = c.document.head.querySelector('#shark-styles');
+                                if (!el) { el = c.document.createElement('style'); el.id = 'shark-styles'; c.document.head.appendChild(el); }
+                                el.textContent = css;
+                            });
+                        } catch (e) {}
                     });
 
                 } catch (error) {
@@ -500,19 +516,52 @@ p,li,blockquote{line-height:${lineHeight}!important;font-kerning:normal!importan
 
         useEffect(() => { if (isReady && renditionRef.current) renditionRef.current.themes.select(theme); }, [theme, isReady]);
         useEffect(() => {
-            const effectiveFont = dyslexiaAddon ? 'OpenDyslexic' : fontFamily;
-            const opts = { fontFamily: effectiveFont, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing };
-            stylesRef.current = opts;
+            const effectiveFont = fontFamily;
+            const opts = { fontFamily: effectiveFont, fontSize, lineHeight, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing };
+            stylesRef.current = { ...opts, pageMargins };
             if (!renditionRef.current || !isReady) return;
+
             const css = buildSharkCss(opts);
+
+            // Inject directly into every active iframe — this is the ONLY path we use.
+            // epub.js themes API is NOT called here because it can trigger a re-render
+            // that wipes out our injected #shark-styles tag.
             try {
-                renditionRef.current.getContents().forEach(c => {
-                    let el = c.document.head.querySelector('#shark-styles');
-                    if (!el) { el = c.document.createElement('style'); el.id = 'shark-styles'; c.document.head.appendChild(el); }
-                    el.textContent = css;
+                const contents = renditionRef.current.getContents();
+                if (contents && contents.length > 0) {
+                    contents.forEach(c => {
+                        if (!c?.document?.head) return;
+                        let el = c.document.head.querySelector('#shark-styles');
+                        if (!el) {
+                            el = c.document.createElement('style');
+                            el.id = 'shark-styles';
+                            c.document.head.appendChild(el);
+                        }
+                        el.textContent = css;
+                    });
+                } else {
+                    // No live iframe yet — force a re-display so the relocated hook applies styles
+                    const loc = renditionRef.current.currentLocation();
+                    const cfi = loc?.start?.cfi;
+                    renditionRef.current.display(cfi || undefined).catch(() => {});
+                }
+            } catch (e) { console.error('Shark CSS injection fail:', e); }
+        }, [fontFamily, fontSize, lineHeight, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, isReady]);
+
+        // When columnWidth or pageMargins change, the #viewer div gets a new maxWidth/padding in the DOM.
+        // epub.js doesn't watch CSS changes — we must tell it to re-read its container size.
+        useEffect(() => {
+            if (!renditionRef.current || !isReady) return;
+            // Wait for React to flush the DOM change first, then force epub.js to re-layout
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    if (!renditionRef.current) return;
+                    const loc = renditionRef.current.currentLocation();
+                    const cfi = loc?.start?.cfi;
+                    renditionRef.current.display(cfi || undefined).catch(() => {});
                 });
-            } catch (e) {}
-        }, [fontFamily, dyslexiaAddon, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, isReady]);
+            });
+        }, [columnWidth, pageMargins, isReady]);
 
         useEffect(() => {
             let wheelTimeout;
@@ -637,8 +686,10 @@ p,li,blockquote{line-height:${lineHeight}!important;font-kerning:normal!importan
 
 
         const isBookmarked = currentCfi && bookData.bookmarks.some(b => b.cfi === currentCfi);
-        const colWidths = { narrow: '640px', normal: '760px', wide: '960px' };
-        const maxWidthStr = readFlow === 'paginated' && readLayout === 'auto' ? '1800px' : (colWidths[columnWidth] || '760px');
+        const colPx = { narrow: 640, normal: 760, wide: 960 };
+        const isSpread = readFlow === 'paginated' && readLayout === 'auto';
+        // In spread mode, double the column width (two pages side-by-side) so the control is still meaningful
+        const maxWidthStr = isSpread ? `${(colPx[columnWidth] || 760) * 2 + 80}px` : `${colPx[columnWidth] || 760}px`;
 
         // --- Sub-componentes de controles compartidos ---
         const ZoomControls = ({ small }) => (
@@ -667,7 +718,7 @@ p,li,blockquote{line-height:${lineHeight}!important;font-kerning:normal!importan
             { id: 'OpenDyslexic', label: 'OpenDyslexic', desc: 'Para dislexia' },
         ];
 
-        const FontMenuBtn = ({ dock }) => (
+        const renderFontMenu = (dock) => (
             <div className="relative" onClick={e => e.stopPropagation()}>
                 <button
                     onClick={() => { setShowFontMenu(p => !p); setShowToc(false); setShowBrightness(false); setShowAutoScrollPanel(false); }}
@@ -975,7 +1026,7 @@ p,li,blockquote{line-height:${lineHeight}!important;font-kerning:normal!importan
                                 <div className="w-px h-5 bg-white/20 hidden sm:block mx-0.5"></div>
                                 <ZoomControls />
                                 <BrightnessBtn dock={false} />
-                                <FontMenuBtn dock={false} />
+                                {renderFontMenu(false)}
                                 <div className="w-px h-5 bg-white/20 mx-0.5"></div>
                                 <button onClick={handleAddBookmark} className="p-1.5 hover:bg-white/15 rounded-xl transition" title={t.bookmarks}>
                                     <Icons.Bookmark fill={isBookmarked ? "#facc15" : "none"} color={isBookmarked ? "#facc15" : "currentColor"} />
@@ -1023,7 +1074,7 @@ p,li,blockquote{line-height:${lineHeight}!important;font-kerning:normal!importan
 
                             <BrightnessBtn dock={true} />
 
-                            <FontMenuBtn dock={true} />
+                            {renderFontMenu(true)}
 
                             <div className="w-px h-5 bg-white/10 mx-1"></div>
 
@@ -1074,11 +1125,13 @@ p,li,blockquote{line-height:${lineHeight}!important;font-kerning:normal!importan
                     <div
                         id="viewer"
                         ref={viewerRef}
-                        className={`w-full h-full ${readLayout === 'auto' && readFlow === 'paginated' ? '' : 'px-8 sm:px-16'}`}
+                        className={`w-full h-full`}
                         style={{
                             maxWidth: maxWidthStr,
                             margin: '0 auto',
                             overflowY: readFlow === 'scrolled-doc' ? 'auto' : 'hidden',
+                            paddingLeft: `${pageMargins}px`,
+                            paddingRight: `${pageMargins}px`,
                         }}
                     ></div>
 

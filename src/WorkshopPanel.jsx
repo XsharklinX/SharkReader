@@ -20,15 +20,7 @@ const ADDONS = [
         context: 'reader',
         status: 'active',
     },
-    {
-        id: 'dyslexiaFont',
-        emoji: '🔤',
-        name: 'Fuente Dislexia',
-        desc: 'Cambia la fuente del lector EPUB a OpenDyslexic para mayor comodidad de lectura.',
-        category: 'Accesibilidad',
-        context: 'reader',
-        status: 'active',
-    },
+
     {
         id: 'netflixView',
         emoji: '🎬',

@@ -1821,7 +1821,6 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                                     isFullscreen={isFullscreen}
                                     focusMode={addons.focusMode}
                                     pageTransition={pageTransition}
-                                    dyslexiaAddon={addons.dyslexiaFont}
                                     smartTocAddon={addons.smartToc}
                                     onClose={closeBook}
                                     onOpenSettings={() => setSettingsOpen(true)}
