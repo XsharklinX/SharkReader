@@ -1,6 +1,6 @@
 {
   "name": "sharkreader",
-  "version": "1.0.0",
+  "version": "2.0.1",
   "description": "Lector de EPUB y PDF con IA, pestañas, Pomodoro y vocabulario",
   "main": "main.js",
   "author": "SharkReader",

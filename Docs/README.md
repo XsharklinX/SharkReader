@@ -10,8 +10,10 @@ SharkReader es un lector de libros digitales de escritorio para Windows. Soporta
 
 | Archivo | Descripción |
 |---|---|
+| **[HANDOFF.md](HANDOFF.md)** | **Estado actual del proyecto, bugs resueltos, gotchas críticos — leer primero** |
 | [architecture.md](architecture.md) | Stack tecnológico, estructura de archivos y flujo de arranque |
 | [features.md](features.md) | Todas las funcionalidades de usuario documentadas |
+| [epub-reader-internals.md](epub-reader-internals.md) | Internals del EpubReader: sistema CSS, inyección en iframes, epub.js |
 | [data-layer.md](data-layer.md) | Capa de datos: IndexedDB, localStorage y esquemas |
 | [addons-workshop.md](addons-workshop.md) | Sistema de addons del Workshop |
 | [ai-integration.md](ai-integration.md) | Integración con proveedores de IA |

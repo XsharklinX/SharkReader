@@ -616,68 +616,92 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
         const processFiles = async (files) => {
             const valid = files.filter(f => /\.(epub|pdf)$/i.test(f.name));
             if (!valid.length) { alert("Solo se aceptan archivos .epub y .pdf"); return; }
-            const loader = document.getElementById('shark-preloader');
-            if (loader) { loader.style.visibility = 'visible'; loader.style.opacity = '1'; }
-            const placeholders = valid.map(file => ({
-                id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
-                name: file.name.replace(/\.[^/.]+$/, ''), author: 'Cargando...',
-                description: '', publisher: '', tags: '', series: '', seriesIndex: 0,
-                file, type: /\.pdf$/i.test(file.name) ? 'pdf' : 'epub',
-                url: URL.createObjectURL(file), coverUrl: null,
-                color: `hsl(${200 + Math.random() * 40}, 70%, 40%)`,
-                isFav: false, rating: 0, progress: 0, lastLocation: null,
-                dateAdded: Date.now(), lastReadDate: 0, bookmarks: [], category: null, loading: true
-            }));
-            setBooks(prev => [...prev, ...placeholders]);
-            const parsed = [];
-            for (const p of placeholders) {
-                let coverBase64 = null;
-                let meta = { title: p.name, creator: t.unknownAuthor, description: '', publisher: '', tags: '', series: '', seriesIndex: 0 };
-                if (p.type === 'epub') {
+
+            // Add books immediately — no loading state, they appear right away with filename
+            const newBooks = valid.map(file => {
+                const id = Date.now().toString() + Math.random().toString(36).substr(2, 5);
+                const baseName = file.name.replace(/\.[^/.]+$/, '');
+                return {
+                    id, file,
+                    type: /\.pdf$/i.test(file.name) ? 'pdf' : 'epub',
+                    url: URL.createObjectURL(file),
+                    name: baseName, author: t.unknownAuthor || 'Autor desconocido',
+                    originalTitle: baseName, originalAuthor: t.unknownAuthor || 'Autor desconocido',
+                    description: '', publisher: '', tags: '', series: '', seriesIndex: 0,
+                    coverUrl: null, color: `hsl(${200 + Math.random() * 40}, 70%, 40%)`,
+                    isFav: false, rating: 0, progress: 0, lastLocation: null,
+                    dateAdded: Date.now(), lastReadDate: 0, bookmarks: [], category: null,
+                    notes: '', isFinished: false, dateStarted: null, dateFinished: null,
+                    readingMinutes: 0, loading: false
+                };
+            });
+            setBooks(prev => [...prev, ...newBooks]);
+
+            // Extract metadata in background sequentially — avoids memory spikes & crashes
+            const raceTimeout = (promise, ms, fallback = null) =>
+                Promise.race([promise, new Promise(r => setTimeout(() => r(fallback), ms))]);
+
+            (async () => {
+                for (const book of newBooks) {
+                    // Yield to event loop to keep UI responsive
+                    await new Promise(r => setTimeout(r, 50));
+
+                    // Save to DB immediately with filename metadata
+                    saveFileToDB(book.id, book.file, null, book.originalTitle, book.originalAuthor, book.dateAdded);
+
+                    if (book.type !== 'epub') continue;
+
                     try {
-                        const tmp = ePub(); await tmp.open(p.file);
-                        const cu = await tmp.coverUrl();
-                        if (cu) { const res = await fetch(cu); coverBase64 = await fileToBase64(await res.blob()); }
-                        const m = await tmp.loaded.metadata;
-                        if (m.title) meta.title = m.title;
-                        if (m.creator) meta.creator = m.creator;
-                        if (m.description) meta.description = m.description.replace(/<\/?[^>]+(>|$)/g, '');
-                        if (m.publisher) meta.publisher = m.publisher;
-                        if (m.subject) meta.tags = Array.isArray(m.subject) ? m.subject.join(', ') : m.subject;
-                        // Series from Calibre metadata or epub3 belongs-to-collection
+                        const tmp = ePub();
+                        // Open directly from the File object to save RAM
+                        const opened = await raceTimeout(tmp.open(book.file), 10000, false);
+                        if (opened === false) { tmp.destroy(); continue; }
+
+                        const [cu, m] = await Promise.all([
+                            raceTimeout(tmp.coverUrl(), 5000, null),
+                            raceTimeout(tmp.loaded.metadata, 5000, {})
+                        ]);
+
+                        let coverBase64 = null;
+                        if (cu) {
+                            try { const res = await fetch(cu); if (res.ok) coverBase64 = await fileToBase64(await res.blob()); } catch (_) {}
+                        }
+
+                        const meta = {
+                            title: m?.title || book.originalTitle,
+                            creator: m?.creator || book.originalAuthor,
+                            description: m?.description ? m.description.replace(/<\/?[^>]+(>|$)/g, '') : '',
+                            publisher: m?.publisher || '',
+                            tags: m?.subject ? (Array.isArray(m.subject) ? m.subject.join(', ') : m.subject) : '',
+                            series: '', seriesIndex: 0
+                        };
                         try {
                             const raw = tmp.packaging?.metadata || {};
-                            const seriesName = raw['calibre:series'] || raw['belongs_to_collection'] || m.series || '';
-                            const seriesIdx = raw['calibre:series_index'] || raw['group_position'] || m.series_index || 0;
-                            if (seriesName) { meta.series = String(seriesName).trim(); meta.seriesIndex = parseFloat(seriesIdx) || 0; }
-                        } catch (_) { }
+                            const sName = raw['calibre:series'] || raw['belongs_to_collection'] || m?.series || '';
+                            const sIdx = raw['calibre:series_index'] || raw['group_position'] || m?.series_index || 0;
+                            if (sName) { meta.series = String(sName).trim(); meta.seriesIndex = parseFloat(sIdx) || 0; }
+                        } catch (_) {}
                         tmp.destroy();
-                    } catch (_) { }
+
+                        const k = meta.title + '|' + meta.creator;
+                        const saved = initialBooksMeta[k] || {};
+                        // Update book in state and DB with real metadata
+                        setBooks(prev => prev.map(b => b.id !== book.id ? b : {
+                            ...b,
+                            name: saved.customTitle || meta.title,
+                            author: saved.customAuthor || meta.creator,
+                            originalTitle: meta.title, originalAuthor: meta.creator,
+                            coverUrl: saved.customCover || coverBase64,
+                            description: saved.description ?? meta.description,
+                            publisher: saved.publisher ?? meta.publisher,
+                            tags: saved.tags ?? meta.tags,
+                            series: saved.series || meta.series,
+                            seriesIndex: saved.seriesIndex || meta.seriesIndex,
+                        }));
+                        saveFileToDB(book.id, book.file, coverBase64, meta.title, meta.creator, book.dateAdded);
+                    } catch (_) {}
                 }
-                await saveFileToDB(p.id, p.file, coverBase64, meta.title, meta.creator, p.dateAdded);
-                const k = meta.title + '|' + meta.creator;
-                const saved = initialBooksMeta[k] || {};
-                parsed.push({
-                    ...p, originalTitle: meta.title, originalAuthor: meta.creator,
-                    name: saved.customTitle || meta.title, author: saved.customAuthor || meta.creator,
-                    coverUrl: saved.customCover || coverBase64,
-                    description: saved.description !== undefined ? saved.description : meta.description,
-                    publisher: saved.publisher !== undefined ? saved.publisher : meta.publisher,
-                    tags: saved.tags !== undefined ? saved.tags : meta.tags,
-                    series: saved.series || meta.series || '', seriesIndex: saved.seriesIndex || meta.seriesIndex || 0,
-                    isFav: saved.isFav || false, rating: saved.rating || 0,
-                    progress: saved.progress || 0, lastLocation: saved.lastLocation || null,
-                    lastReadDate: saved.lastReadDate || 0, bookmarks: saved.bookmarks || [],
-                    notes: saved.notes || '',
-                    isFinished: saved.isFinished || false,
-                    dateStarted: saved.dateStarted || null,
-                    dateFinished: saved.dateFinished || null,
-                    readingMinutes: saved.readingMinutes || 0,
-                    category: saved.category || null, loading: false
-                });
-            }
-            setBooks(prev => prev.map(b => parsed.find(n => n.id === b.id) || b));
-            if (loader) { loader.style.opacity = '0'; setTimeout(() => { loader.style.visibility = 'hidden'; }, 300); }
+            })();
         };
 
         // ─────────────────────────────────────────

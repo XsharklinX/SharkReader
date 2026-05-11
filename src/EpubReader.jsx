@@ -4,7 +4,7 @@ import ePub from 'epubjs';
 import { Icons } from './icons';
 import { getCachedLocations, setCachedLocations } from './locationsCache';
 
-function buildSharkCss({ fontFamily, fontSize, lineHeight, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing }) {
+function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing }) {
     const fontStack =
         fontFamily === 'Georgia' ? 'Georgia,"Times New Roman",serif' :
         fontFamily === 'Lora' ? '"Lora",Georgia,serif' :
@@ -14,16 +14,16 @@ function buildSharkCss({ fontFamily, fontSize, lineHeight, customBg, textJustify
         fontFamily === 'OpenDyslexic' ? '"OpenDyslexic",Arial,sans-serif' :
         'Inter,"Helvetica Neue",Arial,sans-serif';
     const bgRule = customBg ? `background-color:${customBg} !important;` : '';
+    const marginPx = pageMargins != null ? pageMargins : 20;
     const pExtras = [];
     if (textJustify) pExtras.push('text-align:justify !important');
     if (firstLineIndent) pExtras.push('text-indent:1.5em !important');
     if (letterSpacing !== 0) pExtras.push(`letter-spacing:${letterSpacing}em !important`);
     if (hyphenation) pExtras.push('hyphens:auto !important;-webkit-hyphens:auto !important');
     if (paragraphSpacing > 0) pExtras.push(`margin-bottom:${paragraphSpacing}em !important`);
-    // font-size on html root so all em/rem in the book scale from our base
     return [
         `html { font-size:${fontSize}% !important; }`,
-        `body { font-size:1rem !important; ${bgRule} }`,
+        `body { font-size:1rem !important; padding-left:${marginPx}px !important; padding-right:${marginPx}px !important; ${bgRule} }`,
         `html,body,p,span,div,li,blockquote,td,th,a,em,strong,h1,h2,h3,h4,h5,h6,cite,q,small { font-family:${fontStack} !important; }`,
         `p,li,blockquote,div { line-height:${lineHeight} !important; font-kerning:normal !important; font-feature-settings:"kern" 1,"liga" 1,"calt" 1 !important; ${pExtras.join(' ')} }`,
     ].join('\n');
@@ -89,6 +89,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const [showAutoScrollPanel, setShowAutoScrollPanel] = useState(false);
 
         const [currentChapterTitle, setCurrentChapterTitle] = useState('');
+        const [showChapterHint, setShowChapterHint] = useState(false);
         const prevChapterRef = useRef(null);
         const chapterHintTimerRef = useRef(null);
         const [tocCollapsed, setTocCollapsed] = useState(false);
@@ -271,11 +272,14 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                 `;
                                 head.appendChild(style);
                             }
-                            if (!head.querySelector('#shark-styles')) {
-                                const sStyle = contents.document.createElement('style');
-                                sStyle.id = 'shark-styles';
+                            {
+                                let sStyle = head.querySelector('#shark-styles');
+                                if (!sStyle) {
+                                    sStyle = contents.document.createElement('style');
+                                    sStyle.id = 'shark-styles';
+                                    head.appendChild(sStyle);
+                                }
                                 sStyle.textContent = buildSharkCss(stylesRef.current);
-                                head.appendChild(sStyle);
                             }
                             if (readFlow === 'scrolled-doc' && !head.querySelector('#shark-scroll')) {
                                 const sStyle = contents.document.createElement('style');
@@ -516,43 +520,49 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
         useEffect(() => { if (isReady && renditionRef.current) renditionRef.current.themes.select(theme); }, [theme, isReady]);
         useEffect(() => {
-            const effectiveFont = fontFamily;
-            const opts = { fontFamily: effectiveFont, fontSize, lineHeight, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing };
-            stylesRef.current = { ...opts, pageMargins };
+            const opts = { fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing };
+            stylesRef.current = opts;
             if (!renditionRef.current || !isReady) return;
 
             const css = buildSharkCss(opts);
+            const injectIntoDoc = (doc) => {
+                if (!doc?.head) return false;
+                let el = doc.head.querySelector('#shark-styles');
+                if (!el) { el = doc.createElement('style'); el.id = 'shark-styles'; doc.head.appendChild(el); }
+                el.textContent = css;
+                return true;
+            };
 
-            // Inject directly into every active iframe — this is the ONLY path we use.
-            // epub.js themes API is NOT called here because it can trigger a re-render
-            // that wipes out our injected #shark-styles tag.
+            // Primary: epub.js getContents()
+            let injected = false;
             try {
                 const contents = renditionRef.current.getContents();
                 if (contents && contents.length > 0) {
-                    contents.forEach(c => {
-                        if (!c?.document?.head) return;
-                        let el = c.document.head.querySelector('#shark-styles');
-                        if (!el) {
-                            el = c.document.createElement('style');
-                            el.id = 'shark-styles';
-                            c.document.head.appendChild(el);
-                        }
-                        el.textContent = css;
-                    });
-                } else {
-                    // No live iframe yet — force a re-display so the relocated hook applies styles
-                    const loc = renditionRef.current.currentLocation();
-                    const cfi = loc?.start?.cfi;
-                    renditionRef.current.display(cfi || undefined).catch(() => {});
+                    contents.forEach(c => injectIntoDoc(c.document));
+                    injected = true;
                 }
-            } catch (e) { console.error('Shark CSS injection fail:', e); }
-        }, [fontFamily, fontSize, lineHeight, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, isReady]);
+            } catch (e) {}
 
-        // When columnWidth or pageMargins change, the #viewer div gets a new maxWidth/padding in the DOM.
-        // epub.js doesn't watch CSS changes — we must tell it to re-read its container size.
+            // Fallback: query iframes directly (works when getContents() returns empty)
+            if (!injected && viewerRef.current) {
+                const iframes = viewerRef.current.querySelectorAll('iframe');
+                iframes.forEach(iframe => {
+                    try { injectIntoDoc(iframe.contentDocument || iframe.contentWindow?.document); injected = true; } catch (e) {}
+                });
+            }
+
+            // Last resort: force a re-display — hooks.content.register will pick up the new stylesRef
+            if (!injected) {
+                try {
+                    const loc = renditionRef.current.currentLocation();
+                    renditionRef.current.display(loc?.start?.cfi || undefined).catch(() => {});
+                } catch (e) {}
+            }
+        }, [fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, isReady]);
+
+        // When columnWidth changes, the #viewer div gets a new maxWidth — force epub.js to re-layout.
         useEffect(() => {
             if (!renditionRef.current || !isReady) return;
-            // Wait for React to flush the DOM change first, then force epub.js to re-layout
             requestAnimationFrame(() => {
                 requestAnimationFrame(() => {
                     if (!renditionRef.current) return;
@@ -561,7 +571,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     renditionRef.current.display(cfi || undefined).catch(() => {});
                 });
             });
-        }, [columnWidth, pageMargins, isReady]);
+        }, [columnWidth, isReady]);
 
         useEffect(() => {
             let wheelTimeout;

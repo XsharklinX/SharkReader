@@ -6,7 +6,7 @@ SharkReader no usa backend ni base de datos externa. Todo el almacenamiento es l
 
 ## IndexedDB
 
-**Base de datos:** `SharkReaderDB` · Versión `2`
+**Base de datos:** `SharkReaderDB` · Versión `3`
 
 **Object store:** `files`
 
