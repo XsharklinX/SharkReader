@@ -1,9 +1,9 @@
 // SharkReader - App Component (v2 — Tabs + Optimizations + Series + Vocab + AI)
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import ePub from 'epubjs';
 import { Icons, renderAvatar } from './icons';
 import { translations, languageNames, RANDOM_EMOJIS } from './translations';
-import { safeParse, loadFilesFromDB, saveFileToDB, deleteFileFromDB, fileToBase64, saveAppData, loadAppData } from './db';
+import { safeParse, loadFilesFromDB, saveFileToDB, deleteFileFromDB, saveAppData, loadAppData } from './db';
+import { extractEpubMeta } from './epubMeta';
 import EpubReader from './EpubReader';
 import PdfReader from './PdfReader';
 import AnalyticsView from './AnalyticsView';
@@ -11,7 +11,6 @@ import WorkshopPanel from './WorkshopPanel';
 import SettingsPanel from './SettingsPanel';
 import UserMenu from './UserMenu';
 import { checkNewAchievements, ACHIEVEMENTS, RARITY } from './achievements';
-import { useBooks } from './hooks/useBooks';
 import BookCard from './BookCard';
 import TabBar from './TabBar';
 import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
@@ -115,10 +114,12 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
         const folderInputRef = useRef(null);
         const importInputRef = useRef(null);
         const avatarInputRef = useRef(null);
+        const booksRef = useRef([]); // To safely access books in async effects without dependencies
         const persistTimerRef = useRef(null);       // books debounce
         const persistStatsRef = useRef(null);       // stats debounce
         const persistSettingsRef = useRef(null);    // settings debounce
         const activeBookIdRef = useRef(null);
+        const metadataRepairingRef = useRef(new Set());
 
         // ── LOGROS / WORKSHOP / ANALYTICS ──
         const [achievements, setAchievements] = useState(() => safeParse('sharkreader_achievements', {}));
@@ -131,9 +132,30 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
 
         const t = translations[lang] || translations['es'];
 
+        const bookPayloadsToFiles = useCallback((payloads = []) => {
+            return payloads.map(payload => {
+                const binary = atob(payload.dataBase64 || payload.data || '');
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i += 1) {
+                    bytes[i] = binary.charCodeAt(i);
+                }
+                const file = new File([bytes], payload.name, {
+                    type: payload.type || '',
+                    lastModified: payload.lastModified || Date.now()
+                });
+                file.sourcePath = payload.path;
+                if (payload.meta) file.nativeMeta = payload.meta;
+                return file;
+            });
+        }, []);
+
         // ─────────────────────────────────────────
         // EFECTOS
         // ─────────────────────────────────────────
+        useEffect(() => {
+            booksRef.current = books;
+        }, [books]);
+
         useEffect(() => {
             document.body.className = `theme-${theme}`;
             setStats(prev => {
@@ -168,6 +190,9 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
             loadFilesFromDB().then(storedFiles => {
                 const meta = safeParse('sharkreader_meta', {});
                 const loaded = storedFiles.map(stored => {
+                    if (stored.file && stored.sourcePath) {
+                        stored.file.sourcePath = stored.sourcePath;
+                    }
                     const key = stored.originalTitle + '|' + stored.originalAuthor;
                     const m = meta[key] || {};
                     return {
@@ -182,6 +207,7 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                         series: m.series || '',
                         seriesIndex: m.seriesIndex || 0,
                         file: stored.file,
+                        sourcePath: stored.sourcePath || stored.file?.sourcePath || null,
                         type: stored.file.name.toLowerCase().endsWith('.pdf') ? 'pdf' : 'epub',
                         url: URL.createObjectURL(stored.file),
                         coverUrl: m.customCover || stored.coverBase64,
@@ -222,6 +248,99 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
             loadAppData('journalEntries').then(j => { if (j) setJournalEntries(j); });
             loadAppData('vocabulary').then(v => { if (v) setVocabulary(v); });
         }, []);
+
+        // Re-extracción de metadata en background para libros sin autor real o portada
+        // NOTE: dependency is [isDbLoaded] only — 'books' is read via ref to avoid infinite loops
+        useEffect(() => {
+            if (!isDbLoaded) return;
+
+            // Small delay to let React finish the initial render
+            const timer = setTimeout(async () => {
+                const UNKNOWN = ['Autor desconocido', 'Unknown Author', 'Autor Desconocido', 'unknown author'];
+
+                // En Electron instalado, un File de IDB puede fallar si perdió el permiso.
+                const currentBooks = booksRef.current || [];
+                const needsMeta = currentBooks.filter(b =>
+                    b.type === 'epub' &&
+                    b.file &&
+                    // b.file.size > 0 && // No confiamos en file.size en Electron
+                    (!b.coverUrl || UNKNOWN.some(u => u.toLowerCase() === (b.originalAuthor || '').toLowerCase())) &&
+                    !metadataRepairingRef.current.has(b.id)
+                );
+
+                if (!needsMeta.length) {
+                    console.log('[SharkReader] No hay libros que necesiten re-extracción');
+                    return;
+                }
+
+                console.log(`[SharkReader] Re-extrayendo metadata para ${needsMeta.length} libro(s)...`);
+                needsMeta.forEach(book => metadataRepairingRef.current.add(book.id));
+
+                const withTimeout = (p, ms, def = null) =>
+                    Promise.race([Promise.resolve(p).catch(e => { console.error('[SharkReader] extractEpubMeta error:', e); return def; }), new Promise(r => setTimeout(() => r(def), ms))]);
+
+                for (const book of needsMeta) {
+                    await new Promise(r => setTimeout(r, 80));
+                    try {
+                        console.log(`[SharkReader] Extrayendo: ${book.originalTitle} (file size: ${book.file?.size})`);
+                        let meta = null;
+                        let repairFile = book.file;
+
+                        if (book.sourcePath && window.electronAPI?.readBookFile) {
+                            const payload = await window.electronAPI.readBookFile(book.sourcePath);
+                            const files = bookPayloadsToFiles(payload ? [payload] : []);
+                            if (files[0]) {
+                                repairFile = files[0];
+                                meta = files[0].nativeMeta || null;
+                            }
+                        }
+
+                        if (!meta) {
+                            meta = await withTimeout(extractEpubMeta(repairFile), 20000, null);
+                        }
+
+                        if (!meta) {
+                            console.warn(`[SharkReader] extractEpubMeta devolvió null para: ${book.originalTitle}`);
+                            metadataRepairingRef.current.delete(book.id);
+                            continue;
+                        }
+
+                        console.log(`[SharkReader] OK: title=${meta.title}, creator=${meta.creator}, hasCover=${!!meta.coverBase64}`);
+
+                        const realTitle  = (meta.title || '').trim() || book.originalTitle;
+                        const realAuthor = (meta.creator || '').trim() || book.originalAuthor;
+                        const coverBase64 = meta.coverBase64 || null;
+                        const finalCover = book.coverUrl || coverBase64;
+
+                        setBooks(prev => prev.map(b => {
+                            if (b.id !== book.id) return b;
+                            return {
+                                ...b,
+                                file:           repairFile,
+                                sourcePath:     repairFile.sourcePath || b.sourcePath || null,
+                                name:           b.name === b.originalTitle ? realTitle : b.name,
+                                author:         UNKNOWN.some(u => u.toLowerCase() === (b.author || '').toLowerCase()) ? realAuthor : b.author,
+                                originalTitle:  realTitle,
+                                originalAuthor: realAuthor,
+                                coverUrl:       finalCover,
+                                description:    b.description || meta.description || '',
+                                publisher:      b.publisher  || meta.publisher || '',
+                                tags:           b.tags       || meta.subject || '',
+                            };
+                        }));
+                        await saveFileToDB(book.id, repairFile, finalCover, realTitle, realAuthor, book.dateAdded);
+                    } catch (err) {
+                        console.error(`[SharkReader] Error procesando ${book.originalTitle}:`, err);
+                        metadataRepairingRef.current.delete(book.id);
+                    }
+                }
+
+                console.log('[SharkReader] Re-extracción completada');
+            }, 500);
+
+            return () => clearTimeout(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        }, [isDbLoaded]);
 
         // ── PERSIST: books + categories (debounce 2000ms + idle so it never blocks reading)
         useEffect(() => {
@@ -320,10 +439,24 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
             if (!window.electronAPI) return;
             const handler = async (filePath) => {
                 if (!filePath) return;
-                const resp = await fetch(filePath.startsWith('file://') ? filePath : `file:///${filePath.replace(/\\/g, '/')}`);
-                const blob = await resp.blob();
-                const file = new File([blob], filePath.split(/[\\/]/).pop(), { type: blob.type });
-                await processFiles([file]);
+                try {
+                    if (window.electronAPI?.readBookFile) {
+                        const payload = await window.electronAPI.readBookFile(filePath);
+                        const files = bookPayloadsToFiles(payload ? [payload] : []);
+                        if (files.length) {
+                            await processFiles(files);
+                            return;
+                        }
+                    }
+                    const url = filePath.startsWith('file://') ? filePath : `file:///${filePath.replace(/\\/g, '/')}`;
+                    const resp = await fetch(url);
+                    if (!resp.ok) throw new Error(`fetch failed: ${resp.status}`);
+                    const blob = await resp.blob();
+                    const file = new File([blob], filePath.split(/[\\/]/).pop(), { type: blob.type || 'application/epub+zip' });
+                    await processFiles([file]);
+                } catch (e) {
+                    console.error('[SharkReader] Error abriendo archivo desde IPC:', e);
+                }
             };
             window.electronAPI.onOpenFile(handler);
             return () => window.electronAPI.offOpenFile();
@@ -611,100 +744,145 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
         const handleDragOver = (e) => { e.preventDefault(); if (view === 'library') setIsDragging(true); };
         const handleDragLeave = (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setIsDragging(false); };
         const handleDrop = (e) => { e.preventDefault(); setIsDragging(false); if (view !== 'library') return; processFiles(Array.from(e.dataTransfer.files)); };
-        const handleFilesUpload = async (e) => { await processFiles(Array.from(e.target.files)); if (fileInputRef.current) fileInputRef.current.value = ''; if (folderInputRef.current) folderInputRef.current.value = ''; };
+        const openFilePicker = async () => {
+            if (window.electronAPI?.pickBookFiles) {
+                const payloads = await window.electronAPI.pickBookFiles();
+                const files = bookPayloadsToFiles(payloads);
+                if (files.length) await processFiles(files);
+                return;
+            }
+            if (!fileInputRef.current) return;
+            fileInputRef.current.value = '';
+            fileInputRef.current.click();
+        };
+        const openFolderPicker = async () => {
+            if (window.electronAPI?.pickBookFolder) {
+                const payloads = await window.electronAPI.pickBookFolder();
+                const files = bookPayloadsToFiles(payloads);
+                if (files.length) await processFiles(files);
+                return;
+            }
+            if (!folderInputRef.current) return;
+            folderInputRef.current.value = '';
+            folderInputRef.current.click();
+        };
+        const handleFilesUpload = async (e) => {
+            const selectedFiles = Array.from(e.target.files || []);
+            try {
+                await processFiles(selectedFiles);
+            } catch (err) {
+                console.error('[SharkReader] Error importando archivos:', err);
+                alert('No se pudieron importar los archivos seleccionados.');
+            } finally {
+                e.target.value = '';
+                if (fileInputRef.current) fileInputRef.current.value = '';
+                if (folderInputRef.current) folderInputRef.current.value = '';
+            }
+        };
 
         const processFiles = async (files) => {
             const valid = files.filter(f => /\.(epub|pdf)$/i.test(f.name));
             if (!valid.length) { alert("Solo se aceptan archivos .epub y .pdf"); return; }
 
-            // Add books immediately — no loading state, they appear right away with filename
+            const raceTimeout = (promise, ms, fallback = null) =>
+                Promise.race([
+                    Promise.resolve(promise).catch((err) => {
+                        console.error('[SharkReader] Error extrayendo metadata EPUB:', err);
+                        return fallback;
+                    }),
+                    new Promise(r => setTimeout(() => r(fallback), ms))
+                ]);
+
             const newBooks = valid.map(file => {
                 const id = Date.now().toString() + Math.random().toString(36).substr(2, 5);
                 const baseName = file.name.replace(/\.[^/.]+$/, '');
+                const type = /\.pdf$/i.test(file.name) ? 'pdf' : 'epub';
+                const unknownAuthor = t.unknownAuthor || 'Autor desconocido';
+                const nativeMeta = type === 'epub' ? file.nativeMeta : null;
+                const nativeTitle = (nativeMeta?.title || '').trim();
+                const nativeAuthor = (nativeMeta?.creator || '').trim();
                 return {
-                    id, file,
-                    type: /\.pdf$/i.test(file.name) ? 'pdf' : 'epub',
+                    id, file, type,
                     url: URL.createObjectURL(file),
-                    name: baseName, author: t.unknownAuthor || 'Autor desconocido',
-                    originalTitle: baseName, originalAuthor: t.unknownAuthor || 'Autor desconocido',
-                    description: '', publisher: '', tags: '', series: '', seriesIndex: 0,
-                    coverUrl: null, color: `hsl(${200 + Math.random() * 40}, 70%, 40%)`,
-                    isFav: false, rating: 0, progress: 0, lastLocation: null,
-                    dateAdded: Date.now(), lastReadDate: 0, bookmarks: [], category: null,
-                    notes: '', isFinished: false, dateStarted: null, dateFinished: null,
-                    readingMinutes: 0, loading: false
+                    sourcePath: file.sourcePath || null,
+                    name: nativeTitle || baseName,
+                    author: nativeAuthor || unknownAuthor,
+                    originalTitle: nativeTitle || baseName,
+                    originalAuthor: nativeAuthor || unknownAuthor,
+                    description: nativeMeta?.description || '',
+                    publisher: nativeMeta?.publisher || '',
+                    tags: nativeMeta?.subject || '',
+                    series: '',
+                    seriesIndex: 0,
+                    coverUrl: nativeMeta?.coverBase64 || null,
+                    color: `hsl(${200 + Math.random() * 40}, 70%, 40%)`,
+                    isFav: false,
+                    rating: 0,
+                    progress: 0,
+                    lastLocation: null,
+                    dateAdded: Date.now(),
+                    lastReadDate: 0,
+                    bookmarks: [],
+                    category: null,
+                    notes: '',
+                    isFinished: false,
+                    dateStarted: null,
+                    dateFinished: null,
+                    readingMinutes: 0,
+                    loading: false,
                 };
             });
-            setBooks(prev => [...prev, ...newBooks]);
 
-            // Extract metadata in background sequentially — avoids memory spikes & crashes
-            const raceTimeout = (promise, ms, fallback = null) =>
-                Promise.race([promise, new Promise(r => setTimeout(() => r(fallback), ms))]);
+            // Show the files immediately. Metadata extraction runs after this and updates each card.
+            setBooks(prev => [...prev, ...newBooks]);
 
             (async () => {
                 for (const book of newBooks) {
-                    // Yield to event loop to keep UI responsive
-                    await new Promise(r => setTimeout(r, 50));
-
-                    // Save to DB immediately with filename metadata
-                    saveFileToDB(book.id, book.file, null, book.originalTitle, book.originalAuthor, book.dateAdded);
+                    await saveFileToDB(book.id, book.file, book.coverUrl || null, book.originalTitle, book.originalAuthor, book.dateAdded);
 
                     if (book.type !== 'epub') continue;
 
-                    try {
-                        const tmp = ePub();
-                        // Open directly from the File object to save RAM
-                        const opened = await raceTimeout(tmp.open(book.file), 10000, false);
-                        if (opened === false) { tmp.destroy(); continue; }
+                    let meta = book.file.nativeMeta || null;
+                    if (!meta) {
+                        meta = await raceTimeout(extractEpubMeta(book.file), 15000, null);
+                    }
+                    if (!meta) continue;
 
-                        const [cu, m] = await Promise.all([
-                            raceTimeout(tmp.coverUrl(), 5000, null),
-                            raceTimeout(tmp.loaded.metadata, 5000, {})
-                        ]);
+                    const title = (meta.title || '').trim() || book.originalTitle;
+                    const creator = (meta.creator || '').trim() || book.originalAuthor;
+                    const k = title + '|' + creator;
+                    const saved = initialBooksMeta[k] || {};
+                    const updated = {
+                        name: saved.customTitle || title,
+                        author: saved.customAuthor || creator,
+                        originalTitle: title,
+                        originalAuthor: creator,
+                        coverUrl: saved.customCover || meta.coverBase64 || null,
+                        description: saved.description ?? (meta.description || ''),
+                        publisher: saved.publisher ?? (meta.publisher || ''),
+                        tags: saved.tags ?? (meta.subject || ''),
+                        series: saved.series || '',
+                        seriesIndex: saved.seriesIndex || 0,
+                        isFav: saved.isFav || false,
+                        rating: saved.rating || 0,
+                        progress: saved.progress || 0,
+                        lastLocation: saved.lastLocation || null,
+                        lastReadDate: saved.lastReadDate || 0,
+                        bookmarks: saved.bookmarks || [],
+                        category: saved.category || null,
+                        notes: saved.notes || '',
+                        isFinished: saved.isFinished || false,
+                        dateStarted: saved.dateStarted || null,
+                        dateFinished: saved.dateFinished || null,
+                        readingMinutes: saved.readingMinutes || 0,
+                    };
 
-                        let coverBase64 = null;
-                        if (cu) {
-                            try { const res = await fetch(cu); if (res.ok) coverBase64 = await fileToBase64(await res.blob()); } catch (_) {}
-                        }
-
-                        const meta = {
-                            title: m?.title || book.originalTitle,
-                            creator: m?.creator || book.originalAuthor,
-                            description: m?.description ? m.description.replace(/<\/?[^>]+(>|$)/g, '') : '',
-                            publisher: m?.publisher || '',
-                            tags: m?.subject ? (Array.isArray(m.subject) ? m.subject.join(', ') : m.subject) : '',
-                            series: '', seriesIndex: 0
-                        };
-                        try {
-                            const raw = tmp.packaging?.metadata || {};
-                            const sName = raw['calibre:series'] || raw['belongs_to_collection'] || m?.series || '';
-                            const sIdx = raw['calibre:series_index'] || raw['group_position'] || m?.series_index || 0;
-                            if (sName) { meta.series = String(sName).trim(); meta.seriesIndex = parseFloat(sIdx) || 0; }
-                        } catch (_) {}
-                        tmp.destroy();
-
-                        const k = meta.title + '|' + meta.creator;
-                        const saved = initialBooksMeta[k] || {};
-                        // Update book in state and DB with real metadata
-                        setBooks(prev => prev.map(b => b.id !== book.id ? b : {
-                            ...b,
-                            name: saved.customTitle || meta.title,
-                            author: saved.customAuthor || meta.creator,
-                            originalTitle: meta.title, originalAuthor: meta.creator,
-                            coverUrl: saved.customCover || coverBase64,
-                            description: saved.description ?? meta.description,
-                            publisher: saved.publisher ?? meta.publisher,
-                            tags: saved.tags ?? meta.tags,
-                            series: saved.series || meta.series,
-                            seriesIndex: saved.seriesIndex || meta.seriesIndex,
-                        }));
-                        saveFileToDB(book.id, book.file, coverBase64, meta.title, meta.creator, book.dateAdded);
-                    } catch (_) {}
+                    setBooks(prev => prev.map(b => b.id === book.id ? { ...b, ...updated } : b));
+                    await saveFileToDB(book.id, book.file, meta.coverBase64 || null, title, creator, book.dateAdded);
                 }
-            })();
+            })().catch(err => console.error('[SharkReader] Error procesando metadata en segundo plano:', err));
         };
 
-        // ─────────────────────────────────────────
         // LIBROS
         // ─────────────────────────────────────────
         const handleContextMenu = useCallback((e, book) => { e.preventDefault(); setContextMenu({ x: e.pageX, y: e.pageY, book }); }, []);
@@ -1005,8 +1183,8 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                                         className={`px-2 py-1 rounded-lg text-xs font-bold transition ${libraryView === 'list' ? 'bg-white/20' : 'opacity-50 hover:opacity-80'}`}>☰</button>
                                 </div>
                                 <div className="w-px h-6 bg-white/20 mx-1"></div>
-                                <button onClick={() => fileInputRef.current.click()} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap"><Icons.Plus /> <span className="hidden xl:inline">{t.addBook}</span></button>
-                                <button onClick={() => folderInputRef.current.click()} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap"><Icons.FolderPlus /> <span className="hidden xl:inline">{t.addFolder}</span></button>
+                                <button onClick={openFilePicker} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap"><Icons.Plus /> <span className="hidden xl:inline">{t.addBook}</span></button>
+                                <button onClick={openFolderPicker} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap"><Icons.FolderPlus /> <span className="hidden xl:inline">{t.addFolder}</span></button>
                             </div>
                             {lastReadId && (
                                 <button onClick={() => openBook(lastReadId)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold bg-green-500 hover:bg-green-400 text-white shadow-md mr-2 whitespace-nowrap">
@@ -1031,6 +1209,31 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                                                 onExport={() => { exportAllData(); setShowUserMenu(false); }}
                                                 onImport={() => { importInputRef.current.click(); setShowUserMenu(false); }}
                                                 onLogout={() => { setUserProfile(null); setShowUserMenu(false); }}
+                                                onDeleteAccount={() => {
+                                                    // Wipe all user-related localStorage keys
+                                                    const keysToDelete = [
+                                                        'sharkreader_user',
+                                                        'sharkreader_stats',
+                                                        'sharkreader_categories',
+                                                        'sharkreader_addons',
+                                                        'sharkreader_journal',
+                                                        'sharkreader_vocab',
+                                                        'sharkreader_last_open',
+                                                        'sharkreader_prev_open',
+                                                        'sharkreader_lastReadId',
+                                                        'sharkreader_migrated_v2',
+                                                        'sharkreader_lang',
+                                                        'sharkreader_theme',
+                                                        'sharkreader_readFlow',
+                                                        'sharkreader_readLayout',
+                                                        'sharkreader_pageTransition',
+                                                        'sharkreader_libraryView',
+                                                        'sharkreader_sortBy',
+                                                    ];
+                                                    keysToDelete.forEach(k => localStorage.removeItem(k));
+                                                    setShowUserMenu(false);
+                                                    window.location.reload();
+                                                }}
                                                 onShowWorkshop={() => { setShowWorkshop(true); setShowUserMenu(false); }}
                                                 onEditProfile={openEditProfile}
                                                 importInputRef={importInputRef}
@@ -1057,7 +1260,7 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
 
                 {/* Inputs ocultos */}
                 <input type="file" accept=".epub,.pdf" multiple ref={fileInputRef} className="hidden" onChange={handleFilesUpload} />
-                <input type="file" multiple ref={folderInputRef} accept=".epub,.pdf" className="hidden" onChange={handleFilesUpload} webkitdirectory="true" directory="true" />
+                <input type="file" multiple ref={folderInputRef} accept=".epub,.pdf" className="hidden" onChange={handleFilesUpload} webkitdirectory="" directory="" />
                 <input type="file" accept=".json" ref={importInputRef} className="hidden" onChange={importData} />
                 <input type="file" accept="image/*" ref={avatarInputRef} className="hidden" onChange={handleAvatarUpload} />
 
@@ -1617,8 +1820,8 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                                             <p className="text-lg opacity-70 mb-10 max-w-lg">{t.emptyDesc}</p>
                                             {currentFilter === 'all' && (
                                                 <div className="flex flex-col sm:flex-row gap-4 w-full justify-center">
-                                                    <button onClick={() => fileInputRef.current.click()} className="px-8 py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl shadow-lg transition flex items-center justify-center gap-2"><Icons.Plus /> {t.addBook}</button>
-                                                    <button onClick={() => folderInputRef.current.click()} className="px-8 py-4 bg-slate-700 hover:bg-slate-600 text-white font-bold rounded-xl shadow-lg transition flex items-center justify-center gap-2"><Icons.FolderPlus /> {t.addFolder}</button>
+                                                    <button onClick={openFilePicker} className="px-8 py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl shadow-lg transition flex items-center justify-center gap-2"><Icons.Plus /> {t.addBook}</button>
+                                                    <button onClick={openFolderPicker} className="px-8 py-4 bg-slate-700 hover:bg-slate-600 text-white font-bold rounded-xl shadow-lg transition flex items-center justify-center gap-2"><Icons.FolderPlus /> {t.addFolder}</button>
                                                 </div>
                                             )}
                                             <div className="mt-6 p-4 bg-blue-500/10 rounded-xl border border-blue-500/20 text-left max-w-md">
@@ -1680,8 +1883,8 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                         )}
 
                         <div className="md:hidden fixed bottom-6 right-6 flex flex-col gap-4 z-30">
-                            <button onClick={() => folderInputRef.current.click()} className="w-12 h-12 rounded-full flex items-center justify-center text-white shadow-xl bg-slate-700 hover:scale-110 transition-transform"><Icons.FolderPlus /></button>
-                            <button onClick={() => fileInputRef.current.click()} className="w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl hover:scale-110 transition-transform" style={{ backgroundColor: 'var(--highlight)' }}><Icons.Plus /></button>
+                            <button onClick={openFolderPicker} className="w-12 h-12 rounded-full flex items-center justify-center text-white shadow-xl bg-slate-700 hover:scale-110 transition-transform"><Icons.FolderPlus /></button>
+                            <button onClick={openFilePicker} className="w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl hover:scale-110 transition-transform" style={{ backgroundColor: 'var(--highlight)' }}><Icons.Plus /></button>
                         </div>
                     </div>
                 )}

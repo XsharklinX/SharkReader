@@ -37,8 +37,12 @@ export async function getCachedLocations(bookId) {
 export async function setCachedLocations(bookId, locations) {
     try {
         const db = await openCacheDB();
-        const tx = db.transaction(CACHE_STORE, 'readwrite');
-        tx.objectStore(CACHE_STORE).put({ bookId, locations, cachedAt: Date.now() });
+        return new Promise((resolve) => {
+            const tx = db.transaction(CACHE_STORE, 'readwrite');
+            tx.objectStore(CACHE_STORE).put({ bookId, locations, cachedAt: Date.now() });
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+        });
     } catch {
         // Non-critical — silently ignore
     }
@@ -47,7 +51,11 @@ export async function setCachedLocations(bookId, locations) {
 export async function clearCachedLocations(bookId) {
     try {
         const db = await openCacheDB();
-        const tx = db.transaction(CACHE_STORE, 'readwrite');
-        tx.objectStore(CACHE_STORE).delete(bookId);
+        return new Promise((resolve) => {
+            const tx = db.transaction(CACHE_STORE, 'readwrite');
+            tx.objectStore(CACHE_STORE).delete(bookId);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+        });
     } catch {}
 }

@@ -306,12 +306,14 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     });
 
                     rendition.on('selected', async (cfiRange, contents) => {
+                        try {
                         const selection = contents.window.getSelection();
+                        if (!selection) return;
                         const text = selection.toString().trim();
                         if (isHighlightingRef.current && text.length > 0) {
-                            rendition.annotations.highlight(cfiRange, {}, () => { });
+                            try { rendition.annotations.highlight(cfiRange, {}, () => { }); } catch (_) {}
                             toggleBookmark(bookData.id, cfiRange, `[Subrayado] "${text.substring(0, 60)}..."`);
-                            contents.window.getSelection().removeAllRanges();
+                            try { contents.window.getSelection()?.removeAllRanges(); } catch (_) {}
                         } else if (text && text.length > 2 && text.split(' ').length === 1) {
                             try {
                                 const langCode = lang === 'es' ? 'es' : 'en';
@@ -329,9 +331,10 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                     const rect = range.getBoundingClientRect();
                                     setDictionaryPopup({ word: text, def, x: rect.left, y: rect.bottom + 10 });
                                 }
-                            } catch (e) { }
-                            contents.window.getSelection().removeAllRanges();
+                            } catch (_) { }
+                            try { contents.window.getSelection()?.removeAllRanges(); } catch (_) {}
                         }
+                        } catch (_) {}
                     });
 
                     book.loaded.navigation.then((nav) => {
@@ -346,7 +349,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             });
                         };
                         buildTocMap(nav.toc);
-                    });
+                    }).catch(() => {});
 
                     book.ready.then(() => {
                         if (!isMounted) return;
@@ -356,11 +359,11 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                         if (bookData.bookmarks && bookData.bookmarks.length > 0) {
                             bookData.bookmarks.forEach(bm => {
                                 if (bm.note && bm.note.includes('[Subrayado]')) {
-                                    rendition.annotations.highlight(bm.cfi, {}, () => { });
+                                    try { rendition.annotations.highlight(bm.cfi, {}, () => { }); } catch (_) {}
                                 }
                             });
                         }
-                    });
+                    }).catch(() => {});
 
                     // Separar CFI del scroll pct si existe
                     const rawLocation = targetCfi || bookData.lastLocation || undefined;
@@ -514,7 +517,10 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             loadBook();
             return () => {
                 isMounted = false;
-                if (bookRef.current) bookRef.current.destroy();
+                if (bookRef.current) {
+                    try { bookRef.current.destroy(); } catch (_) {}
+                    bookRef.current = null;
+                }
             };
         }, [bookData.file, readFlow, readLayout]);
 

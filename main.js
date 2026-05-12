@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execSync } = require('child_process');
+const JSZip = require('jszip');
 
 // ── Perf flags (set before app.ready) ────────────────────────────────────────
 // Enable GPU rasterization for smoother UI compositing
@@ -74,6 +75,237 @@ function createWindow() {
 }
 
 // Seleccionar carpeta de sincronización
+const BOOK_EXTENSIONS = new Set(['.epub', '.pdf']);
+
+function isBookPath(filePath) {
+    return BOOK_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+function walkBookFiles(dirPath) {
+    const found = [];
+    const stack = [dirPath];
+
+    while (stack.length) {
+        const current = stack.pop();
+        let entries = [];
+        try {
+            entries = fs.readdirSync(current, { withFileTypes: true });
+        } catch (_) {
+            continue;
+        }
+
+        for (const entry of entries) {
+            const fullPath = path.join(current, entry.name);
+            if (entry.isDirectory()) stack.push(fullPath);
+            else if (entry.isFile() && isBookPath(fullPath)) found.push(fullPath);
+        }
+    }
+
+    return found;
+}
+
+async function extractEpubMeta(buffer) {
+    try {
+        const zip = await JSZip.loadAsync(buffer);
+
+        let opfPath = null;
+        const containerKey = Object.keys(zip.files).find(k => k.toLowerCase() === 'meta-inf/container.xml');
+        if (containerKey) {
+            const containerStr = await zip.files[containerKey].async('string');
+            const match = containerStr.match(/full-path\s*=\s*["']([^"']+)["']/i);
+            if (match) opfPath = match[1];
+        }
+
+        if (!opfPath) {
+            opfPath = Object.keys(zip.files).find(k => k.toLowerCase().endsWith('.opf'));
+        }
+        if (!opfPath) return null;
+
+        const opfFile = zip.file(opfPath) || Object.values(zip.files).find(f => f.name.toLowerCase() === opfPath.toLowerCase());
+        if (!opfFile) return null;
+        const opfStr = await opfFile.async('string');
+
+        const findTag = (tag) => {
+            const regex = new RegExp(`<[^:>]*:?${tag}[^>]*>([\\s\\S]*?)</[^:>]*:?${tag}>`, 'i');
+            const match = opfStr.match(regex);
+            return match
+                ? match[1]
+                    .replace(/<!\[CDATA\[|\]\]>/g, '')
+                    .replace(/<[^>]+>/g, '')
+                    .replace(/&amp;/g, '&')
+                    .replace(/&quot;/g, '"')
+                    .replace(/&apos;/g, "'")
+                    .replace(/&lt;/g, '<')
+                    .replace(/&gt;/g, '>')
+                    .trim()
+                : '';
+        };
+
+        const getAttr = (xml, attr) => {
+            const match = xml.match(new RegExp(`\\s${attr}\\s*=\\s*["']([^"']+)["']`, 'i'));
+            return match ? match[1] : '';
+        };
+
+        const title = findTag('title');
+        const creator = findTag('creator');
+        const description = findTag('description');
+        const publisher = findTag('publisher');
+        const subject = findTag('subject');
+
+        const opfDir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
+        const items = [];
+        const itemRegex = /<item\b[^>]*>/gi;
+        let itemMatch;
+        while ((itemMatch = itemRegex.exec(opfStr))) {
+            const xml = itemMatch[0];
+            const href = getAttr(xml, 'href');
+            const mediaType = getAttr(xml, 'media-type');
+            if (!href) continue;
+            items.push({
+                id: getAttr(xml, 'id'),
+                href,
+                mediaType,
+                properties: getAttr(xml, 'properties'),
+            });
+        }
+
+        let coverHref = null;
+
+        const coverImage = items.find(item =>
+            item.mediaType?.startsWith('image/') &&
+            /\bcover-image\b/i.test(item.properties || '')
+        );
+        if (coverImage) coverHref = coverImage.href;
+
+        if (!coverHref) {
+            const metaRegex = /<meta\b[^>]*>/gi;
+            let metaMatch;
+            while ((metaMatch = metaRegex.exec(opfStr))) {
+                const xml = metaMatch[0];
+                if (getAttr(xml, 'name').toLowerCase() === 'cover') {
+                    const coverId = getAttr(xml, 'content');
+                    const coverItem = items.find(item => item.id === coverId);
+                    if (coverItem?.mediaType?.startsWith('image/')) {
+                        coverHref = coverItem.href;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!coverHref) {
+            const hinted = items.find(item => {
+                const hint = `${item.id || ''} ${item.href || ''}`.toLowerCase();
+                return item.mediaType?.startsWith('image/') && /(cover|portada|front|titlepage)/i.test(hint);
+            });
+            if (hinted) coverHref = hinted.href;
+        }
+
+        if (!coverHref) {
+            const firstImage = items.find(item => item.mediaType?.startsWith('image/'));
+            if (firstImage) coverHref = firstImage.href;
+        }
+
+        let coverBase64 = null;
+        if (coverHref) {
+            let cleanHref = decodeURIComponent(coverHref.replace(/&amp;/g, '&')).split('#')[0].split('?')[0];
+            let fullPath = cleanHref.startsWith('/') ? cleanHref.slice(1) : (opfDir + cleanHref);
+
+            const parts = [];
+            for (const p of fullPath.split('/')) {
+                if (p === '..') parts.pop();
+                else if (p && p !== '.') parts.push(p);
+            }
+            fullPath = parts.join('/');
+
+            const coverFile = zip.file(fullPath) || Object.values(zip.files).find(f => f.name.toLowerCase() === fullPath.toLowerCase());
+            if (coverFile) {
+                const data = await coverFile.async('base64');
+                const ext = fullPath.split('.').pop().toLowerCase();
+                const mime = { jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', webp:'image/webp', gif:'image/gif', svg:'image/svg+xml' }[ext] || 'image/jpeg';
+                coverBase64 = `data:${mime};base64,${data}`;
+            }
+        }
+
+        return { title, creator, description, publisher, subject, coverBase64 };
+    } catch (e) {
+        console.error('[SharkReader] Native extract failed:', e);
+        return null;
+    }
+}
+
+async function readBookPayload(filePath) {
+    try {
+        const data = fs.readFileSync(filePath);
+        const ext = path.extname(filePath).toLowerCase();
+        let meta = null;
+        if (ext === '.epub') {
+            try {
+                meta = await extractEpubMeta(data);
+            } catch (err) {
+                console.error('[SharkReader] Error en metadata de main.js:', err);
+            }
+        }
+
+        return {
+            name: path.basename(filePath),
+            path: filePath,
+            type: ext === '.pdf' ? 'application/pdf' : 'application/epub+zip',
+            lastModified: fs.statSync(filePath).mtimeMs,
+            dataBase64: data.toString('base64'),
+            meta
+        };
+    } catch (err) {
+        console.error('readBookPayload falló para', filePath, err);
+        throw err;
+    }
+}
+
+function readBookPayloads(filePaths) {
+    return Promise.all(filePaths
+        .filter(isBookPath)
+        .map(async filePath => {
+            try {
+                return await readBookPayload(filePath);
+            } catch (err) {
+                console.error('[SharkReader] No se pudo leer libro:', filePath, err);
+                return null;
+            }
+        })
+    ).then(res => res.filter(Boolean));
+}
+
+ipcMain.handle('pick-book-files', async () => {
+    if (!mainWindow) return [];
+    const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'Libros', extensions: ['epub', 'pdf'] }],
+        title: 'Añadir libros'
+    });
+    if (result.canceled) return [];
+    return readBookPayloads(result.filePaths);
+});
+
+ipcMain.handle('pick-book-folder', async () => {
+    if (!mainWindow) return [];
+    const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openDirectory'],
+        title: 'Añadir carpeta de libros'
+    });
+    if (result.canceled || !result.filePaths[0]) return [];
+    return await readBookPayloads(walkBookFiles(result.filePaths[0]));
+});
+
+ipcMain.handle('read-book-file', async (_e, filePath) => {
+    if (!filePath || !isBookPath(filePath)) return null;
+    try {
+        return await readBookPayload(filePath);
+    } catch (err) {
+        console.error('[SharkReader] No se pudo abrir libro desde ruta:', filePath, err);
+        return null;
+    }
+});
+
 ipcMain.handle('pick-folder', async () => {
     if (!mainWindow) return null;
     const result = await dialog.showOpenDialog(mainWindow, {

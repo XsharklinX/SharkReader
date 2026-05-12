@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react';
-import { safeParse, saveFileToDB, deleteFileFromDB, fileToBase64 } from '../db';
-import ePub from 'epubjs';
+import { safeParse, saveFileToDB, deleteFileFromDB } from '../db';
+import { extractEpubMeta } from '../epubMeta';
 
 export function useBooks(t) {
     const initialBooksMeta = safeParse('sharkreader_meta', {});
@@ -59,16 +59,13 @@ export function useBooks(t) {
             let meta = { title: p.name, creator: t.unknownAuthor || 'Autor desconocido', description: '', publisher: '', tags: '' };
             if (p.type === 'epub') {
                 try {
-                    const tmp = ePub(); await tmp.open(p.file);
-                    const cu = await tmp.coverUrl();
-                    if (cu) { const res = await fetch(cu); coverBase64 = await fileToBase64(await res.blob()); }
-                    const m = await tmp.loaded.metadata;
-                    if (m.title) meta.title = m.title;
-                    if (m.creator) meta.creator = m.creator;
-                    if (m.description) meta.description = m.description.replace(/<\/?[^>]+(>|$)/g, '');
-                    if (m.publisher) meta.publisher = m.publisher;
-                    if (m.subject) meta.tags = Array.isArray(m.subject) ? m.subject.join(', ') : m.subject;
-                    tmp.destroy();
+                    const extracted = await extractEpubMeta(p.file);
+                    if (extracted?.title) meta.title = extracted.title;
+                    if (extracted?.creator) meta.creator = extracted.creator;
+                    if (extracted?.description) meta.description = extracted.description;
+                    if (extracted?.publisher) meta.publisher = extracted.publisher;
+                    if (extracted?.subject) meta.tags = extracted.subject;
+                    if (extracted?.coverBase64) coverBase64 = extracted.coverBase64;
                 } catch (_) {}
             }
             await saveFileToDB(p.id, p.file, coverBase64, meta.title, meta.creator, p.dateAdded);

@@ -1,7 +1,7 @@
 // SharkReader - Database & Storage utilities
 
 const DB_NAME = 'SharkReaderDB';
-const DB_VERSION = 3; // v3: appData store for heavy key-value data
+const DB_VERSION = 4; // v4: keep sourcePath for native metadata repair
 
 export const safeParse = (key, fallbackValue) => {
     try {
@@ -80,16 +80,32 @@ const migrateFromLegacyDB = () => new Promise((resolve) => {
 export const saveFileToDB = async (id, file, coverBase64, originalTitle, originalAuthor, dateAdded) => {
     try {
         const db = await initDB();
-        const tx = db.transaction('files', 'readwrite');
-        tx.objectStore('files').put({ id, file, coverBase64, originalTitle, originalAuthor, dateAdded });
+        return new Promise((resolve) => {
+            const tx = db.transaction('files', 'readwrite');
+            tx.objectStore('files').put({
+                id,
+                file,
+                coverBase64,
+                originalTitle,
+                originalAuthor,
+                dateAdded,
+                sourcePath: file?.sourcePath || null,
+            });
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => { console.error('saveFileToDB tx error', tx.error); resolve(); };
+        });
     } catch (e) { console.error('Error guardando en IDB', e); }
 };
 
 export const deleteFileFromDB = async (id) => {
     try {
         const db = await initDB();
-        const tx = db.transaction('files', 'readwrite');
-        tx.objectStore('files').delete(id);
+        return new Promise((resolve) => {
+            const tx = db.transaction('files', 'readwrite');
+            tx.objectStore('files').delete(id);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+        });
     } catch (_) {}
 };
 
@@ -108,8 +124,12 @@ export const loadFilesFromDB = async () => {
 export const saveAppData = async (key, value) => {
     try {
         const db = await initDB();
-        const tx = db.transaction('appData', 'readwrite');
-        tx.objectStore('appData').put({ key, value });
+        return new Promise((resolve) => {
+            const tx = db.transaction('appData', 'readwrite');
+            tx.objectStore('appData').put({ key, value });
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => { console.error('saveAppData tx error', tx.error); resolve(); };
+        });
     } catch (e) { console.error('saveAppData', e); }
 };
 

@@ -1,27 +1,30 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Icons } from './icons';
 
 const BookCard = React.memo(({ book, isOpen, onOpen, onContextMenu }) => {
-    const cardRef = useRef(null);
-    const [coverLoaded, setCoverLoaded] = useState(false);
+    const [imageFailed, setImageFailed] = useState(false);
 
     useEffect(() => {
-        if (!book.coverUrl || !cardRef.current) return;
-        const obs = new IntersectionObserver(
-            ([e]) => { if (e.isIntersecting) { setCoverLoaded(true); obs.disconnect(); } },
-            { rootMargin: '200px' }
-        );
-        obs.observe(cardRef.current);
-        return () => obs.disconnect();
+        setImageFailed(false);
     }, [book.coverUrl]);
 
-    const showCover = coverLoaded && book.coverUrl;
+    const showCover = Boolean(book.coverUrl && !imageFailed);
     return (
-        <div ref={cardRef} className={`book-container ${isOpen ? 'ring-2 ring-[var(--highlight)] ring-offset-2 ring-offset-[var(--bg-color)] rounded-lg' : ''}`}
+        <div className={`book-container ${isOpen ? 'ring-2 ring-[var(--highlight)] ring-offset-2 ring-offset-[var(--bg-color)] rounded-lg' : ''}`}
             onClick={() => onOpen(book.id)} onContextMenu={(e) => onContextMenu(e, book)}>
             {book.isFav && <div className="favorite-badge"><Icons.Heart fill="white" className="w-3 h-3" /></div>}
             <div className={`book-cover ${showCover ? 'has-image' : ''} ${book.loading ? 'skeleton-loader' : ''}`}
-                style={{ backgroundImage: showCover ? `url(${book.coverUrl})` : 'none', backgroundColor: showCover ? 'transparent' : book.color }}>
+                style={{ backgroundColor: showCover ? 'transparent' : book.color }}>
+                {showCover && (
+                    <img
+                        src={book.coverUrl}
+                        alt={book.name || 'Portada'}
+                        className="absolute inset-0 h-full w-full object-cover"
+                        loading="lazy"
+                        decoding="async"
+                        onError={() => setImageFailed(true)}
+                    />
+                )}
                 {!showCover && !book.loading && (
                     <div className="absolute inset-0 flex flex-col justify-between p-3"
                         style={{ background: `linear-gradient(160deg, ${book.color || '#334155'} 0%, color-mix(in srgb, ${book.color || '#334155'} 50%, #000) 100%)` }}>

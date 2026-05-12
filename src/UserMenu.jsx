@@ -1,9 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Icons, renderAvatar } from './icons';
 import { ACHIEVEMENTS, RARITY } from './achievements';
 
-const UserMenu = ({ userProfile, stats, achievements, books, onNavigate, onExport, onImport, onLogout, onShowWorkshop, onEditProfile, importInputRef }) => {
+const UserMenu = ({ userProfile, stats, achievements, books, onNavigate, onExport, onImport, onLogout, onDeleteAccount, onShowWorkshop, onEditProfile, importInputRef }) => {
     if (!userProfile) return null;
+
+    const [confirmDelete, setConfirmDelete] = useState(false);
 
     const lvl = Math.floor((stats.timeRead || 0) / 60) + 1;
     const xpInLevel = (stats.timeRead || 0) % 60;
@@ -119,10 +121,42 @@ const UserMenu = ({ userProfile, stats, achievements, books, onNavigate, onExpor
                     <Icons.Import /> Importar
                 </button>
             </div>
-            <div className="px-3 pb-3">
-                <button onClick={onLogout} className="w-full py-2 text-red-500 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-red-500/10 transition text-sm">
+
+            {/* Session actions */}
+            <div className="px-3 pb-3 flex flex-col gap-1.5">
+                <button onClick={onLogout} className="w-full py-2 text-orange-400 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-orange-500/10 transition text-sm">
                     <Icons.Close /> Cerrar sesión
                 </button>
+
+                {!confirmDelete ? (
+                    <button
+                        onClick={() => setConfirmDelete(true)}
+                        className="w-full py-2 text-red-500/60 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-red-500/10 hover:text-red-500 transition text-xs"
+                    >
+                        🗑️ Eliminar cuenta y todos los datos
+                    </button>
+                ) : (
+                    <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3">
+                        <p className="text-red-400 text-xs font-bold text-center mb-2">
+                            ⚠️ Esto borrará tu perfil, estadísticas y ajustes.<br />
+                            <span className="opacity-70 font-normal">Los libros de la biblioteca no se borran.</span>
+                        </p>
+                        <div className="flex gap-2">
+                            <button
+                                onClick={() => setConfirmDelete(false)}
+                                className="flex-1 py-1.5 text-xs font-bold rounded-lg bg-black/10 hover:bg-black/20 transition"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                onClick={onDeleteAccount}
+                                className="flex-1 py-1.5 text-xs font-bold rounded-lg bg-red-500 hover:bg-red-600 text-white transition"
+                            >
+                                Sí, eliminar todo
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );
