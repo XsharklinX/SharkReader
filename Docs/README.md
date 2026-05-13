@@ -1,45 +1,45 @@
-# SharkReader — Documentación Oficial
+﻿# SharkReader â€” DocumentaciÃ³n Oficial
 
-> Versión 1.0.0 · Electron + Vite + React · Windows
+> VersiÃ³n 1.0.0 Â· Electron + Vite + React Â· Windows
 
-SharkReader es un lector de libros digitales de escritorio para Windows. Soporta EPUB y PDF con un conjunto extenso de funciones: IA integrada, colecciones, vocabulario, estadísticas, logros, gamificación y un sistema de addons activables (Workshop).
+SharkReader es un lector de libros digitales de escritorio para Windows. Soporta EPUB y PDF con un conjunto extenso de funciones: IA integrada, colecciones, vocabulario, estadÃ­sticas, logros, gamificaciÃ³n y un sistema de addons activables (Workshop).
 
 ---
 
-## Índice de documentación
+## Ãndice de documentaciÃ³n
 
-| Archivo | Descripción |
+| Archivo | DescripciÃ³n |
 |---|---|
-| **[HANDOFF.md](HANDOFF.md)** | **Estado actual del proyecto, bugs resueltos, gotchas críticos — leer primero** |
-| [architecture.md](architecture.md) | Stack tecnológico, estructura de archivos y flujo de arranque |
+| **[HANDOFF.md](HANDOFF.md)** | **Estado actual del proyecto, bugs resueltos, gotchas crÃ­ticos â€” leer primero** |
+| [architecture.md](architecture.md) | Stack tecnolÃ³gico, estructura de archivos y flujo de arranque |
 | [features.md](features.md) | Todas las funcionalidades de usuario documentadas |
-| [epub-reader-internals.md](epub-reader-internals.md) | Internals del EpubReader: sistema CSS, inyección en iframes, epub.js |
+| [epub-reader-internals.md](epub-reader-internals.md) | Internals del EpubReader: sistema CSS, inyecciÃ³n en iframes, epub.js |
 | [data-layer.md](data-layer.md) | Capa de datos: IndexedDB, localStorage y esquemas |
 | [addons-workshop.md](addons-workshop.md) | Sistema de addons del Workshop |
-| [ai-integration.md](ai-integration.md) | Integración con proveedores de IA |
+| [ai-integration.md](ai-integration.md) | IntegraciÃ³n con proveedores de IA |
 | [ipc-electron.md](ipc-electron.md) | Canales IPC entre Main Process y Renderer |
-| [build-deploy.md](build-deploy.md) | Comandos de desarrollo, build y distribución |
+| [build-deploy.md](build-deploy.md) | Comandos de desarrollo, build y distribuciÃ³n |
 
 ---
 
-## Inicio rápido
+## Inicio rÃ¡pido
 
 ```bash
 # Instalar dependencias
-npm install
+pnpm install
 
 # Modo desarrollo (lanza Vite + Electron)
-npm start
+pnpm start
 
-# Build de producción (instalador NSIS + portable)
-npm run build
+# Build de producciÃ³n (instalador NSIS + portable)
+pnpm build
 ```
 
 ---
 
 ## Requisitos del sistema
 
-| Requisito | Mínimo |
+| Requisito | MÃ­nimo |
 |---|---|
 | Sistema operativo | Windows 10 64-bit |
 | RAM | 512 MB |
@@ -53,11 +53,12 @@ npm run build
 | Formato | Soporte |
 |---|---|
 | EPUB 2 / EPUB 3 | Completo (epub.js) |
-| PDF | Visualización + zoom (pdfjs-dist) |
-| MOBI | Asociación de archivo (apertura vía sistema) |
+| PDF | VisualizaciÃ³n + zoom (pdfjs-dist) |
+| MOBI | AsociaciÃ³n de archivo (apertura vÃ­a sistema) |
 
 ---
 
 ## Licencia
 
-ISC © 2025 SharkReader
+ISC Â© 2025 SharkReader
+

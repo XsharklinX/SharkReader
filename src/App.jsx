@@ -1,26 +1,171 @@
 // SharkReader - App Component (v2 — Tabs + Optimizations + Series + Vocab + AI)
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
 import { Icons, renderAvatar } from './icons';
 import { translations, languageNames, RANDOM_EMOJIS } from './translations';
-import { safeParse, loadFilesFromDB, saveFileToDB, deleteFileFromDB, saveAppData, loadAppData } from './db';
+import { safeParse, loadBooksFromDB, saveBookToDB, saveBooksToDB, deleteBookFromDB, saveAppData, loadAppData, saveSetting, loadSetting } from './db';
 import { extractEpubMeta } from './epubMeta';
-import EpubReader from './EpubReader';
-import PdfReader from './PdfReader';
-import AnalyticsView from './AnalyticsView';
-import WorkshopPanel from './WorkshopPanel';
-import SettingsPanel from './SettingsPanel';
-import UserMenu from './UserMenu';
 import { checkNewAchievements, ACHIEVEMENTS, RARITY } from './achievements';
 import BookCard from './BookCard';
 import TabBar from './TabBar';
 import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
+
+const EpubReader = lazy(() => import('./EpubReader'));
+const PdfReader = lazy(() => import('./PdfReader'));
+const AnalyticsView = lazy(() => import('./AnalyticsView'));
+const WorkshopPanel = lazy(() => import('./WorkshopPanel'));
+const SettingsPanel = lazy(() => import('./SettingsPanel'));
+const UserMenu = lazy(() => import('./UserMenu'));
+
+const UNKNOWN_AUTHOR_FALLBACK = 'Autor desconocido';
+const buildBookColor = (seed) => `hsl(${(parseInt(String(seed).slice(-3), 16) || 0) % 360}, 70%, 40%)`;
+const panelLoader = (label = 'Cargando panel...') => (
+    <div className="flex items-center justify-center py-8 px-6 text-sm font-semibold opacity-70">
+        <div className="w-2.5 h-2.5 rounded-full bg-[var(--highlight)] animate-pulse mr-3"></div>
+        <span>{label}</span>
+    </div>
+);
+const readerLoader = (label = 'Preparando lector...') => (
+    <div className="flex-1 flex items-center justify-center">
+        <div className="text-center px-6">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center shadow-[0_12px_40px_rgba(0,0,0,0.28)]">
+                <Icons.BookOpen />
+            </div>
+            <p className="mt-4 text-base font-black">{label}</p>
+            <p className="mt-1 text-sm opacity-60">Cargando visor y herramientas del libro...</p>
+        </div>
+    </div>
+);
+const getBookType = (file, fallbackType = 'epub') => {
+    const fileName = file?.name || '';
+    if (/\.pdf$/i.test(fileName)) return 'pdf';
+    if (/\.mobi$/i.test(fileName)) return 'mobi';
+    return fallbackType;
+};
+const toStoredBookRecord = (book, overrides = {}) => {
+    const snapshot = { ...book, ...overrides };
+    return {
+        id: snapshot.id,
+        sourcePath: snapshot.sourcePath || snapshot.file?.sourcePath || null,
+        file: snapshot.file || null,
+        type: snapshot.type || getBookType(snapshot.file, 'epub'),
+        originalTitle: snapshot.originalTitle || snapshot.name || 'Libro sin titulo',
+        originalAuthor: snapshot.originalAuthor || snapshot.author || UNKNOWN_AUTHOR_FALLBACK,
+        coverBase64: snapshot.coverBase64 || null,
+        description: snapshot.description || '',
+        publisher: snapshot.publisher || '',
+        tags: snapshot.tags || '',
+        series: snapshot.series || '',
+        seriesIndex: snapshot.seriesIndex || 0,
+        progress: snapshot.progress || 0,
+        bookmarks: Array.isArray(snapshot.bookmarks) ? snapshot.bookmarks : [],
+        notes: snapshot.notes || '',
+        customTitle: snapshot.name && snapshot.name !== snapshot.originalTitle ? snapshot.name : '',
+        customAuthor: snapshot.author && snapshot.author !== snapshot.originalAuthor ? snapshot.author : '',
+        customCover: snapshot.customCover ?? (snapshot.coverUrl && snapshot.coverUrl !== snapshot.coverBase64 ? snapshot.coverUrl : null),
+        isFav: !!snapshot.isFav,
+        rating: snapshot.rating || 0,
+        lastLocation: snapshot.lastLocation || null,
+        dateAdded: snapshot.dateAdded || Date.now(),
+        lastReadDate: snapshot.lastReadDate || 0,
+        category: snapshot.category || null,
+        readingMinutes: snapshot.readingMinutes || 0,
+        isFinished: !!snapshot.isFinished,
+        dateStarted: snapshot.dateStarted || null,
+        dateFinished: snapshot.dateFinished || null,
+        isWishlist: !!snapshot.isWishlist,
+    };
+};
+const hydrateStoredBook = (stored) => {
+    const file = stored.file || null;
+    if (file && stored.sourcePath) file.sourcePath = stored.sourcePath;
+
+    const originalTitle = stored.originalTitle || stored.customTitle || file?.name?.replace(/\.[^/.]+$/, '') || 'Libro sin titulo';
+    const originalAuthor = stored.originalAuthor || stored.customAuthor || UNKNOWN_AUTHOR_FALLBACK;
+
+    return {
+        id: stored.id,
+        name: stored.customTitle || originalTitle,
+        author: stored.customAuthor || originalAuthor,
+        originalTitle,
+        originalAuthor,
+        coverBase64: stored.coverBase64 || null,
+        description: stored.description || '',
+        publisher: stored.publisher || '',
+        tags: stored.tags || '',
+        series: stored.series || '',
+        seriesIndex: stored.seriesIndex || 0,
+        file,
+        sourcePath: stored.sourcePath || file?.sourcePath || null,
+        type: stored.type || getBookType(file, 'epub'),
+        url: file ? URL.createObjectURL(file) : null,
+        coverUrl: stored.customCover || stored.coverBase64 || null,
+        color: stored.color || buildBookColor(stored.id),
+        isFav: !!stored.isFav,
+        rating: stored.rating || 0,
+        progress: stored.progress || 0,
+        lastLocation: stored.lastLocation || null,
+        dateAdded: stored.dateAdded || Date.now(),
+        lastReadDate: stored.lastReadDate || 0,
+        bookmarks: Array.isArray(stored.bookmarks) ? stored.bookmarks : [],
+        notes: stored.notes || '',
+        isFinished: !!stored.isFinished,
+        dateStarted: stored.dateStarted || null,
+        dateFinished: stored.dateFinished || null,
+        readingMinutes: stored.readingMinutes || 0,
+        category: stored.category || null,
+        loading: false,
+        isWishlist: !!stored.isWishlist,
+    };
+};
+const stripBookFilesForExport = (book) => {
+    const { file, ...record } = toStoredBookRecord(book);
+    return record;
+};
+const applyImportedBookData = (book, imported) => {
+    if (!imported) return book;
+
+    const originalTitle = imported.originalTitle || book.originalTitle;
+    const originalAuthor = imported.originalAuthor || book.originalAuthor;
+    const customTitle = imported.customTitle || '';
+    const customAuthor = imported.customAuthor || '';
+    const coverBase64 = imported.coverBase64 ?? book.coverBase64 ?? null;
+    const customCover = imported.customCover ?? null;
+
+    return {
+        ...book,
+        originalTitle,
+        originalAuthor,
+        name: customTitle || originalTitle,
+        author: customAuthor || originalAuthor,
+        coverBase64,
+        coverUrl: customCover || coverBase64 || book.coverUrl || null,
+        description: imported.description ?? book.description ?? '',
+        publisher: imported.publisher ?? book.publisher ?? '',
+        tags: imported.tags ?? book.tags ?? '',
+        series: imported.series ?? book.series ?? '',
+        seriesIndex: imported.seriesIndex ?? book.seriesIndex ?? 0,
+        progress: imported.progress ?? book.progress ?? 0,
+        bookmarks: Array.isArray(imported.bookmarks) ? imported.bookmarks : book.bookmarks,
+        notes: imported.notes ?? book.notes ?? '',
+        isFav: imported.isFav ?? book.isFav ?? false,
+        rating: imported.rating ?? book.rating ?? 0,
+        lastLocation: imported.lastLocation ?? book.lastLocation ?? null,
+        dateAdded: imported.dateAdded ?? book.dateAdded ?? Date.now(),
+        lastReadDate: imported.lastReadDate ?? book.lastReadDate ?? 0,
+        category: imported.category ?? book.category ?? null,
+        readingMinutes: imported.readingMinutes ?? book.readingMinutes ?? 0,
+        isFinished: imported.isFinished ?? book.isFinished ?? false,
+        dateStarted: imported.dateStarted ?? book.dateStarted ?? null,
+        dateFinished: imported.dateFinished ?? book.dateFinished ?? null,
+        sourcePath: imported.sourcePath || book.sourcePath || null,
+    };
+};
 
 
     // ─────────────────────────────────────────
     // APP PRINCIPAL
     // ─────────────────────────────────────────
     const App = () => {
-        const initialBooksMeta = safeParse('sharkreader_meta', {});
 
         // ── LIBROS ──
         const [books, setBooks] = useState([]);
@@ -129,6 +274,11 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
         const [achievementToast, setAchievementToast] = useState(null);
         const [journalEntries, setJournalEntries] = useState(() => safeParse('sharkreader_journal', []));
         const [showJournalModal, setShowJournalModal] = useState(false);
+        const [folderImport, setFolderImport] = useState(null);
+        const folderImportQueueRef = useRef([]);
+        const folderImportProcessingRef = useRef(false);
+        const activeFolderImportIdRef = useRef(null);
+        const cancelFolderImportRef = useRef(false);
 
         const t = translations[lang] || translations['es'];
 
@@ -148,6 +298,8 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                 return file;
             });
         }, []);
+
+        const yieldToUi = useCallback(() => new Promise(resolve => setTimeout(resolve, 0)), []);
 
         // ─────────────────────────────────────────
         // EFECTOS
@@ -183,63 +335,51 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
 
         // Cargar libros desde IndexedDB
         useEffect(() => {
-            const safetyTimer = setTimeout(() => {
+            let cancelled = false;
+            let didFallback = false;
+            let didResolve = false;
+
+            const hideLoader = () => {
                 const loader = document.getElementById('shark-preloader');
-                if (loader) { loader.style.opacity = '0'; loader.style.visibility = 'hidden'; }
-            }, 5000);
-            loadFilesFromDB().then(storedFiles => {
-                const meta = safeParse('sharkreader_meta', {});
-                const loaded = storedFiles.map(stored => {
-                    if (stored.file && stored.sourcePath) {
-                        stored.file.sourcePath = stored.sourcePath;
-                    }
-                    const key = stored.originalTitle + '|' + stored.originalAuthor;
-                    const m = meta[key] || {};
-                    return {
-                        id: stored.id,
-                        name: m.customTitle || stored.originalTitle,
-                        author: m.customAuthor || stored.originalAuthor,
-                        originalTitle: stored.originalTitle,
-                        originalAuthor: stored.originalAuthor,
-                        description: m.description || '',
-                        publisher: m.publisher || '',
-                        tags: m.tags || '',
-                        series: m.series || '',
-                        seriesIndex: m.seriesIndex || 0,
-                        file: stored.file,
-                        sourcePath: stored.sourcePath || stored.file?.sourcePath || null,
-                        type: stored.file.name.toLowerCase().endsWith('.pdf') ? 'pdf' : 'epub',
-                        url: URL.createObjectURL(stored.file),
-                        coverUrl: m.customCover || stored.coverBase64,
-                        color: `hsl(${(parseInt(String(stored.id).slice(-3), 16) || 0) % 360}, 70%, 40%)`,
-                        isFav: m.isFav || false,
-                        rating: m.rating || 0,
-                        progress: m.progress || 0,
-                        lastLocation: m.lastLocation || null,
-                        dateAdded: m.dateAdded || stored.dateAdded || Date.now(),
-                        lastReadDate: m.lastReadDate || 0,
-                        bookmarks: m.bookmarks || [],
-                        notes: m.notes || '',
-                        isFinished: m.isFinished || false,
-                        dateStarted: m.dateStarted || null,
-                        dateFinished: m.dateFinished || null,
-                        readingMinutes: m.readingMinutes || 0,
-                        category: m.category || null,
-                        loading: false
-                    };
-                });
+                if (loader) {
+                    loader.style.opacity = '0';
+                    setTimeout(() => {
+                        loader.style.visibility = 'hidden';
+                    }, 420);
+                }
+            };
+
+            const fallbackTimer = setTimeout(() => {
+                if (cancelled || didResolve) return;
+                didFallback = true;
+                console.warn('[SharkReader] La base de datos tardo demasiado al iniciar; continuando sin bloquear la UI.');
+                setIsDbLoaded(true);
+                hideLoader();
+            }, 9000);
+
+            loadBooksFromDB().then(storedBooks => {
+                if (cancelled) return;
+                didResolve = true;
+                const loaded = storedBooks.map(hydrateStoredBook);
                 setBooks(loaded);
                 setIsDbLoaded(true);
-                clearTimeout(safetyTimer);
-                setTimeout(() => {
-                    const loader = document.getElementById('shark-preloader');
-                    if (loader) { loader.style.opacity = '0'; setTimeout(() => { loader.style.visibility = 'hidden'; }, 400); }
-                }, 300);
-            }).catch(() => {
-                clearTimeout(safetyTimer);
-                const loader = document.getElementById('shark-preloader');
-                if (loader) { loader.style.opacity = '0'; loader.style.visibility = 'hidden'; }
+                clearTimeout(fallbackTimer);
+                if (!didFallback) {
+                    setTimeout(hideLoader, 180);
+                }
+            }).catch((err) => {
+                console.error('[SharkReader] Error cargando libros desde IndexedDB:', err);
+                if (cancelled) return;
+                didResolve = true;
+                clearTimeout(fallbackTimer);
+                setIsDbLoaded(true);
+                hideLoader();
             });
+
+            return () => {
+                cancelled = true;
+                clearTimeout(fallbackTimer);
+            };
         }, []);
 
         // Cargar datos pesados desde IDB (async, override de localStorage si hay datos más recientes)
@@ -247,6 +387,11 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
             loadAppData('stats').then(s => { if (s) setStats(s); });
             loadAppData('journalEntries').then(j => { if (j) setJournalEntries(j); });
             loadAppData('vocabulary').then(v => { if (v) setVocabulary(v); });
+            loadSetting('categories').then(c => {
+                if (Array.isArray(c)) {
+                    setCustomCategories(c.filter(cat => String(cat).toLowerCase() !== 'favoritos'));
+                }
+            });
         }, []);
 
         // Re-extracción de metadata en background para libros sin autor real o portada
@@ -328,7 +473,18 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                                 tags:           b.tags       || meta.subject || '',
                             };
                         }));
-                        await saveFileToDB(book.id, repairFile, finalCover, realTitle, realAuthor, book.dateAdded);
+                        await saveBookToDB(toStoredBookRecord({
+                            ...book,
+                            file: repairFile,
+                            sourcePath: repairFile.sourcePath || book.sourcePath || null,
+                            originalTitle: realTitle,
+                            originalAuthor: realAuthor,
+                            coverBase64,
+                            coverUrl: finalCover,
+                            description: book.description || meta.description || '',
+                            publisher: book.publisher || meta.publisher || '',
+                            tags: book.tags || meta.subject || '',
+                        }));
                     } catch (err) {
                         console.error(`[SharkReader] Error procesando ${book.originalTitle}:`, err);
                         metadataRepairingRef.current.delete(book.id);
@@ -349,25 +505,12 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
             persistTimerRef.current = setTimeout(() => {
                 // Use requestIdleCallback so JSON serialization doesn't block page turns
                 const doSave = () => {
-                    const metaToSave = {};
-                    books.forEach(b => {
-                        if (b.loading) return;
-                        const k = b.originalTitle + '|' + b.originalAuthor;
-                        metaToSave[k] = {
-                            progress: b.progress, lastLocation: b.lastLocation, lastReadDate: b.lastReadDate,
-                            bookmarks: b.bookmarks, notes: b.notes || '',
-                            isFinished: b.isFinished || false, dateStarted: b.dateStarted || null,
-                            dateFinished: b.dateFinished || null, readingMinutes: b.readingMinutes || 0,
-                            category: b.category, customTitle: b.name,
-                            customAuthor: b.author, customCover: b.coverUrl, description: b.description,
-                            publisher: b.publisher, tags: b.tags, isFav: b.isFav, rating: b.rating || 0,
-                            dateAdded: b.dateAdded, series: b.series || '', seriesIndex: b.seriesIndex || 0
-                        };
-                    });
-                    localStorage.setItem('sharkreader_meta', JSON.stringify(metaToSave));
+                    const bookRecords = books.filter(b => !b.loading).map(b => toStoredBookRecord(b));
+                    saveBooksToDB(bookRecords);
                     localStorage.setItem('sharkreader_categories', JSON.stringify(customCategories));
+                    saveSetting('categories', customCategories);
                     if (syncFolder && window.electronAPI) {
-                        const syncData = JSON.stringify({ meta: metaToSave, exportedAt: new Date().toISOString() }, null, 2);
+                        const syncData = JSON.stringify({ books: bookRecords.map(({ file, ...record }) => record), exportedAt: new Date().toISOString() }, null, 2);
                         window.electronAPI.writeSyncFile(syncFolder, syncData).catch(() => {});
                     }
                 };
@@ -718,7 +861,12 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
 
         const exportAllData = () => {
             if (!userProfile) { alert("Inicia sesión para exportar."); return; }
-            const data = { meta: safeParse('sharkreader_meta', {}), categories: safeParse('sharkreader_categories', []), stats: safeParse('sharkreader_stats', {}), user: safeParse('sharkreader_user', {}) };
+            const data = {
+                books: books.filter(b => !b.loading).map(stripBookFilesForExport),
+                categories: customCategories,
+                stats,
+                user: userProfile || {},
+            };
             const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
             const a = document.createElement('a'); a.href = url; a.download = `SharkReader_Backup_${new Date().toISOString().split('T')[0]}.json`; a.click(); URL.revokeObjectURL(url);
         };
@@ -728,11 +876,42 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
             r.onload = ev => {
                 try {
                     const d = JSON.parse(ev.target.result);
-                    if (d.meta) localStorage.setItem('sharkreader_meta', JSON.stringify(d.meta));
-                    if (d.categories) localStorage.setItem('sharkreader_categories', JSON.stringify(d.categories));
-                    if (d.stats) localStorage.setItem('sharkreader_stats', JSON.stringify(d.stats));
-                    if (d.user) localStorage.setItem('sharkreader_user', JSON.stringify(d.user));
-                    alert("Datos restaurados. Recargando..."); window.location.reload();
+                    let nextBooks = books;
+
+                    if (Array.isArray(d.books)) {
+                        const byId = new Map(d.books.filter(book => book?.id).map(book => [book.id, book]));
+                        const bySourcePath = new Map(d.books.filter(book => book?.sourcePath).map(book => [book.sourcePath, book]));
+                        const byLegacyKey = new Map(d.books.map(book => [`${book.originalTitle || ''}|${book.originalAuthor || ''}`, book]));
+
+                        nextBooks = books.map(book => {
+                            const imported = byId.get(book.id)
+                                || (book.sourcePath ? bySourcePath.get(book.sourcePath) : null)
+                                || byLegacyKey.get(`${book.originalTitle || ''}|${book.originalAuthor || ''}`);
+                            return applyImportedBookData(book, imported);
+                        });
+                    } else if (d.meta) {
+                        nextBooks = books.map(book => applyImportedBookData(book, d.meta[`${book.originalTitle || ''}|${book.originalAuthor || ''}`]));
+                    }
+
+                    if (d.categories) {
+                        const nextCategories = Array.isArray(d.categories) ? d.categories.filter(cat => String(cat).toLowerCase() !== 'favoritos') : customCategories;
+                        setCustomCategories(nextCategories);
+                        localStorage.setItem('sharkreader_categories', JSON.stringify(nextCategories));
+                        saveSetting('categories', nextCategories);
+                    }
+                    if (d.stats) {
+                        setStats(d.stats);
+                        localStorage.setItem('sharkreader_stats', JSON.stringify(d.stats));
+                        saveAppData('stats', d.stats);
+                    }
+                    if (d.user) {
+                        setUserProfile(d.user);
+                        localStorage.setItem('sharkreader_user', JSON.stringify(d.user));
+                    }
+
+                    setBooks(nextBooks);
+                    saveBooksToDB(nextBooks.filter(book => !book.loading).map(toStoredBookRecord));
+                    alert("Datos restaurados.");
                 } catch (_) { alert("Archivo inválido."); }
             };
             r.readAsText(f); e.target.value = '';
@@ -756,6 +935,29 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
             fileInputRef.current.click();
         };
         const openFolderPicker = async () => {
+            if (window.electronAPI?.startFolderImport) {
+                const session = await window.electronAPI.startFolderImport();
+                if (!session?.sessionId) return;
+
+                activeFolderImportIdRef.current = session.sessionId;
+                cancelFolderImportRef.current = false;
+                folderImportQueueRef.current = [];
+                folderImportProcessingRef.current = false;
+                setFolderImport({
+                    sessionId: session.sessionId,
+                    folderName: session.folderName || 'Carpeta',
+                    phase: 'scanning',
+                    discovered: 0,
+                    total: 0,
+                    imported: 0,
+                    metadataProcessed: 0,
+                    currentName: '',
+                    scanFinished: false,
+                    isCancelling: false,
+                });
+                return;
+            }
+
             if (window.electronAPI?.pickBookFolder) {
                 const payloads = await window.electronAPI.pickBookFolder();
                 const files = bookPayloadsToFiles(payloads);
@@ -780,7 +982,7 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
             }
         };
 
-        const processFiles = async (files) => {
+        const processFiles = async (files, options = {}) => {
             const valid = files.filter(f => /\.(epub|pdf)$/i.test(f.name));
             if (!valid.length) { alert("Solo se aceptan archivos .epub y .pdf"); return; }
 
@@ -838,9 +1040,17 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
 
             (async () => {
                 for (const book of newBooks) {
-                    await saveFileToDB(book.id, book.file, book.coverUrl || null, book.originalTitle, book.originalAuthor, book.dateAdded);
+                    if (options.shouldContinue && !options.shouldContinue()) break;
 
-                    if (book.type !== 'epub') continue;
+                    await saveBookToDB(toStoredBookRecord(book));
+
+                    if (book.type !== 'epub') {
+                        if (options.onMetadataProcessed) {
+                            options.onMetadataProcessed(book, null);
+                        }
+                        await yieldToUi();
+                        continue;
+                    }
 
                     let meta = book.file.nativeMeta || null;
                     if (!meta) {
@@ -850,38 +1060,206 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
 
                     const title = (meta.title || '').trim() || book.originalTitle;
                     const creator = (meta.creator || '').trim() || book.originalAuthor;
-                    const k = title + '|' + creator;
-                    const saved = initialBooksMeta[k] || {};
                     const updated = {
-                        name: saved.customTitle || title,
-                        author: saved.customAuthor || creator,
+                        name: title,
+                        author: creator,
                         originalTitle: title,
                         originalAuthor: creator,
-                        coverUrl: saved.customCover || meta.coverBase64 || null,
-                        description: saved.description ?? (meta.description || ''),
-                        publisher: saved.publisher ?? (meta.publisher || ''),
-                        tags: saved.tags ?? (meta.subject || ''),
-                        series: saved.series || '',
-                        seriesIndex: saved.seriesIndex || 0,
-                        isFav: saved.isFav || false,
-                        rating: saved.rating || 0,
-                        progress: saved.progress || 0,
-                        lastLocation: saved.lastLocation || null,
-                        lastReadDate: saved.lastReadDate || 0,
-                        bookmarks: saved.bookmarks || [],
-                        category: saved.category || null,
-                        notes: saved.notes || '',
-                        isFinished: saved.isFinished || false,
-                        dateStarted: saved.dateStarted || null,
-                        dateFinished: saved.dateFinished || null,
-                        readingMinutes: saved.readingMinutes || 0,
+                        coverBase64: meta.coverBase64 || null,
+                        coverUrl: meta.coverBase64 || null,
+                        description: meta.description || '',
+                        publisher: meta.publisher || '',
+                        tags: meta.subject || '',
                     };
 
                     setBooks(prev => prev.map(b => b.id === book.id ? { ...b, ...updated } : b));
-                    await saveFileToDB(book.id, book.file, meta.coverBase64 || null, title, creator, book.dateAdded);
+                    await saveBookToDB(toStoredBookRecord({ ...book, ...updated }));
+
+                    if (options.onMetadataProcessed) {
+                        options.onMetadataProcessed(book, updated);
+                    }
+
+                    await yieldToUi();
                 }
             })().catch(err => console.error('[SharkReader] Error procesando metadata en segundo plano:', err));
         };
+
+        const finishFolderImportOverlay = useCallback((updater) => {
+            setFolderImport(prev => {
+                if (!prev) return prev;
+                const next = typeof updater === 'function' ? updater(prev) : { ...prev, ...updater };
+                if (!next) return next;
+                if (next.phase === 'done' || next.phase === 'cancelled' || next.phase === 'error' || next.phase === 'empty') {
+                    activeFolderImportIdRef.current = null;
+                    setTimeout(() => {
+                        setFolderImport(current => current?.sessionId === next.sessionId ? null : current);
+                    }, next.phase === 'done' ? 1400 : 1800);
+                }
+                return next;
+            });
+        }, []);
+
+        const pumpFolderImportQueue = useCallback(async () => {
+            if (folderImportProcessingRef.current) return;
+            folderImportProcessingRef.current = true;
+
+            try {
+                while (folderImportQueueRef.current.length) {
+                    if (cancelFolderImportRef.current) {
+                        folderImportQueueRef.current = [];
+                        break;
+                    }
+
+                    const nextBatch = folderImportQueueRef.current.shift();
+                    if (!nextBatch) continue;
+
+                    const files = bookPayloadsToFiles(nextBatch.batch || []);
+                    if (!files.length) {
+                        await yieldToUi();
+                        continue;
+                    }
+
+                    await processFiles(files, {
+                        shouldContinue: () => !cancelFolderImportRef.current,
+                        onMetadataProcessed: () => {
+                            finishFolderImportOverlay(prev => {
+                                if (!prev || prev.sessionId !== nextBatch.sessionId) return prev;
+                                const metadataProcessed = Math.min(prev.total || 0, (prev.metadataProcessed || 0) + 1);
+                                const readyForDone = prev.scanFinished && metadataProcessed >= (prev.total || 0) && (prev.total || 0) > 0;
+                                return {
+                                    ...prev,
+                                    metadataProcessed,
+                                    phase: readyForDone ? 'done' : (prev.scanFinished ? 'metadata' : prev.phase),
+                                };
+                            });
+                        }
+                    });
+
+                    await yieldToUi();
+                }
+            } finally {
+                folderImportProcessingRef.current = false;
+            }
+        }, [bookPayloadsToFiles, finishFolderImportOverlay, processFiles, yieldToUi]);
+
+        const cancelActiveFolderImport = useCallback(async () => {
+            const sessionId = activeFolderImportIdRef.current;
+            if (!sessionId) return;
+
+            cancelFolderImportRef.current = true;
+            folderImportQueueRef.current = [];
+            setFolderImport(prev => prev && prev.sessionId === sessionId ? { ...prev, isCancelling: true } : prev);
+
+            if (window.electronAPI?.cancelFolderImport) {
+                await window.electronAPI.cancelFolderImport(sessionId);
+            }
+        }, []);
+
+        useEffect(() => {
+            if (!window.electronAPI?.onFolderImportProgress) return;
+
+            const handleProgress = (payload) => {
+                if (!payload?.sessionId) return;
+                if (activeFolderImportIdRef.current && activeFolderImportIdRef.current !== payload.sessionId) return;
+
+                finishFolderImportOverlay(prev => {
+                    if (!prev || prev.sessionId !== payload.sessionId) return prev;
+                    const total = payload.total ?? prev.total ?? 0;
+                    const imported = payload.imported ?? prev.imported ?? 0;
+                    let phase = payload.phase || prev.phase;
+
+                    if (prev.scanFinished && phase === 'importing' && imported >= total && total > 0) {
+                        phase = 'metadata';
+                    }
+
+                    return {
+                        ...prev,
+                        phase,
+                        discovered: payload.discovered ?? prev.discovered ?? 0,
+                        total,
+                        imported,
+                        currentName: payload.currentName || prev.currentName || '',
+                    };
+                });
+            };
+
+            const handleBatch = (payload) => {
+                if (!payload?.sessionId || !Array.isArray(payload.batch)) return;
+                if (activeFolderImportIdRef.current !== payload.sessionId) return;
+
+                folderImportQueueRef.current.push(payload);
+                pumpFolderImportQueue().catch((err) => {
+                    finishFolderImportOverlay(prev => prev && prev.sessionId === payload.sessionId ? {
+                        ...prev,
+                        phase: 'error',
+                        error: err.message,
+                    } : prev);
+                });
+            };
+
+            const handleDone = (payload) => {
+                if (!payload?.sessionId) return;
+                if (activeFolderImportIdRef.current !== payload.sessionId) return;
+
+                finishFolderImportOverlay(prev => {
+                    if (!prev || prev.sessionId !== payload.sessionId) return prev;
+
+                    const total = payload.total ?? prev.total ?? 0;
+                    const imported = payload.imported ?? prev.imported ?? 0;
+                    const metadataProcessed = Math.min(prev.metadataProcessed || 0, total);
+
+                    if (payload.error) {
+                        return {
+                            ...prev,
+                            phase: 'error',
+                            total,
+                            imported,
+                            scanFinished: true,
+                            error: payload.error,
+                        };
+                    }
+
+                    if (payload.cancelled) {
+                        return {
+                            ...prev,
+                            phase: 'cancelled',
+                            total,
+                            imported,
+                            scanFinished: true,
+                        };
+                    }
+
+                    if (total === 0) {
+                        return {
+                            ...prev,
+                            phase: 'empty',
+                            total: 0,
+                            imported: 0,
+                            scanFinished: true,
+                        };
+                    }
+
+                    const done = metadataProcessed >= total && folderImportQueueRef.current.length === 0 && !folderImportProcessingRef.current;
+                    return {
+                        ...prev,
+                        phase: done ? 'done' : 'metadata',
+                        total,
+                        imported,
+                        scanFinished: true,
+                    };
+                });
+            };
+
+            window.electronAPI.onFolderImportProgress(handleProgress);
+            window.electronAPI.onFolderImportBatch(handleBatch);
+            window.electronAPI.onFolderImportDone(handleDone);
+
+            return () => {
+                window.electronAPI.offFolderImportProgress();
+                window.electronAPI.offFolderImportBatch();
+                window.electronAPI.offFolderImportDone();
+            };
+        }, [finishFolderImportOverlay, pumpFolderImportQueue]);
 
         // LIBROS
         // ─────────────────────────────────────────
@@ -904,7 +1282,7 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
             if (tabToClose) closeTab(tabToClose.id);
             setBooks(prev => prev.filter(b => b.id !== bookId));
             if (lastReadId === bookId) setLastReadId(null);
-            deleteFileFromDB(bookId);
+            deleteBookFromDB(bookId);
         }, [books, tabs, lastReadId, t, closeTab]);
 
         const updateBookLocation = useCallback((bookId, cfi, percent) => {
@@ -1121,6 +1499,39 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
 
         const allBookmarks = useMemo(() => books.filter(b => b.bookmarks.length > 0), [books]);
         const openBookIds = useMemo(() => new Set(tabs.map(t => t.bookId)), [tabs]);
+        const folderImportOverlay = useMemo(() => {
+            if (!folderImport) return null;
+
+            const total = Math.max(folderImport.total || 0, folderImport.discovered || 0, 0);
+            const imported = Math.min(folderImport.imported || 0, total || folderImport.imported || 0);
+            const metadataProcessed = Math.min(folderImport.metadataProcessed || 0, total || folderImport.metadataProcessed || 0);
+
+            if (folderImport.phase === 'empty') {
+                return { ...folderImport, title: 'No se encontraron libros', detail: 'La carpeta seleccionada no contiene EPUB, PDF o MOBI.', progress: 100, indeterminate: false, canCancel: false };
+            }
+
+            if (folderImport.phase === 'error') {
+                return { ...folderImport, title: 'La importacion se detuvo', detail: folderImport.error || 'Ocurrio un error inesperado durante la importacion.', progress: 100, indeterminate: false, canCancel: false };
+            }
+
+            if (folderImport.phase === 'cancelled') {
+                return { ...folderImport, title: 'Importacion cancelada', detail: `Se procesaron ${metadataProcessed} de ${total || imported || 0} libros antes de detenerse.`, progress: total > 0 ? Math.round((metadataProcessed / total) * 100) : 0, indeterminate: false, canCancel: false };
+            }
+
+            if (folderImport.phase === 'done') {
+                return { ...folderImport, title: 'Importacion completada', detail: `Se agregaron ${metadataProcessed} libros${folderImport.folderName ? ` desde ${folderImport.folderName}` : ''}.`, progress: 100, indeterminate: false, canCancel: false };
+            }
+
+            if (folderImport.phase === 'metadata') {
+                return { ...folderImport, title: 'Extrayendo portadas y metadatos', detail: `${metadataProcessed} de ${total || 0} libros listos.`, progress: total > 0 ? Math.round((metadataProcessed / total) * 100) : 0, indeterminate: false, canCancel: !folderImport.isCancelling };
+            }
+
+            if (folderImport.phase === 'importing') {
+                return { ...folderImport, title: 'Importando libros en segundo plano', detail: `${imported} de ${total || 0} libros cargados desde disco.`, progress: total > 0 ? Math.round((imported / total) * 100) : 0, indeterminate: false, canCancel: !folderImport.isCancelling };
+            }
+
+            return { ...folderImport, title: 'Escaneando carpeta', detail: total > 0 ? `${total} libros detectados hasta ahora.` : 'Buscando archivos compatibles...', progress: 15, indeterminate: true, canCancel: !folderImport.isCancelling };
+        }, [folderImport]);
 
         // ─────────────────────────────────────────
         // RENDER
@@ -1145,6 +1556,75 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                 )}
 
                 {/* ── LIBRARY TOPBAR ── */}
+                {folderImportOverlay && (
+                    <div className="fixed inset-x-0 bottom-0 z-[640] flex justify-end p-4 md:p-6 pointer-events-none">
+                        <div className="folder-import-overlay pointer-events-auto w-full max-w-md rounded-[28px] border border-white/10 bg-slate-950/92 text-white shadow-2xl backdrop-blur-xl fade-in">
+                            <div className="p-5 md:p-6">
+                                <div className="flex items-start gap-4">
+                                    <div className="folder-import-icon flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-2xl bg-sky-500/15 text-sky-300">
+                                        <Icons.FolderPlus />
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                        <p className="text-[11px] font-black uppercase tracking-[0.24em] text-sky-300/80">
+                                            {folderImportOverlay.folderName || 'Importacion'}
+                                        </p>
+                                        <h3 className="mt-1 text-lg font-black leading-tight text-white">
+                                            {folderImportOverlay.title}
+                                        </h3>
+                                        <p className="mt-2 text-sm text-white/70">
+                                            {folderImportOverlay.detail}
+                                        </p>
+                                    </div>
+                                    {folderImportOverlay.canCancel && (
+                                        <button
+                                            onClick={cancelActiveFolderImport}
+                                            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-bold text-white/85 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                                            disabled={folderImportOverlay.isCancelling}
+                                        >
+                                            {folderImportOverlay.isCancelling ? 'Cancelando...' : 'Cancelar'}
+                                        </button>
+                                    )}
+                                </div>
+
+                                <div className="mt-5">
+                                    <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-[0.16em] text-white/45">
+                                        <span>{folderImportOverlay.phase === 'metadata' ? 'Metadatos' : folderImportOverlay.phase === 'importing' ? 'Importacion' : 'Estado'}</span>
+                                        <span>{folderImportOverlay.progress}%</span>
+                                    </div>
+                                    <div className="folder-import-progress">
+                                        <div
+                                            className={folderImportOverlay.indeterminate ? 'folder-import-progress-bar indeterminate' : 'folder-import-progress-bar'}
+                                            style={folderImportOverlay.indeterminate ? undefined : { width: `${Math.max(6, folderImportOverlay.progress)}%` }}
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="mt-4 grid grid-cols-3 gap-3">
+                                    <div className="rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-3">
+                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Detectados</p>
+                                        <p className="mt-2 text-lg font-black text-white">{folderImportOverlay.total || folderImportOverlay.discovered || 0}</p>
+                                    </div>
+                                    <div className="rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-3">
+                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Importados</p>
+                                        <p className="mt-2 text-lg font-black text-white">{folderImportOverlay.imported || 0}</p>
+                                    </div>
+                                    <div className="rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-3">
+                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Listos</p>
+                                        <p className="mt-2 text-lg font-black text-white">{folderImportOverlay.metadataProcessed || 0}</p>
+                                    </div>
+                                </div>
+
+                                {folderImportOverlay.currentName && (
+                                    <div className="mt-4 rounded-2xl border border-white/8 bg-black/20 px-4 py-3">
+                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/35">Procesando ahora</p>
+                                        <p className="mt-2 truncate text-sm font-semibold text-white/80">{folderImportOverlay.currentName}</p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {view === 'library' && (
                     <div className="flex-shrink-0 flex items-center justify-between px-6 text-white shadow-lg z-20 h-16" style={{ backgroundColor: 'var(--topbar-bg)' }}>
                         <div className="flex items-center gap-5">
@@ -1200,19 +1680,21 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                                             <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-lg shadow-md border-2 border-white/20 overflow-hidden">{renderAvatar(userProfile.avatar)}</div>
                                         </button>
                                         {showUserMenu && (
-                                            <UserMenu
-                                                userProfile={userProfile}
-                                                stats={stats}
-                                                achievements={achievements}
-                                                books={books}
-                                                onNavigate={(v) => { setView(v); setShowUserMenu(false); }}
-                                                onExport={() => { exportAllData(); setShowUserMenu(false); }}
-                                                onImport={() => { importInputRef.current.click(); setShowUserMenu(false); }}
-                                                onLogout={() => { setUserProfile(null); setShowUserMenu(false); }}
-                                                onDeleteAccount={() => {
+                                            <Suspense fallback={panelLoader('Cargando menu...')}>
+                                                <UserMenu
+                                                    userProfile={userProfile}
+                                                    stats={stats}
+                                                    achievements={achievements}
+                                                    books={books}
+                                                    onNavigate={(v) => { setView(v); setShowUserMenu(false); }}
+                                                    onExport={() => { exportAllData(); setShowUserMenu(false); }}
+                                                    onImport={() => { importInputRef.current.click(); setShowUserMenu(false); }}
+                                                    onLogout={() => { setUserProfile(null); setShowUserMenu(false); }}
+                                                    onDeleteAccount={() => {
                                                     // Wipe all user-related localStorage keys
                                                     const keysToDelete = [
                                                         'sharkreader_user',
+                                                        'sharkreader_meta',
                                                         'sharkreader_stats',
                                                         'sharkreader_categories',
                                                         'sharkreader_addons',
@@ -1222,6 +1704,7 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                                                         'sharkreader_prev_open',
                                                         'sharkreader_lastReadId',
                                                         'sharkreader_migrated_v2',
+                                                        'sharkreader_migrated_v5',
                                                         'sharkreader_lang',
                                                         'sharkreader_theme',
                                                         'sharkreader_readFlow',
@@ -1233,11 +1716,12 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                                                     keysToDelete.forEach(k => localStorage.removeItem(k));
                                                     setShowUserMenu(false);
                                                     window.location.reload();
-                                                }}
-                                                onShowWorkshop={() => { setShowWorkshop(true); setShowUserMenu(false); }}
-                                                onEditProfile={openEditProfile}
-                                                importInputRef={importInputRef}
-                                            />
+                                                    }}
+                                                    onShowWorkshop={() => { setShowWorkshop(true); setShowUserMenu(false); }}
+                                                    onEditProfile={openEditProfile}
+                                                    importInputRef={importInputRef}
+                                                />
+                                            </Suspense>
                                         )}
                                     </>
                                 )}
@@ -2001,33 +2485,39 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                 )}
 
                 {/* ── MODAL SETTINGS (extracted) ── */}
-                <SettingsPanel
-                    open={settingsOpen} onClose={() => setSettingsOpen(false)}
-                    theme={theme} setTheme={setTheme}
-                    warmMode={warmMode} setWarmMode={setWarmMode}
-                    readFlow={readFlow} setReadFlow={setReadFlow}
-                    readLayout={readLayout} setReadLayout={setReadLayout}
-                    pageTransition={pageTransition} setPageTransition={(v) => { setPageTransition(v); localStorage.setItem('page_transition', v); }}
-                    lang={lang} setLang={setLang}
-                    aiProvider={aiProvider} setAiProvider={setAiProvider}
-                    aiApiKey={aiApiKey} setAiApiKey={setAiApiKey}
-                    syncFolder={syncFolder} setSyncFolder={setSyncFolder}
-                    accentColor={accentColor} setAccentColor={setAccentColor}
-                    t={t}
-                />
+                {settingsOpen && (
+                    <Suspense fallback={panelLoader('Cargando configuracion...')}>
+                        <SettingsPanel
+                            open={settingsOpen} onClose={() => setSettingsOpen(false)}
+                            theme={theme} setTheme={setTheme}
+                            warmMode={warmMode} setWarmMode={setWarmMode}
+                            readFlow={readFlow} setReadFlow={setReadFlow}
+                            readLayout={readLayout} setReadLayout={setReadLayout}
+                            pageTransition={pageTransition} setPageTransition={(v) => { setPageTransition(v); localStorage.setItem('page_transition', v); }}
+                            lang={lang} setLang={setLang}
+                            aiProvider={aiProvider} setAiProvider={setAiProvider}
+                            aiApiKey={aiApiKey} setAiApiKey={setAiApiKey}
+                            syncFolder={syncFolder} setSyncFolder={setSyncFolder}
+                            accentColor={accentColor} setAccentColor={setAccentColor}
+                            t={t}
+                        />
+                    </Suspense>
+                )}
 
                 {/* ── ANALYTICS VIEW ── */}
                 {(view === 'analytics' || view === 'achievements') && (
                     <div className="flex-1 overflow-hidden">
-                        <AnalyticsView
-                            stats={stats}
-                            books={books}
-                            vocabulary={vocabulary}
-                            achievements={achievements}
-                            yearlyGoal={yearlyGoal}
-                            initialTab={view === 'achievements' ? 'achievements' : 'stats'}
-                            onBack={() => setView('library')}
-                        />
+                        <Suspense fallback={panelLoader('Cargando analiticas...')}>
+                            <AnalyticsView
+                                stats={stats}
+                                books={books}
+                                vocabulary={vocabulary}
+                                achievements={achievements}
+                                yearlyGoal={yearlyGoal}
+                                initialTab={view === 'achievements' ? 'achievements' : 'stats'}
+                                onBack={() => setView('library')}
+                            />
+                        </Suspense>
                     </div>
                 )}
 
@@ -2038,49 +2528,53 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                         <div className={`flex flex-col ${panelMode && rightBookData ? 'w-1/2 border-r border-white/10' : 'w-full'} overflow-hidden`}>
                             {currentBookData.type === 'epub' ? (
                                 <EpubReaderBoundary onClose={closeBook}>
-                                <EpubReader
-                                    bookData={currentBookData}
-                                    targetCfi={currentTargetCfi}
-                                    theme={theme} t={t} lang={lang}
-                                    readFlow={readFlow} readLayout={readLayout}
-                                    updateLocationAndProgress={updateBookLocation}
-                                    toggleBookmark={toggleBookmarkInApp}
-                                    isFullscreen={isFullscreen}
-                                    focusMode={addons.focusMode}
-                                    pageTransition={pageTransition}
-                                    smartTocAddon={addons.smartToc}
-                                    onClose={closeBook}
-                                    onOpenSettings={() => setSettingsOpen(true)}
-                                    onStatsUpdate={pages => setStats(prev => ({ ...prev, pagesTurned: prev.pagesTurned + pages }))}
-                                    onOpenBookInfo={() => setActiveBookModal(currentBookData)}
-                                    onSaveWord={saveWordToVocab}
-                                    aiProvider={aiProvider}
-                                    aiApiKey={aiApiKey}
-                                    tabs={tabs}
-                                    activeTabId={activeTabId}
-                                    allBooks={books}
-                                    onSwitchTab={(id) => setActiveTabId(id)}
-                                    onCloseTab={closeTab}
-                                    onGoToLibrary={() => setView('library')}
-                                />
+                                    <Suspense fallback={readerLoader(`Abriendo ${currentBookData.name || 'libro'}...`)}>
+                                        <EpubReader
+                                            bookData={currentBookData}
+                                            targetCfi={currentTargetCfi}
+                                            theme={theme} t={t} lang={lang}
+                                            readFlow={readFlow} readLayout={readLayout}
+                                            updateLocationAndProgress={updateBookLocation}
+                                            toggleBookmark={toggleBookmarkInApp}
+                                            isFullscreen={isFullscreen}
+                                            focusMode={addons.focusMode}
+                                            pageTransition={pageTransition}
+                                            smartTocAddon={addons.smartToc}
+                                            onClose={closeBook}
+                                            onOpenSettings={() => setSettingsOpen(true)}
+                                            onStatsUpdate={pages => setStats(prev => ({ ...prev, pagesTurned: prev.pagesTurned + pages }))}
+                                            onOpenBookInfo={() => setActiveBookModal(currentBookData)}
+                                            onSaveWord={saveWordToVocab}
+                                            aiProvider={aiProvider}
+                                            aiApiKey={aiApiKey}
+                                            tabs={tabs}
+                                            activeTabId={activeTabId}
+                                            allBooks={books}
+                                            onSwitchTab={(id) => setActiveTabId(id)}
+                                            onCloseTab={closeTab}
+                                            onGoToLibrary={() => setView('library')}
+                                        />
+                                    </Suspense>
                                 </EpubReaderBoundary>
                             ) : (
-                                <PdfReader
-                                    bookData={currentBookData}
-                                    theme={theme} t={t}
-                                    isFullscreen={isFullscreen}
-                                    focusMode={addons.focusMode}
-                                    onClose={closeBook}
-                                    onOpenSettings={() => setSettingsOpen(true)}
-                                    onOpenBookInfo={() => setActiveBookModal(currentBookData)}
-                                    updateLocationAndProgress={updateBookLocation}
-                                    toggleBookmark={toggleBookmarkInApp}
-                                    onStatsUpdate={pages => setStats(prev => ({ ...prev, pagesTurned: prev.pagesTurned + pages }))}
-                                    tabs={tabs} activeTabId={activeTabId} allBooks={books}
-                                    onSwitchTab={id => setActiveTabId(id)}
-                                    onCloseTab={closeTab}
-                                    onGoToLibrary={() => setView('library')}
-                                />
+                                <Suspense fallback={readerLoader(`Abriendo ${currentBookData.name || 'documento'}...`)}>
+                                    <PdfReader
+                                        bookData={currentBookData}
+                                        theme={theme} t={t}
+                                        isFullscreen={isFullscreen}
+                                        focusMode={addons.focusMode}
+                                        onClose={closeBook}
+                                        onOpenSettings={() => setSettingsOpen(true)}
+                                        onOpenBookInfo={() => setActiveBookModal(currentBookData)}
+                                        updateLocationAndProgress={updateBookLocation}
+                                        toggleBookmark={toggleBookmarkInApp}
+                                        onStatsUpdate={pages => setStats(prev => ({ ...prev, pagesTurned: prev.pagesTurned + pages }))}
+                                        tabs={tabs} activeTabId={activeTabId} allBooks={books}
+                                        onSwitchTab={id => setActiveTabId(id)}
+                                        onCloseTab={closeTab}
+                                        onGoToLibrary={() => setView('library')}
+                                    />
+                                </Suspense>
                             )}
                         </div>
 
@@ -2101,34 +2595,38 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                                     <button onClick={() => { setPanelMode(false); setRightTabId(null); }} className="ml-auto px-2 text-white/40 hover:text-white transition text-lg">×</button>
                                 </div>
                                 {rightBookData.type === 'epub' ? (
-                                    <EpubReader
-                                        bookData={rightBookData}
-                                        targetCfi={tabTargetCfi[rightTabId] || null}
-                                        theme={theme} t={t} lang={lang}
-                                        readFlow={readFlow} readLayout={readLayout}
-                                        updateLocationAndProgress={updateBookLocation}
-                                        toggleBookmark={toggleBookmarkInApp}
-                                        isFullscreen={false}
-                                        onClose={() => { setPanelMode(false); setRightTabId(null); }}
-                                        onOpenSettings={() => setSettingsOpen(true)}
-                                        onStatsUpdate={pages => setStats(prev => ({ ...prev, pagesTurned: prev.pagesTurned + pages }))}
-                                        onOpenBookInfo={() => setActiveBookModal(rightBookData)}
-                                        onSaveWord={saveWordToVocab}
-                                        aiProvider={aiProvider}
-                                        aiApiKey={aiApiKey}
-                                    />
+                                    <Suspense fallback={readerLoader(`Abriendo ${rightBookData.name || 'libro'}...`)}>
+                                        <EpubReader
+                                            bookData={rightBookData}
+                                            targetCfi={tabTargetCfi[rightTabId] || null}
+                                            theme={theme} t={t} lang={lang}
+                                            readFlow={readFlow} readLayout={readLayout}
+                                            updateLocationAndProgress={updateBookLocation}
+                                            toggleBookmark={toggleBookmarkInApp}
+                                            isFullscreen={false}
+                                            onClose={() => { setPanelMode(false); setRightTabId(null); }}
+                                            onOpenSettings={() => setSettingsOpen(true)}
+                                            onStatsUpdate={pages => setStats(prev => ({ ...prev, pagesTurned: prev.pagesTurned + pages }))}
+                                            onOpenBookInfo={() => setActiveBookModal(rightBookData)}
+                                            onSaveWord={saveWordToVocab}
+                                            aiProvider={aiProvider}
+                                            aiApiKey={aiApiKey}
+                                        />
+                                    </Suspense>
                                 ) : (
-                                    <PdfReader
-                                        bookData={rightBookData}
-                                        theme={theme} t={t}
-                                        isFullscreen={false}
-                                        onClose={() => { setPanelMode(false); setRightTabId(null); }}
-                                        onOpenSettings={() => setSettingsOpen(true)}
-                                        onOpenBookInfo={() => setActiveBookModal(rightBookData)}
-                                        updateLocationAndProgress={updateBookLocation}
-                                        toggleBookmark={toggleBookmarkInApp}
-                                        onStatsUpdate={pages => setStats(prev => ({ ...prev, pagesTurned: prev.pagesTurned + pages }))}
-                                    />
+                                    <Suspense fallback={readerLoader(`Abriendo ${rightBookData.name || 'documento'}...`)}>
+                                        <PdfReader
+                                            bookData={rightBookData}
+                                            theme={theme} t={t}
+                                            isFullscreen={false}
+                                            onClose={() => { setPanelMode(false); setRightTabId(null); }}
+                                            onOpenSettings={() => setSettingsOpen(true)}
+                                            onOpenBookInfo={() => setActiveBookModal(rightBookData)}
+                                            updateLocationAndProgress={updateBookLocation}
+                                            toggleBookmark={toggleBookmarkInApp}
+                                            onStatsUpdate={pages => setStats(prev => ({ ...prev, pagesTurned: prev.pagesTurned + pages }))}
+                                        />
+                                    </Suspense>
                                 )}
                             </div>
                         )}
@@ -2136,11 +2634,13 @@ import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
                 )}
                 {/* ── WORKSHOP ── */}
                 {showWorkshop && (
-                    <WorkshopPanel
-                        addons={addons}
-                        onToggle={toggleAddon}
-                        onClose={() => setShowWorkshop(false)}
-                    />
+                    <Suspense fallback={panelLoader('Cargando workshop...')}>
+                        <WorkshopPanel
+                            addons={addons}
+                            onToggle={toggleAddon}
+                            onClose={() => setShowWorkshop(false)}
+                        />
+                    </Suspense>
                 )}
 
 

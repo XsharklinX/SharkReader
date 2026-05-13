@@ -1,10 +1,10 @@
-# SharkReader — Handoff para IA
+﻿# SharkReader â€” Handoff para IA
 
 > Estado del proyecto al 11/05/2025. Lee esto antes de cualquier otra cosa.
 
 ---
 
-## Qué es este proyecto
+## QuÃ© es este proyecto
 
 **SharkReader** es una app de escritorio Windows para leer EPUB y PDF. Stack:
 
@@ -16,11 +16,11 @@
 - **IndexedDB** (archivos binarios) + **localStorage** (metadatos)
 
 ```
-npm start        # desarrollo: lanza Vite en :5173 + Electron apuntando a él
-npm run build    # producción: build Vite → dist-renderer/ + electron-builder → dist/
+pnpm start        # desarrollo: lanza Vite en :5173 + Electron apuntando a Ã©l
+pnpm build    # producciÃ³n: build Vite â†’ dist-renderer/ + electron-builder â†’ dist/
 ```
 
-El workaround crítico del entorno de desarrollo: `scripts/dev.cjs` elimina `ELECTRON_RUN_AS_NODE` antes de lanzar Electron porque VS Code lo inyecta y rompe `require('electron')`.
+El workaround crÃ­tico del entorno de desarrollo: `scripts/dev.cjs` elimina `ELECTRON_RUN_AS_NODE` antes de lanzar Electron porque VS Code lo inyecta y rompe `require('electron')`.
 
 ---
 
@@ -28,137 +28,137 @@ El workaround crítico del entorno de desarrollo: `scripts/dev.cjs` elimina `ELE
 
 ```
 src/
-├── App.jsx              ← Estado global, biblioteca, tabs, import de libros
-├── EpubReader.jsx       ← Lector EPUB completo (el archivo más complejo)
-├── PdfReader.jsx        ← Lector PDF
-├── db.js                ← IndexedDB helpers
-├── locationsCache.js    ← Cache de epub.js locations en IDB separada
-├── achievements.js      ← Definiciones de logros
-├── translations.js      ← Strings ES/EN
-├── WorkshopPanel.jsx    ← Sistema de addons
-├── AnalyticsView.jsx    ← Dashboard de estadísticas
-├── SettingsPanel.jsx    ← Panel de ajustes
-└── hooks/useBooks.js    ← DEAD CODE — no se usa, nunca se llama
+â”œâ”€â”€ App.jsx              â† Estado global, biblioteca, tabs, import de libros
+â”œâ”€â”€ EpubReader.jsx       â† Lector EPUB completo (el archivo mÃ¡s complejo)
+â”œâ”€â”€ PdfReader.jsx        â† Lector PDF
+â”œâ”€â”€ db.js                â† IndexedDB helpers
+â”œâ”€â”€ locationsCache.js    â† Cache de epub.js locations en IDB separada
+â”œâ”€â”€ achievements.js      â† Definiciones de logros
+â”œâ”€â”€ translations.js      â† Strings ES/EN
+â”œâ”€â”€ WorkshopPanel.jsx    â† Sistema de addons
+â”œâ”€â”€ AnalyticsView.jsx    â† Dashboard de estadÃ­sticas
+â”œâ”€â”€ SettingsPanel.jsx    â† Panel de ajustes
+â””â”€â”€ hooks/useBooks.js    â† DEAD CODE â€” no se usa, nunca se llama
 ```
 
 ---
 
-## Estado actual del código (qué está resuelto, qué no)
+## Estado actual del cÃ³digo (quÃ© estÃ¡ resuelto, quÃ© no)
 
-### ✅ Resuelto en la última sesión
+### âœ… Resuelto en la Ãºltima sesiÃ³n
 
-#### 1. Panel Aa (tipografía) — no aplicaba ningún cambio
+#### 1. Panel Aa (tipografÃ­a) â€” no aplicaba ningÃºn cambio
 
-**Problema**: epub.js renderiza cada capítulo en un `<iframe>` aislado. El CSS del renderer React no penetra en el iframe. La función `buildSharkCss()` generaba el CSS correcto pero la inyección fallaba por tres razones:
+**Problema**: epub.js renderiza cada capÃ­tulo en un `<iframe>` aislado. El CSS del renderer React no penetra en el iframe. La funciÃ³n `buildSharkCss()` generaba el CSS correcto pero la inyecciÃ³n fallaba por tres razones:
 
-1. `hooks.content.register` tenía `if (!head.querySelector('#shark-styles'))` — solo creaba el tag, nunca lo actualizaba. En re-displays el tag ya existía y los cambios del usuario se ignoraban.
-2. `pageMargins` no estaba en el array de dependencias del `useEffect` de tipografía — el slider de márgenes no disparaba la inyección.
-3. `pageMargins` no se pasaba a `buildSharkCss()` — la función no lo incluía en el CSS generado.
+1. `hooks.content.register` tenÃ­a `if (!head.querySelector('#shark-styles'))` â€” solo creaba el tag, nunca lo actualizaba. En re-displays el tag ya existÃ­a y los cambios del usuario se ignoraban.
+2. `pageMargins` no estaba en el array de dependencias del `useEffect` de tipografÃ­a â€” el slider de mÃ¡rgenes no disparaba la inyecciÃ³n.
+3. `pageMargins` no se pasaba a `buildSharkCss()` â€” la funciÃ³n no lo incluÃ­a en el CSS generado.
 
 **Fix aplicado**:
 - `hooks.content.register` ahora siempre sobreescribe `sStyle.textContent` (sin el `if`).
-- `buildSharkCss` ahora acepta y usa `pageMargins` → `body { padding-left/right: Xpx !important }`.
+- `buildSharkCss` ahora acepta y usa `pageMargins` â†’ `body { padding-left/right: Xpx !important }`.
 - El `useEffect` incluye `pageMargins` en deps y en `opts`.
-- Se añadió fallback de inyección directa via `viewerRef.current.querySelectorAll('iframe')` cuando `getContents()` devuelve vacío.
+- Se aÃ±adiÃ³ fallback de inyecciÃ³n directa via `viewerRef.current.querySelectorAll('iframe')` cuando `getContents()` devuelve vacÃ­o.
 
-Ver [epub-reader-internals.md](epub-reader-internals.md) para la explicación completa del sistema.
+Ver [epub-reader-internals.md](epub-reader-internals.md) para la explicaciÃ³n completa del sistema.
 
-#### 2. Importar libros — loading infinito
+#### 2. Importar libros â€” loading infinito
 
-**Problema**: `processFiles` añadía los libros como `loading: true`, los procesaba secuencialmente, y solo los ponía a `loading: false` al final. Si cualquier `epub.open()` se colgaba (lo cual pasa con algunos EPUBs malformados), todos los libros siguientes quedaban atascados para siempre.
+**Problema**: `processFiles` aÃ±adÃ­a los libros como `loading: true`, los procesaba secuencialmente, y solo los ponÃ­a a `loading: false` al final. Si cualquier `epub.open()` se colgaba (lo cual pasa con algunos EPUBs malformados), todos los libros siguientes quedaban atascados para siempre.
 
-**Fix aplicado** (en `App.jsx`, función `processFiles`):
-- Los libros se añaden **inmediatamente** al estado con `loading: false` y el nombre del archivo como título provisional.
+**Fix aplicado** (en `App.jsx`, funciÃ³n `processFiles`):
+- Los libros se aÃ±aden **inmediatamente** al estado con `loading: false` y el nombre del archivo como tÃ­tulo provisional.
 - Se guardan en IndexedDB al instante.
-- La extracción de metadatos (portada, título real, autor) ocurre en un IIFE `async` independiente por libro, completamente no-bloqueante.
-- `raceTimeout(promise, ms, fallback)` envuelve cada operación asíncrona para que ninguna pueda colgar más de N segundos.
+- La extracciÃ³n de metadatos (portada, tÃ­tulo real, autor) ocurre en un IIFE `async` independiente por libro, completamente no-bloqueante.
+- `raceTimeout(promise, ms, fallback)` envuelve cada operaciÃ³n asÃ­ncrona para que ninguna pueda colgar mÃ¡s de N segundos.
 
-#### 3. Fullscreen — la barra de título cubría el libro
+#### 3. Fullscreen â€” la barra de tÃ­tulo cubrÃ­a el libro
 
-**Fix**: En fullscreen el header y tabs se ocultan completamente. Solo aparecen dos botones flotantes pequeños (cerrar / salir fullscreen) en las esquinas superiores con `pointer-events-none` en su contenedor para no capturar eventos del epub.
-
----
-
-### ⚠️ Pendiente de confirmar
-
-- **Panel Aa**: El fix está aplicado. El usuario no confirmó que funcione en la build actual porque cambió de herramienta. Probar al retomar.
+**Fix**: En fullscreen el header y tabs se ocultan completamente. Solo aparecen dos botones flotantes pequeÃ±os (cerrar / salir fullscreen) en las esquinas superiores con `pointer-events-none` en su contenedor para no capturar eventos del epub.
 
 ---
 
-### ❌ Dead code conocido
+### âš ï¸ Pendiente de confirmar
 
-- `src/hooks/useBooks.js` — el hook está importado en `App.jsx` pero `useBooks()` nunca se llama. La función `processFiles` de ese hook es código muerto. No borrar sin revisar si hay algún efecto side-effect al importar.
+- **Panel Aa**: El fix estÃ¡ aplicado. El usuario no confirmÃ³ que funcione en la build actual porque cambiÃ³ de herramienta. Probar al retomar.
 
 ---
 
-## Flujo de datos críticos
+### âŒ Dead code conocido
 
-### Cómo se importa un libro
+- `src/hooks/useBooks.js` â€” el hook estÃ¡ importado en `App.jsx` pero `useBooks()` nunca se llama. La funciÃ³n `processFiles` de ese hook es cÃ³digo muerto. No borrar sin revisar si hay algÃºn efecto side-effect al importar.
+
+---
+
+## Flujo de datos crÃ­ticos
+
+### CÃ³mo se importa un libro
 
 ```
 Usuario arrastra/selecciona archivo(s)
-  │
-  ├─ processFiles(files)
-  │     ├─ Filtra: solo .epub y .pdf
-  │     ├─ Crea objeto book con id único, loading: false
-  │     ├─ setBooks(prev => [...prev, ...newBooks])  ← aparece inmediatamente en UI
-  │     ├─ saveFileToDB(...)                          ← persiste en IDB
-  │     └─ Por cada EPUB: IIFE async (no bloquea)
-  │           ├─ file.arrayBuffer() con timeout 8s
-  │           ├─ ePub().open(arrayBuf) con timeout 10s
-  │           ├─ tmp.coverUrl() + tmp.loaded.metadata con timeout 5s
-  │           └─ setBooks(prev => prev.map(...))     ← actualiza con metadatos reales
-  │
-  └─ IndexedDB: archivos en store 'files', versión 3
+  â”‚
+  â”œâ”€ processFiles(files)
+  â”‚     â”œâ”€ Filtra: solo .epub y .pdf
+  â”‚     â”œâ”€ Crea objeto book con id Ãºnico, loading: false
+  â”‚     â”œâ”€ setBooks(prev => [...prev, ...newBooks])  â† aparece inmediatamente en UI
+  â”‚     â”œâ”€ saveFileToDB(...)                          â† persiste en IDB
+  â”‚     â””â”€ Por cada EPUB: IIFE async (no bloquea)
+  â”‚           â”œâ”€ file.arrayBuffer() con timeout 8s
+  â”‚           â”œâ”€ ePub().open(arrayBuf) con timeout 10s
+  â”‚           â”œâ”€ tmp.coverUrl() + tmp.loaded.metadata con timeout 5s
+  â”‚           â””â”€ setBooks(prev => prev.map(...))     â† actualiza con metadatos reales
+  â”‚
+  â””â”€ IndexedDB: archivos en store 'files', versiÃ³n 3
 ```
 
-### Cómo se persisten los metadatos
+### CÃ³mo se persisten los metadatos
 
 Hay dos sistemas de persistencia que conviven:
 
-1. **`localStorage['sharkreader_meta']`**: objeto `{ "Título|Autor": { progress, lastLocation, bookmarks, ... } }`. Se escribe en un `useEffect` con debounce de 2000ms cada vez que cambia `books[]`.
+1. **`localStorage['sharkreader_meta']`**: objeto `{ "TÃ­tulo|Autor": { progress, lastLocation, bookmarks, ... } }`. Se escribe en un `useEffect` con debounce de 2000ms cada vez que cambia `books[]`.
 
-2. **IndexedDB `appData` store**: para datos pesados (stats, journal, vocabulary) que superarían el límite de localStorage. Se leen al inicio con `loadAppData()` y se escriben con `saveAppData()`.
+2. **IndexedDB `appData` store**: para datos pesados (stats, journal, vocabulary) que superarÃ­an el lÃ­mite de localStorage. Se leen al inicio con `loadAppData()` y se escriben con `saveAppData()`.
 
-### Cómo se aplican los estilos al EPUB
+### CÃ³mo se aplican los estilos al EPUB
 
 ```
 Estado React cambia (ej: setFontFamily('Georgia'))
-  │
-  └─ useEffect [fontFamily, ..., pageMargins, isReady]
-        ├─ stylesRef.current = { fontFamily, ..., pageMargins }
-        ├─ css = buildSharkCss(opts)
-        ├─ Intento 1: rendition.getContents() → inyectar en cada doc
-        ├─ Intento 2: querySelectorAll('iframe') → inyectar en cada iframe
-        └─ Intento 3: rendition.display() → dispara hooks.content.register
+  â”‚
+  â””â”€ useEffect [fontFamily, ..., pageMargins, isReady]
+        â”œâ”€ stylesRef.current = { fontFamily, ..., pageMargins }
+        â”œâ”€ css = buildSharkCss(opts)
+        â”œâ”€ Intento 1: rendition.getContents() â†’ inyectar en cada doc
+        â”œâ”€ Intento 2: querySelectorAll('iframe') â†’ inyectar en cada iframe
+        â””â”€ Intento 3: rendition.display() â†’ dispara hooks.content.register
 
-hooks.content.register (en cada carga de capítulo):
-  └─ Siempre sobreescribe #shark-styles con buildSharkCss(stylesRef.current)
+hooks.content.register (en cada carga de capÃ­tulo):
+  â””â”€ Siempre sobreescribe #shark-styles con buildSharkCss(stylesRef.current)
 
-relocated event (en cada vuelta de página):
-  └─ Siempre sobreescribe #shark-styles con buildSharkCss(stylesRef.current)
+relocated event (en cada vuelta de pÃ¡gina):
+  â””â”€ Siempre sobreescribe #shark-styles con buildSharkCss(stylesRef.current)
 ```
 
 ---
 
-## IndexedDB — esquema actual
+## IndexedDB â€” esquema actual
 
-**DB `SharkReaderDB` versión 3**
+**DB `SharkReaderDB` versiÃ³n 3**
 
 | Store | KeyPath | Contenido |
 |---|---|---|
 | `files` | `id` | `{ id, file (Blob), coverBase64, originalTitle, originalAuthor, dateAdded }` |
-| `appData` | `key` | `{ key, value }` — stats, journal, vocabulary |
+| `appData` | `key` | `{ key, value }` â€” stats, journal, vocabulary |
 
-**DB `SharkLocationsCache` versión 1**
+**DB `SharkLocationsCache` versiÃ³n 1**
 
 | Store | KeyPath | Contenido |
 |---|---|---|
 | `locations` | `bookId` | `{ bookId, locations (array), cachedAt }` |
 
-La DB antigua `SharkReaderDB_v4` se migra automáticamente en el primer arranque y luego se ignora.
+La DB antigua `SharkReaderDB_v4` se migra automÃ¡ticamente en el primer arranque y luego se ignora.
 
-> **Nota**: `data-layer.md` dice versión 2 — está desactualizado. La versión real es 3 (añade el store `appData`).
+> **Nota**: `data-layer.md` dice versiÃ³n 2 â€” estÃ¡ desactualizado. La versiÃ³n real es 3 (aÃ±ade el store `appData`).
 
 ---
 
@@ -166,9 +166,9 @@ La DB antigua `SharkReaderDB_v4` se migra automáticamente en el primer arranque
 
 Expuesto via `contextBridge` en `preload.js`:
 
-| Método | Descripción |
+| MÃ©todo | DescripciÃ³n |
 |---|---|
-| `pickFolder()` | Abre diálogo nativo para seleccionar carpeta |
+| `pickFolder()` | Abre diÃ¡logo nativo para seleccionar carpeta |
 | `writeSyncFile(folder, content)` | Escribe `sharkreader_sync.json` en la carpeta |
 | `readSyncFile(folder)` | Lee el archivo de sync |
 | `registerFileAssociations()` | Asocia `.epub` y `.pdf` a la app en el Registry |
@@ -176,32 +176,32 @@ Expuesto via `contextBridge` en `preload.js`:
 | `onOpenFile(handler)` | Listener: cuando el usuario abre un archivo desde el explorador |
 | `offOpenFile()` | Elimina el listener |
 
-`webSecurity: false` está configurado en `main.js` para permitir `fetch` a URLs `file://` y acceso cross-frame a iframes de epub.js.
+`webSecurity: false` estÃ¡ configurado en `main.js` para permitir `fetch` a URLs `file://` y acceso cross-frame a iframes de epub.js.
 
 ---
 
 ## Sistema de addons (Workshop)
 
-Los addons son flags booleanos en `localStorage['sharkreader_addons']`. No son módulos que se cargan dinámicamente — son `if (addons.focusMode)` en el código existente.
+Los addons son flags booleanos en `localStorage['sharkreader_addons']`. No son mÃ³dulos que se cargan dinÃ¡micamente â€” son `if (addons.focusMode)` en el cÃ³digo existente.
 
 Addons actuales:
 
-| ID | Dónde afecta | Efecto |
+| ID | DÃ³nde afecta | Efecto |
 |---|---|---|
 | `focusMode` | Reader | Oculta toolbar tras 2.5s inactividad |
-| `autoBookmark` | Reader | Guarda posición al cerrar libro |
+| `autoBookmark` | Reader | Guarda posiciÃ³n al cerrar libro |
 | `netflixView` | Library | Portadas grandes con hover |
 | `readingJournal` | Global | Registro de sesiones |
-| `reminders` | Global | Notificación recordatorio |
-| `smartToc` | Reader | TOC flotante con indicador de posición |
+| `reminders` | Global | NotificaciÃ³n recordatorio |
+| `smartToc` | Reader | TOC flotante con indicador de posiciÃ³n |
 
-Para añadir un nuevo addon: (1) añadir objeto al array `ADDONS` en `WorkshopPanel.jsx`, (2) usar `addons.miAddon` en el componente donde aplique.
+Para aÃ±adir un nuevo addon: (1) aÃ±adir objeto al array `ADDONS` en `WorkshopPanel.jsx`, (2) usar `addons.miAddon` en el componente donde aplique.
 
 ---
 
 ## Temas y CSS variables
 
-El tema se aplica cambiando `document.body.className = 'theme-dark'` (o `light`, `sepia`). Las variables CSS están en `styles/main.css`:
+El tema se aplica cambiando `document.body.className = 'theme-dark'` (o `light`, `sepia`). Las variables CSS estÃ¡n en `styles/main.css`:
 
 ```css
 /* Variables disponibles en toda la app */
@@ -226,28 +226,29 @@ root.style.setProperty('--highlight', accentColor.value);
 
 1. **epub.js necesita `ArrayBuffer`**, no `File` ni `Blob`. `book.open(file)` puede colgar sin rechazar nunca.
 
-2. **El CSS de React no afecta el interior del epub**. Todo estilo del lector va a través de `buildSharkCss` + inyección en el iframe.
+2. **El CSS de React no afecta el interior del epub**. Todo estilo del lector va a travÃ©s de `buildSharkCss` + inyecciÃ³n en el iframe.
 
-3. **`hooks.content.register` se registra una vez**. Los callbacks no capturan estado React — usan `stylesRef.current` (un `useRef`) para acceder al estado actual.
+3. **`hooks.content.register` se registra una vez**. Los callbacks no capturan estado React â€” usan `stylesRef.current` (un `useRef`) para acceder al estado actual.
 
-4. **`getContents()` puede devolver vacío** incluso cuando el libro está renderizado. Siempre tener el fallback de `querySelectorAll('iframe')`.
+4. **`getContents()` puede devolver vacÃ­o** incluso cuando el libro estÃ¡ renderizado. Siempre tener el fallback de `querySelectorAll('iframe')`.
 
-5. **`useBooks.js` es dead code**. Está importado pero su función no se invoca. No confiar en él.
+5. **`useBooks.js` es dead code**. EstÃ¡ importado pero su funciÃ³n no se invoca. No confiar en Ã©l.
 
-6. **La persistencia tiene debounce**. Los cambios en `books[]` no se persisten inmediatamente — hay un timeout de 2000ms. En tests o debugging, esperar antes de verificar localStorage.
+6. **La persistencia tiene debounce**. Los cambios en `books[]` no se persisten inmediatamente â€” hay un timeout de 2000ms. En tests o debugging, esperar antes de verificar localStorage.
 
-7. **`sharkreader_meta` usa `"título|autor"` como clave**. Si el título o el autor cambia, se crea una entrada nueva y la vieja queda huérfana.
+7. **`sharkreader_meta` usa `"tÃ­tulo|autor"` como clave**. Si el tÃ­tulo o el autor cambia, se crea una entrada nueva y la vieja queda huÃ©rfana.
 
-8. **El sistema de pestañas (`tabs`)** es un array de `{ id, bookId, type }` en `App.jsx`. El lector activo se determina por `activeTabId`. Cada pestaña abre su propio `EpubReader` montado independientemente.
+8. **El sistema de pestaÃ±as (`tabs`)** es un array de `{ id, bookId, type }` en `App.jsx`. El lector activo se determina por `activeTabId`. Cada pestaÃ±a abre su propio `EpubReader` montado independientemente.
 
-9. **`ELECTRON_RUN_AS_NODE`** debe estar desactivado para desarrollo. `scripts/dev.cjs` lo hace automáticamente. Si lanzas `electron .` directamente desde un terminal de VS Code, fallará.
+9. **`ELECTRON_RUN_AS_NODE`** debe estar desactivado para desarrollo. `scripts/dev.cjs` lo hace automÃ¡ticamente. Si lanzas `electron .` directamente desde un terminal de VS Code, fallarÃ¡.
 
 ---
 
 ## Recomendaciones para trabajar con Codex u otra IA
 
-- **Dar contexto de archivo específico**: decir "en `EpubReader.jsx`, en el `useEffect` de tipografía" es mucho más efectivo que "en el lector".
-- **El problema de CSS en epub**: si algo relacionado con estilos no funciona, la causa casi siempre está en la cadena de inyección (`buildSharkCss` → hook → useEffect → relocated). Revisar en ese orden.
-- **Pedir verificación de tipos**: epub.js no tiene tipos TypeScript. Muchas propiedades pueden ser `null`/`undefined` dependiendo del estado. Usar `?.` en todas las cadenas de acceso a epub.js.
-- **No usar `epub.js` themes API para estilos permanentes**: `rendition.themes.font()`, `themes.fontSize()` y `themes.override()` aplican estilos inline en `html` que el CSS propio del libro puede sobreescribir. La inyección de `<style !important>` es el método correcto.
-- **Probar con múltiples EPUBs**: algunos EPUBs tienen CSS muy agresivo con `!important`. Otros tienen `html { font-size: 62.5% }`. Otros tienen iframes anidados. El comportamiento varía mucho entre libros.
+- **Dar contexto de archivo especÃ­fico**: decir "en `EpubReader.jsx`, en el `useEffect` de tipografÃ­a" es mucho mÃ¡s efectivo que "en el lector".
+- **El problema de CSS en epub**: si algo relacionado con estilos no funciona, la causa casi siempre estÃ¡ en la cadena de inyecciÃ³n (`buildSharkCss` â†’ hook â†’ useEffect â†’ relocated). Revisar en ese orden.
+- **Pedir verificaciÃ³n de tipos**: epub.js no tiene tipos TypeScript. Muchas propiedades pueden ser `null`/`undefined` dependiendo del estado. Usar `?.` en todas las cadenas de acceso a epub.js.
+- **No usar `epub.js` themes API para estilos permanentes**: `rendition.themes.font()`, `themes.fontSize()` y `themes.override()` aplican estilos inline en `html` que el CSS propio del libro puede sobreescribir. La inyecciÃ³n de `<style !important>` es el mÃ©todo correcto.
+- **Probar con mÃºltiples EPUBs**: algunos EPUBs tienen CSS muy agresivo con `!important`. Otros tienen `html { font-size: 62.5% }`. Otros tienen iframes anidados. El comportamiento varÃ­a mucho entre libros.
+

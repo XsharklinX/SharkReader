@@ -1,19 +1,19 @@
-# Arquitectura
+﻿# Arquitectura
 
-## Stack tecnológico
+## Stack tecnolÃ³gico
 
-| Capa | Tecnología | Versión |
+| Capa | TecnologÃ­a | VersiÃ³n |
 |---|---|---|
 | Shell de escritorio | Electron | 41.x |
 | Bundler | Vite + `@vitejs/plugin-react` | 8.x |
 | UI framework | React | 19.x |
-| Estilos | Tailwind CSS (CDN) + `styles/main.css` | — |
+| Estilos | Tailwind CSS (CDN) + `styles/main.css` | â€” |
 | Lector EPUB | epub.js (`epubjs`) | 0.3.93 |
 | Lector PDF | PDF.js (`pdfjs-dist`) | 5.x |
 | Empaquetado | electron-builder | 26.x |
 | Almacenamiento | IndexedDB (archivos) + localStorage (metadatos) | nativo |
 
-> **Nota sobre Babel Standalone:** en el entorno de desarrollo original las vistas se compilaban con Babel en runtime; la versión actual usa Vite + JSX en build-time, lo que elimina esa dependencia en producción.
+> **Nota sobre Babel Standalone:** en el entorno de desarrollo original las vistas se compilaban con Babel en runtime; la versiÃ³n actual usa Vite + JSX en build-time, lo que elimina esa dependencia en producciÃ³n.
 
 ---
 
@@ -21,72 +21,72 @@
 
 ```
 SharkReader-main/
-├── main.js                  # Main Process de Electron
-├── index.html               # HTML raíz (referencia a src/main.jsx)
-├── vite.config.js           # Configuración de Vite
-├── package.json
-│
-├── scripts/
-│   └── dev.cjs              # Launcher de desarrollo (Vite + Electron)
-│
-├── src/
-│   ├── main.jsx             # Punto de entrada React (ReactDOM.createRoot)
-│   ├── App.jsx              # Componente raíz — estado global, router de vistas
-│   │
-│   ├── hooks/
-│   │   └── useBooks.js      # Hook de gestión de biblioteca
-│   │
-│   ├── db.js                # IndexedDB helpers + migración legacy
-│   ├── achievements.js      # Definiciones de logros y rarities
-│   ├── translations.js      # Literales ES/EN
-│   ├── icons.jsx            # Colección de SVG inline
-│   │
-│   ├── EpubReader.jsx       # Lector EPUB completo
-│   ├── PdfReader.jsx        # Lector PDF
-│   ├── AnalyticsView.jsx    # Dashboard de estadísticas
-│   ├── SettingsPanel.jsx    # Panel de ajustes
-│   ├── WorkshopPanel.jsx    # Panel de addons
-│   ├── UserMenu.jsx         # Menú lateral de usuario
-│   └── GoodreadsImport.jsx  # Importador de lista Goodreads
-│
-├── styles/
-│   └── main.css             # Variables CSS, temas, animaciones de página
-│
-├── Docs/                    # Esta documentación
-│
-├── dist-renderer/           # Output de Vite (generado con npm run build:renderer)
-└── dist/                    # Instaladores finales (generado con npm run build)
+â”œâ”€â”€ main.js                  # Main Process de Electron
+â”œâ”€â”€ index.html               # HTML raÃ­z (referencia a src/main.jsx)
+â”œâ”€â”€ vite.config.js           # ConfiguraciÃ³n de Vite
+â”œâ”€â”€ package.json
+â”‚
+â”œâ”€â”€ scripts/
+â”‚   â””â”€â”€ dev.cjs              # Launcher de desarrollo (Vite + Electron)
+â”‚
+â”œâ”€â”€ src/
+â”‚   â”œâ”€â”€ main.jsx             # Punto de entrada React (ReactDOM.createRoot)
+â”‚   â”œâ”€â”€ App.jsx              # Componente raÃ­z â€” estado global, router de vistas
+â”‚   â”‚
+â”‚   â”œâ”€â”€ hooks/
+â”‚   â”‚   â””â”€â”€ useBooks.js      # Hook de gestiÃ³n de biblioteca
+â”‚   â”‚
+â”‚   â”œâ”€â”€ db.js                # IndexedDB helpers + migraciÃ³n legacy
+â”‚   â”œâ”€â”€ achievements.js      # Definiciones de logros y rarities
+â”‚   â”œâ”€â”€ translations.js      # Literales ES/EN
+â”‚   â”œâ”€â”€ icons.jsx            # ColecciÃ³n de SVG inline
+â”‚   â”‚
+â”‚   â”œâ”€â”€ EpubReader.jsx       # Lector EPUB completo
+â”‚   â”œâ”€â”€ PdfReader.jsx        # Lector PDF
+â”‚   â”œâ”€â”€ AnalyticsView.jsx    # Dashboard de estadÃ­sticas
+â”‚   â”œâ”€â”€ SettingsPanel.jsx    # Panel de ajustes
+â”‚   â”œâ”€â”€ WorkshopPanel.jsx    # Panel de addons
+â”‚   â”œâ”€â”€ UserMenu.jsx         # MenÃº lateral de usuario
+â”‚   â””â”€â”€ GoodreadsImport.jsx  # Importador de lista Goodreads
+â”‚
+â”œâ”€â”€ styles/
+â”‚   â””â”€â”€ main.css             # Variables CSS, temas, animaciones de pÃ¡gina
+â”‚
+â”œâ”€â”€ Docs/                    # Esta documentaciÃ³n
+â”‚
+â”œâ”€â”€ dist-renderer/           # Output de Vite (generado con pnpm build:renderer)
+â””â”€â”€ dist/                    # Instaladores finales (generado con pnpm build)
 ```
 
 ---
 
 ## Flujo de arranque
 
-### Desarrollo (`npm start`)
+### Desarrollo (`pnpm start`)
 
 ```
 scripts/dev.cjs
-  │
-  ├─ Borra ELECTRON_RUN_AS_NODE (workaround VS Code)
-  ├─ Lanza: npx vite --port 5173
-  ├─ Poll HTTP hasta que Vite responde en localhost:5173
-  └─ Lanza: electron . con VITE_DEV=1
-              │
-              └─ main.js → createWindow()
-                    └─ mainWindow.loadURL('http://localhost:5173')
-                          └─ src/main.jsx → <App />
+  â”‚
+  â”œâ”€ Borra ELECTRON_RUN_AS_NODE (workaround VS Code)
+  â”œâ”€ Lanza: npx vite --port 5173
+  â”œâ”€ Poll HTTP hasta que Vite responde en localhost:5173
+  â””â”€ Lanza: electron . con VITE_DEV=1
+              â”‚
+              â””â”€ main.js â†’ createWindow()
+                    â””â”€ mainWindow.loadURL('http://localhost:5173')
+                          â””â”€ src/main.jsx â†’ <App />
 ```
 
-### Producción
+### ProducciÃ³n
 
 ```
-npm run build
-  ├─ vite build → dist-renderer/
-  └─ electron-builder --win nsis portable → dist/
-        └─ Empaqueta: main.js + dist-renderer/ + node_modules
+pnpm build
+  â”œâ”€ vite build â†’ dist-renderer/
+  â””â”€ electron-builder --win nsis portable â†’ dist/
+        â””â”€ Empaqueta: main.js + dist-renderer/ + node_modules
 ```
 
-En producción, `main.js` carga `dist-renderer/index.html` en lugar del servidor Vite.
+En producciÃ³n, `main.js` carga `dist-renderer/index.html` en lugar del servidor Vite.
 
 ---
 
@@ -96,28 +96,29 @@ En producción, `main.js` carga `dist-renderer/index.html` en lugar del servidor
 
 Responsabilidades:
 - Crear y gestionar `BrowserWindow`
-- Prevención de instancias múltiples (`app.requestSingleInstanceLock`)
+- PrevenciÃ³n de instancias mÃºltiples (`app.requestSingleInstanceLock`)
 - Apertura de archivos desde el sistema de archivos o asociaciones de archivo
 - Handlers IPC (ver [ipc-electron.md](ipc-electron.md))
 - Registro de asociaciones de archivo en el Registro de Windows
 
 ### Renderer Process (`src/`)
 
-Toda la lógica de la aplicación corre en el Renderer como una SPA React. El renderer usa directamente las APIs web estándar (IndexedDB, localStorage, File API, Notification API) y se comunica con el Main Process vía `window.require('electron').ipcRenderer` cuando necesita funciones nativas.
+Toda la lÃ³gica de la aplicaciÃ³n corre en el Renderer como una SPA React. El renderer usa directamente las APIs web estÃ¡ndar (IndexedDB, localStorage, File API, Notification API) y se comunica con el Main Process vÃ­a `window.require('electron').ipcRenderer` cuando necesita funciones nativas.
 
 ---
 
-## Gestión de estado
+## GestiÃ³n de estado
 
-El estado global reside en `App.jsx` como estado React local (no hay store externo). Se pasa hacia los componentes hijos vía props. Los datos persistentes se sincronizan con localStorage en efectos (`useEffect`).
+El estado global reside en `App.jsx` como estado React local (no hay store externo). Se pasa hacia los componentes hijos vÃ­a props. Los datos persistentes se sincronizan con localStorage en efectos (`useEffect`).
 
 | Dato | Almacenamiento |
 |---|---|
 | Archivos de los libros (blob) | IndexedDB `files` store |
 | Metadatos de cada libro | `localStorage` clave `sharkreader_meta` |
-| Configuración del usuario | `localStorage` claves individuales |
+| ConfiguraciÃ³n del usuario | `localStorage` claves individuales |
 | Progreso de lectura | `localStorage` dentro de `sharkreader_meta` |
 | Vocabulario | `localStorage` clave `sharkreader_vocab` |
 | Reading Journal | `localStorage` clave `sharkreader_journal` |
 | Logros desbloqueados | `localStorage` clave `sharkreader_achievements` |
 | Estado addons Workshop | `localStorage` clave `sharkreader_addons` |
+

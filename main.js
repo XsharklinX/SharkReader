@@ -14,6 +14,8 @@ app.commandLine.appendSwitch('js-flags', '--harmony');
 // ─────────────────────────────────────────────────────────────────────────────
 
 let mainWindow = null;
+const folderImportSessions = new Map();
+const IMPORT_BATCH_SIZE = 12;
 
 // Extraer ruta de archivo epub/mobi de los argumentos
 function getFileFromArgs(argv) {
@@ -72,6 +74,11 @@ function createWindow() {
     }
 
     mainWindow.on('closed', () => { mainWindow = null; });
+}
+
+function notifyRenderer(channel, payload) {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send(channel, payload);
 }
 
 // Seleccionar carpeta de sincronización
@@ -275,6 +282,138 @@ function readBookPayloads(filePaths) {
     ).then(res => res.filter(Boolean));
 }
 
+async function scanBookFiles(sessionId, rootPath) {
+    const session = folderImportSessions.get(sessionId);
+    if (!session) return [];
+
+    const found = [];
+    const stack = [rootPath];
+    let lastEmitAt = 0;
+
+    while (stack.length) {
+        if (session.cancelled) break;
+
+        const current = stack.pop();
+        let entries = [];
+        try {
+            entries = await fs.promises.readdir(current, { withFileTypes: true });
+        } catch (_) {
+            continue;
+        }
+
+        for (const entry of entries) {
+            if (session.cancelled) break;
+
+            const fullPath = path.join(current, entry.name);
+            if (entry.isDirectory()) {
+                stack.push(fullPath);
+                continue;
+            }
+
+            if (entry.isFile() && isBookPath(fullPath)) {
+                found.push(fullPath);
+                session.discovered = found.length;
+
+                const now = Date.now();
+                if (now - lastEmitAt > 80) {
+                    notifyRenderer('folder-import-progress', {
+                        sessionId,
+                        phase: 'scanning',
+                        discovered: session.discovered,
+                        total: 0,
+                        imported: 0,
+                        currentName: entry.name,
+                    });
+                    lastEmitAt = now;
+                }
+            }
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    return found;
+}
+
+async function runFolderImportSession(sessionId, rootPath) {
+    const session = folderImportSessions.get(sessionId);
+    if (!session) return;
+
+    try {
+        notifyRenderer('folder-import-progress', {
+            sessionId,
+            phase: 'scanning',
+            discovered: 0,
+            total: 0,
+            imported: 0,
+            currentName: path.basename(rootPath),
+        });
+
+        const paths = await scanBookFiles(sessionId, rootPath);
+        const total = paths.length;
+        session.total = total;
+
+        if (session.cancelled) {
+            notifyRenderer('folder-import-done', { sessionId, cancelled: true, total, imported: session.imported });
+            return;
+        }
+
+        notifyRenderer('folder-import-progress', {
+            sessionId,
+            phase: 'importing',
+            discovered: total,
+            total,
+            imported: 0,
+            currentName: total ? path.basename(paths[0]) : '',
+        });
+
+        for (let i = 0; i < paths.length; i += IMPORT_BATCH_SIZE) {
+            if (session.cancelled) break;
+
+            const batchPaths = paths.slice(i, i + IMPORT_BATCH_SIZE);
+            const payloads = await readBookPayloads(batchPaths);
+            if (session.cancelled) break;
+
+            session.imported += payloads.length;
+
+            notifyRenderer('folder-import-batch', {
+                sessionId,
+                batch: payloads,
+            });
+
+            notifyRenderer('folder-import-progress', {
+                sessionId,
+                phase: 'importing',
+                discovered: total,
+                total,
+                imported: session.imported,
+                currentName: path.basename(batchPaths[batchPaths.length - 1] || ''),
+            });
+
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
+
+        notifyRenderer('folder-import-done', {
+            sessionId,
+            cancelled: session.cancelled,
+            total,
+            imported: session.imported,
+        });
+    } catch (err) {
+        notifyRenderer('folder-import-done', {
+            sessionId,
+            cancelled: false,
+            total: session.total || 0,
+            imported: session.imported || 0,
+            error: err.message,
+        });
+    } finally {
+        setTimeout(() => {
+            folderImportSessions.delete(sessionId);
+        }, 60000);
+    }
+}
+
 ipcMain.handle('pick-book-files', async () => {
     if (!mainWindow) return [];
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -294,6 +433,49 @@ ipcMain.handle('pick-book-folder', async () => {
     });
     if (result.canceled || !result.filePaths[0]) return [];
     return await readBookPayloads(walkBookFiles(result.filePaths[0]));
+});
+
+ipcMain.handle('start-folder-import', async () => {
+    if (!mainWindow) return null;
+    const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openDirectory'],
+        title: 'AÃ±adir carpeta de libros'
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+
+    const rootPath = result.filePaths[0];
+    const sessionId = `folder-import-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    folderImportSessions.set(sessionId, {
+        sessionId,
+        rootPath,
+        cancelled: false,
+        discovered: 0,
+        imported: 0,
+        total: 0,
+    });
+
+    setTimeout(() => {
+        runFolderImportSession(sessionId, rootPath).catch((err) => {
+            notifyRenderer('folder-import-done', {
+                sessionId,
+                cancelled: false,
+                total: 0,
+                imported: 0,
+                error: err.message,
+            });
+        });
+    }, 0);
+
+    return {
+        sessionId,
+        folderName: path.basename(rootPath),
+    };
+});
+
+ipcMain.handle('cancel-folder-import', async (_e, sessionId) => {
+    const session = folderImportSessions.get(sessionId);
+    if (session) session.cancelled = true;
+    return { ok: true };
 });
 
 ipcMain.handle('read-book-file', async (_e, filePath) => {
