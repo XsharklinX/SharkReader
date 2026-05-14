@@ -23,6 +23,15 @@ export const safeParse = (key, fallbackValue) => {
 
 let _dbPromise = null;
 
+const closeCurrentDB = async () => {
+    if (!_dbPromise) return;
+    try {
+        const db = await _dbPromise;
+        try { db.close(); } catch (_) {}
+    } catch (_) {}
+    _dbPromise = null;
+};
+
 const runTransaction = (db, storeName, mode, worker) => {
     if (!db.objectStoreNames.contains(storeName)) {
         return Promise.resolve(null);
@@ -350,6 +359,26 @@ export const loadCache = async (key) => {
 
 export const saveAppData = saveSetting;
 export const loadAppData = loadSetting;
+
+const deleteDatabaseByName = (name) => new Promise((resolve) => {
+    try {
+        const req = indexedDB.deleteDatabase(name);
+        req.onsuccess = () => resolve(true);
+        req.onerror = () => resolve(false);
+        req.onblocked = () => resolve(false);
+    } catch {
+        resolve(false);
+    }
+});
+
+export const resetAllAppData = async () => {
+    await closeCurrentDB();
+    await Promise.all([
+        deleteDatabaseByName(DB_NAME),
+        deleteDatabaseByName(LEGACY_DB_NAME),
+        deleteDatabaseByName('SharkLocationsCache'),
+    ]);
+};
 
 export const fileToBase64 = (blob) => new Promise((resolve) => {
     if (!blob) return resolve(null);

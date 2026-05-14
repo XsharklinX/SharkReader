@@ -138,8 +138,8 @@ const UserMenu = ({ userProfile, stats, achievements, books, onNavigate, onExpor
                 ) : (
                     <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3">
                         <p className="text-red-400 text-xs font-bold text-center mb-2">
-                            ⚠️ Esto borrará tu perfil, estadísticas y ajustes.<br />
-                            <span className="opacity-70 font-normal">Los libros de la biblioteca no se borran.</span>
+                            ⚠️ Esto borrará tu perfil, biblioteca, estadísticas y ajustes.<br />
+                            <span className="opacity-70 font-normal">La acción no se puede deshacer.</span>
                         </p>
                         <div className="flex gap-2">
                             <button

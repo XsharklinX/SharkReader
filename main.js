@@ -111,7 +111,7 @@ function walkBookFiles(dirPath) {
     return found;
 }
 
-async function extractEpubMeta(buffer) {
+async function extractEpubMeta(buffer, filePath = 'unknown') {
     try {
         const zip = await JSZip.loadAsync(buffer);
 
@@ -236,21 +236,40 @@ async function extractEpubMeta(buffer) {
 
         return { title, creator, description, publisher, subject, coverBase64 };
     } catch (e) {
-        console.error('[SharkReader] Native extract failed:', e);
+        console.error(`[SharkReader] Native extract failed for ${filePath}:`, e);
         return null;
     }
 }
 
 async function readBookPayload(filePath) {
     try {
+        if (!fs.existsSync(filePath)) {
+            console.error(`[SharkReader] Archivo no existe: ${filePath}`);
+            return null;
+        }
+        const stats = fs.statSync(filePath);
+        if (stats.size === 0) {
+            console.error(`[SharkReader] Archivo vacío (0 bytes): ${filePath}`);
+            return null;
+        }
+
         const data = fs.readFileSync(filePath);
         const ext = path.extname(filePath).toLowerCase();
         let meta = null;
         if (ext === '.epub') {
-            try {
-                meta = await extractEpubMeta(data);
-            } catch (err) {
-                console.error('[SharkReader] Error en metadata de main.js:', err);
+            // Verificación básica de cabecera ZIP (PK\x03\x04)
+            const isZip = data.length >= 4 && 
+                          data[0] === 0x50 && data[1] === 0x4B && 
+                          data[2] === 0x03 && data[3] === 0x04;
+
+            if (!isZip) {
+                console.error(`[SharkReader] El archivo EPUB no es un ZIP válido (cabecera incorrecta): ${filePath}`);
+            } else {
+                try {
+                    meta = await extractEpubMeta(data, filePath);
+                } catch (err) {
+                    console.error(`[SharkReader] Error en metadata para ${filePath}:`, err);
+                }
             }
         }
 
@@ -258,14 +277,29 @@ async function readBookPayload(filePath) {
             name: path.basename(filePath),
             path: filePath,
             type: ext === '.pdf' ? 'application/pdf' : 'application/epub+zip',
-            lastModified: fs.statSync(filePath).mtimeMs,
+            lastModified: stats.mtimeMs,
             dataBase64: data.toString('base64'),
             meta
         };
     } catch (err) {
-        console.error('readBookPayload falló para', filePath, err);
+        console.error(`[SharkReader] readBookPayload falló para ${filePath}:`, err);
         throw err;
     }
+}
+
+function createBookImportStub(filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    let lastModified = Date.now();
+    try {
+        lastModified = fs.statSync(filePath).mtimeMs;
+    } catch (_) {}
+
+    return {
+        name: path.basename(filePath),
+        path: filePath,
+        type: ext === '.pdf' ? 'application/pdf' : 'application/epub+zip',
+        lastModified,
+    };
 }
 
 function readBookPayloads(filePaths) {
@@ -371,14 +405,13 @@ async function runFolderImportSession(sessionId, rootPath) {
             if (session.cancelled) break;
 
             const batchPaths = paths.slice(i, i + IMPORT_BATCH_SIZE);
-            const payloads = await readBookPayloads(batchPaths);
-            if (session.cancelled) break;
+            const batch = batchPaths.map(createBookImportStub);
 
-            session.imported += payloads.length;
+            session.imported += batch.length;
 
             notifyRenderer('folder-import-batch', {
                 sessionId,
-                batch: payloads,
+                batch,
             });
 
             notifyRenderer('folder-import-progress', {

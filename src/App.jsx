@@ -1,8 +1,8 @@
 // SharkReader - App Component (v2 — Tabs + Optimizations + Series + Vocab + AI)
-import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense, startTransition, useDeferredValue } from 'react';
 import { Icons, renderAvatar } from './icons';
 import { translations, languageNames, RANDOM_EMOJIS } from './translations';
-import { safeParse, loadBooksFromDB, saveBookToDB, saveBooksToDB, deleteBookFromDB, saveAppData, loadAppData, saveSetting, loadSetting } from './db';
+import { safeParse, loadBooksFromDB, saveBookToDB, saveBooksToDB, deleteBookFromDB, saveAppData, loadAppData, saveSetting, loadSetting, resetAllAppData } from './db';
 import { extractEpubMeta } from './epubMeta';
 import { checkNewAchievements, ACHIEVEMENTS, RARITY } from './achievements';
 import BookCard from './BookCard';
@@ -35,6 +35,42 @@ const readerLoader = (label = 'Preparando lector...') => (
         </div>
     </div>
 );
+const updateBookInList = (bookList, bookId, updater) => {
+    const index = bookList.findIndex(book => book.id === bookId);
+    if (index === -1) return bookList;
+
+    const currentBook = bookList[index];
+    const nextBook = typeof updater === 'function' ? updater(currentBook) : { ...currentBook, ...updater };
+    if (!nextBook || nextBook === currentBook) return bookList;
+
+    const nextList = bookList.slice();
+    nextList[index] = nextBook;
+    return nextList;
+};
+const normalizeBookIdentity = (value) => String(value || '').trim().toLowerCase();
+const normalizeBookStem = (value) => normalizeBookIdentity(value)
+    .replace(/\.[^/.]+$/, '')
+    .replace(/\s*\(\d+\)\s*$/, '')
+    .replace(/\s+/g, ' ');
+const getBookTitleDedupKey = (bookLike) => {
+    const fileName = bookLike?.file?.name || bookLike?.name || bookLike?.originalTitle || '';
+    const nativeMeta = bookLike?.nativeMeta || bookLike?.file?.nativeMeta || null;
+    const rawTitle = nativeMeta?.title || bookLike?.originalTitle || bookLike?.name || fileName;
+    const rawAuthor = nativeMeta?.creator || bookLike?.originalAuthor || bookLike?.author || '';
+    const normalizedTitle = normalizeBookStem(rawTitle);
+    const normalizedAuthor = normalizeBookIdentity(rawAuthor).replace(/\s+/g, ' ');
+    const type = bookLike?.type || (/\.pdf$/i.test(fileName) ? 'pdf' : /\.mobi$/i.test(fileName) ? 'mobi' : 'epub');
+    return `title:${type}|${normalizedTitle}|${normalizedAuthor}`;
+};
+const getBookDedupKey = (bookLike) => {
+    const sourcePath = bookLike?.sourcePath || bookLike?.path || bookLike?.file?.sourcePath || null;
+    if (sourcePath) return `path:${normalizeBookIdentity(sourcePath)}`;
+
+    const fileName = bookLike?.file?.name || bookLike?.name || bookLike?.originalTitle || '';
+    const type = bookLike?.type || (/\.pdf$/i.test(fileName) ? 'pdf' : /\.mobi$/i.test(fileName) ? 'mobi' : 'epub');
+    const size = bookLike?.file?.size ?? bookLike?.size ?? '';
+    return `file:${type}|${normalizeBookStem(fileName)}|${size}`;
+};
 const getBookType = (file, fallbackType = 'epub') => {
     const fileName = file?.name || '';
     if (/\.pdf$/i.test(fileName)) return 'pdf';
@@ -184,6 +220,7 @@ const applyImportedBookData = (book, imported) => {
 
         // ── BIBLIOTECA ──
         const [searchTerm, setSearchTerm] = useState('');
+        const deferredSearchTerm = useDeferredValue(searchTerm);
         const [customCategories, setCustomCategories] = useState(() => {
             const s = safeParse('sharkreader_categories', null);
             return (s && Array.isArray(s)) ? s.filter(c => c.toLowerCase() !== 'favoritos') : ['Pendientes', 'Estudio'];
@@ -263,8 +300,11 @@ const applyImportedBookData = (book, imported) => {
         const persistTimerRef = useRef(null);       // books debounce
         const persistStatsRef = useRef(null);       // stats debounce
         const persistSettingsRef = useRef(null);    // settings debounce
+        const noticeToastTimerRef = useRef(null);
         const activeBookIdRef = useRef(null);
         const metadataRepairingRef = useRef(new Set());
+        const bookDedupKeysRef = useRef(new Set());
+        const bookTitleDedupKeysRef = useRef(new Set());
 
         // ── LOGROS / WORKSHOP / ANALYTICS ──
         const [achievements, setAchievements] = useState(() => safeParse('sharkreader_achievements', {}));
@@ -272,6 +312,7 @@ const applyImportedBookData = (book, imported) => {
         const addonsRef = useRef({});
         const [showWorkshop, setShowWorkshop] = useState(false);
         const [achievementToast, setAchievementToast] = useState(null);
+        const [noticeToast, setNoticeToast] = useState(null);
         const [journalEntries, setJournalEntries] = useState(() => safeParse('sharkreader_journal', []));
         const [showJournalModal, setShowJournalModal] = useState(false);
         const [folderImport, setFolderImport] = useState(null);
@@ -281,9 +322,12 @@ const applyImportedBookData = (book, imported) => {
         const cancelFolderImportRef = useRef(false);
 
         const t = translations[lang] || translations['es'];
+        const booksById = useMemo(() => new Map(books.map(book => [book.id, book])), [books]);
 
         const bookPayloadsToFiles = useCallback((payloads = []) => {
             return payloads.map(payload => {
+                const rawBase64 = payload.dataBase64 || payload.data || '';
+                if (!rawBase64) return null;
                 const binary = atob(payload.dataBase64 || payload.data || '');
                 const bytes = new Uint8Array(binary.length);
                 for (let i = 0; i < binary.length; i += 1) {
@@ -296,7 +340,26 @@ const applyImportedBookData = (book, imported) => {
                 file.sourcePath = payload.path;
                 if (payload.meta) file.nativeMeta = payload.meta;
                 return file;
-            });
+            }).filter(Boolean);
+        }, []);
+
+        const resolveImportEntryToFile = useCallback(async (entry) => {
+            if (!entry) return null;
+
+            if (entry.dataBase64 || entry.data) {
+                return bookPayloadsToFiles([entry])[0] || null;
+            }
+
+            if (!entry.path || !window.electronAPI?.readBookFile) return null;
+
+            const payload = await window.electronAPI.readBookFile(entry.path);
+            return payload ? (bookPayloadsToFiles([payload])[0] || null) : null;
+        }, [bookPayloadsToFiles]);
+
+        const showNoticeToast = useCallback((message, tone = 'info') => {
+            clearTimeout(noticeToastTimerRef.current);
+            setNoticeToast({ message, tone });
+            noticeToastTimerRef.current = setTimeout(() => setNoticeToast(null), 3200);
         }, []);
 
         const yieldToUi = useCallback(() => new Promise(resolve => setTimeout(resolve, 0)), []);
@@ -306,7 +369,13 @@ const applyImportedBookData = (book, imported) => {
         // ─────────────────────────────────────────
         useEffect(() => {
             booksRef.current = books;
+            bookDedupKeysRef.current = new Set(books.map(getBookDedupKey));
+            bookTitleDedupKeysRef.current = new Set(books.map(getBookTitleDedupKey));
         }, [books]);
+
+        useEffect(() => {
+            return () => clearTimeout(noticeToastTimerRef.current);
+        }, []);
 
         useEffect(() => {
             document.body.className = `theme-${theme}`;
@@ -457,9 +526,8 @@ const applyImportedBookData = (book, imported) => {
                         const coverBase64 = meta.coverBase64 || null;
                         const finalCover = book.coverUrl || coverBase64;
 
-                        setBooks(prev => prev.map(b => {
-                            if (b.id !== book.id) return b;
-                            return {
+                        startTransition(() => {
+                            setBooks(prev => updateBookInList(prev, book.id, (b) => ({
                                 ...b,
                                 file:           repairFile,
                                 sourcePath:     repairFile.sourcePath || b.sourcePath || null,
@@ -471,8 +539,8 @@ const applyImportedBookData = (book, imported) => {
                                 description:    b.description || meta.description || '',
                                 publisher:      b.publisher  || meta.publisher || '',
                                 tags:           b.tags       || meta.subject || '',
-                            };
-                        }));
+                            })));
+                        });
                         await saveBookToDB(toStoredBookRecord({
                             ...book,
                             file: repairFile,
@@ -487,6 +555,7 @@ const applyImportedBookData = (book, imported) => {
                         }));
                     } catch (err) {
                         console.error(`[SharkReader] Error procesando ${book.originalTitle}:`, err);
+                    } finally {
                         metadataRepairingRef.current.delete(book.id);
                     }
                 }
@@ -647,14 +716,13 @@ const applyImportedBookData = (book, imported) => {
                     });
                     // Acumular minuto en el libro activo
                     if (activeBookIdRef.current) {
-                        setBooks(prev => prev.map(b => {
-                            if (b.id !== activeBookIdRef.current) return b;
-                            return {
+                        startTransition(() => {
+                            setBooks(prev => updateBookInList(prev, activeBookIdRef.current, (b) => ({
                                 ...b,
                                 readingMinutes: (b.readingMinutes || 0) + 1,
                                 dateStarted: b.dateStarted || Date.now()
-                            };
-                        }));
+                            })));
+                        });
                     }
                 }, 60000);
             }
@@ -670,7 +738,7 @@ const applyImportedBookData = (book, imported) => {
         // Detectar aniversarios de lectura al abrir libro (solo para libros ya empezados)
         useEffect(() => {
             if (!lastReadId) return;
-            const bk = books.find(b => b.id === lastReadId);
+            const bk = booksById.get(lastReadId);
             // Solo mostrar si el libro ha sido leído al menos 1 minuto
             if (!bk || !bk.dateStarted || !(bk.readingMinutes > 0)) return;
             const daysSince = Math.floor((Date.now() - bk.dateStarted) / 86400000);
@@ -678,7 +746,7 @@ const applyImportedBookData = (book, imported) => {
             if (milestones.includes(daysSince)) {
                 setAnniversaryInfo({ name: bk.name, days: daysSince, readingMinutes: bk.readingMinutes || 0 });
             }
-        }, [lastReadId]); // eslint-disable-line
+        }, [lastReadId, booksById]);
 
         // Comprobar logros cuando cambian stats o libros
         useEffect(() => {
@@ -695,6 +763,12 @@ const applyImportedBookData = (book, imported) => {
             setAchievementToast(newOnes[0]);
             setTimeout(() => setAchievementToast(null), 4000);
         }, [stats, books, vocabulary, addons]); // eslint-disable-line
+
+        useEffect(() => {
+            if (!userProfile && view === 'achievements') {
+                setView('library');
+            }
+        }, [userProfile, view]);
 
         // ─────────────────────────────────────────
         // TABS
@@ -761,13 +835,13 @@ const applyImportedBookData = (book, imported) => {
         }, [activeTabId, closeTab]);
 
         const activeTab = tabs.find(t => t.id === activeTabId);
-        const currentBookData = useMemo(() => activeTab ? books.find(b => b.id === activeTab.bookId) : null, [activeTab, books]);
+        const currentBookData = useMemo(() => activeTab ? booksById.get(activeTab.bookId) || null : null, [activeTab, booksById]);
         const currentTargetCfi = tabTargetCfi[activeTabId] || null;
         const rightBookData = useMemo(() => {
             if (!panelMode || !rightTabId) return null;
             const rt = tabs.find(t => t.id === rightTabId);
-            return rt ? books.find(b => b.id === rt.bookId) : null;
-        }, [panelMode, rightTabId, tabs, books]);
+            return rt ? booksById.get(rt.bookId) || null : null;
+        }, [panelMode, rightTabId, tabs, booksById]);
 
         // ─────────────────────────────────────────
         // USUARIO
@@ -951,6 +1025,8 @@ const applyImportedBookData = (book, imported) => {
                     total: 0,
                     imported: 0,
                     metadataProcessed: 0,
+                    addedCount: 0,
+                    skippedDuplicates: 0,
                     currentName: '',
                     scanFinished: false,
                     isCancelling: false,
@@ -986,6 +1062,38 @@ const applyImportedBookData = (book, imported) => {
             const valid = files.filter(f => /\.(epub|pdf)$/i.test(f.name));
             if (!valid.length) { alert("Solo se aceptan archivos .epub y .pdf"); return; }
 
+            const existingKeys = new Set(bookDedupKeysRef.current);
+            const existingTitleKeys = new Set(bookTitleDedupKeysRef.current);
+            const seenKeys = new Set();
+            const seenTitleKeys = new Set();
+            const duplicateNames = [];
+            const uniqueValid = [];
+
+            for (const file of valid) {
+                const dedupKey = getBookDedupKey(file);
+                const titleDedupKey = getBookTitleDedupKey(file);
+                if (
+                    existingKeys.has(dedupKey) ||
+                    existingTitleKeys.has(titleDedupKey) ||
+                    seenKeys.has(dedupKey) ||
+                    seenTitleKeys.has(titleDedupKey)
+                ) {
+                    duplicateNames.push(file.name);
+                    continue;
+                }
+                seenKeys.add(dedupKey);
+                seenTitleKeys.add(titleDedupKey);
+                uniqueValid.push(file);
+            }
+
+            if (!uniqueValid.length) {
+                if (duplicateNames.length) {
+                    showNoticeToast(`${duplicateNames.length} libro(s) duplicado(s) omitidos.`, 'warning');
+                }
+                valid.forEach(file => options.onFileSkipped?.(file, 'duplicate'));
+                return { added: 0, skipped: duplicateNames.length, duplicates: duplicateNames };
+            }
+
             const raceTimeout = (promise, ms, fallback = null) =>
                 Promise.race([
                     Promise.resolve(promise).catch((err) => {
@@ -995,7 +1103,7 @@ const applyImportedBookData = (book, imported) => {
                     new Promise(r => setTimeout(() => r(fallback), ms))
                 ]);
 
-            const newBooks = valid.map(file => {
+            const newBooks = uniqueValid.map(file => {
                 const id = Date.now().toString() + Math.random().toString(36).substr(2, 5);
                 const baseName = file.name.replace(/\.[^/.]+$/, '');
                 const type = /\.pdf$/i.test(file.name) ? 'pdf' : 'epub';
@@ -1035,53 +1143,76 @@ const applyImportedBookData = (book, imported) => {
                 };
             });
 
+            newBooks.forEach(book => {
+                bookDedupKeysRef.current.add(getBookDedupKey(book));
+                bookTitleDedupKeysRef.current.add(getBookTitleDedupKey(book));
+            });
+
             // Show the files immediately. Metadata extraction runs after this and updates each card.
             setBooks(prev => [...prev, ...newBooks]);
+
+            if (duplicateNames.length) {
+                console.warn('[SharkReader] Se omitieron libros duplicados:', duplicateNames);
+                showNoticeToast(`${duplicateNames.length} libro(s) duplicado(s) omitidos.`, 'warning');
+            }
 
             (async () => {
                 for (const book of newBooks) {
                     if (options.shouldContinue && !options.shouldContinue()) break;
 
                     await saveBookToDB(toStoredBookRecord(book));
+                    let metadataNotified = false;
+                    const notifyMetadataProcessed = (result = null) => {
+                        if (metadataNotified) return;
+                        metadataNotified = true;
+                        options.onMetadataProcessed?.(book, result);
+                    };
 
                     if (book.type !== 'epub') {
-                        if (options.onMetadataProcessed) {
-                            options.onMetadataProcessed(book, null);
-                        }
+                        notifyMetadataProcessed(null);
                         await yieldToUi();
                         continue;
                     }
 
-                    let meta = book.file.nativeMeta || null;
-                    if (!meta) {
-                        meta = await raceTimeout(extractEpubMeta(book.file), 15000, null);
-                    }
-                    if (!meta) continue;
+                    try {
+                        let meta = book.file.nativeMeta || null;
+                        if (!meta) {
+                            meta = await raceTimeout(extractEpubMeta(book.file), 15000, null);
+                        }
+                        if (!meta) {
+                            notifyMetadataProcessed(null);
+                            await yieldToUi();
+                            continue;
+                        }
 
-                    const title = (meta.title || '').trim() || book.originalTitle;
-                    const creator = (meta.creator || '').trim() || book.originalAuthor;
-                    const updated = {
-                        name: title,
-                        author: creator,
-                        originalTitle: title,
-                        originalAuthor: creator,
-                        coverBase64: meta.coverBase64 || null,
-                        coverUrl: meta.coverBase64 || null,
-                        description: meta.description || '',
-                        publisher: meta.publisher || '',
-                        tags: meta.subject || '',
-                    };
+                        const title = (meta.title || '').trim() || book.originalTitle;
+                        const creator = (meta.creator || '').trim() || book.originalAuthor;
+                        const updated = {
+                            name: title,
+                            author: creator,
+                            originalTitle: title,
+                            originalAuthor: creator,
+                            coverBase64: meta.coverBase64 || null,
+                            coverUrl: meta.coverBase64 || null,
+                            description: meta.description || '',
+                            publisher: meta.publisher || '',
+                            tags: meta.subject || '',
+                        };
 
-                    setBooks(prev => prev.map(b => b.id === book.id ? { ...b, ...updated } : b));
-                    await saveBookToDB(toStoredBookRecord({ ...book, ...updated }));
-
-                    if (options.onMetadataProcessed) {
-                        options.onMetadataProcessed(book, updated);
+                        startTransition(() => {
+                            setBooks(prev => updateBookInList(prev, book.id, updated));
+                        });
+                        await saveBookToDB(toStoredBookRecord({ ...book, ...updated }));
+                        notifyMetadataProcessed(updated);
+                    } catch (err) {
+                        console.error('[SharkReader] Error finalizando metadata del libro:', book.name, err);
+                        notifyMetadataProcessed(null);
                     }
 
                     await yieldToUi();
                 }
             })().catch(err => console.error('[SharkReader] Error procesando metadata en segundo plano:', err));
+            return { added: newBooks.length, skipped: duplicateNames.length, duplicates: duplicateNames };
         };
 
         const finishFolderImportOverlay = useCallback((updater) => {
@@ -1113,34 +1244,84 @@ const applyImportedBookData = (book, imported) => {
                     const nextBatch = folderImportQueueRef.current.shift();
                     if (!nextBatch) continue;
 
-                    const files = bookPayloadsToFiles(nextBatch.batch || []);
-                    if (!files.length) {
-                        await yieldToUi();
-                        continue;
-                    }
+                    for (const entry of nextBatch.batch || []) {
+                        if (cancelFolderImportRef.current) {
+                            folderImportQueueRef.current = [];
+                            break;
+                        }
 
-                    await processFiles(files, {
-                        shouldContinue: () => !cancelFolderImportRef.current,
-                        onMetadataProcessed: () => {
+                        let file = null;
+                        try {
+                            file = await resolveImportEntryToFile(entry);
+                        } catch (err) {
+                            console.error('[SharkReader] No se pudo leer el archivo de la cola de importacion:', entry?.path || entry?.name, err);
+                        }
+
+                        if (!file) {
                             finishFolderImportOverlay(prev => {
                                 if (!prev || prev.sessionId !== nextBatch.sessionId) return prev;
                                 const metadataProcessed = Math.min(prev.total || 0, (prev.metadataProcessed || 0) + 1);
-                                const readyForDone = prev.scanFinished && metadataProcessed >= (prev.total || 0) && (prev.total || 0) > 0;
+                                const readyForDone = prev.scanFinished && metadataProcessed >= (prev.total || 0) && folderImportQueueRef.current.length === 0;
                                 return {
                                     ...prev,
                                     metadataProcessed,
                                     phase: readyForDone ? 'done' : (prev.scanFinished ? 'metadata' : prev.phase),
                                 };
                             });
+                            await yieldToUi();
+                            continue;
                         }
-                    });
 
-                    await yieldToUi();
+                        await processFiles([file], {
+                            shouldContinue: () => !cancelFolderImportRef.current,
+                            onFileSkipped: (_, reason) => {
+                                if (reason !== 'duplicate') return;
+                                finishFolderImportOverlay(prev => {
+                                    if (!prev || prev.sessionId !== nextBatch.sessionId) return prev;
+                                    const metadataProcessed = Math.min(prev.total || 0, (prev.metadataProcessed || 0) + 1);
+                                    const skippedDuplicates = (prev.skippedDuplicates || 0) + 1;
+                                    const readyForDone = prev.scanFinished && metadataProcessed >= (prev.total || 0) && folderImportQueueRef.current.length === 0;
+                                    return {
+                                        ...prev,
+                                        metadataProcessed,
+                                        skippedDuplicates,
+                                        phase: readyForDone ? 'done' : (prev.scanFinished ? 'metadata' : prev.phase),
+                                    };
+                                });
+                            },
+                            onMetadataProcessed: () => {
+                                finishFolderImportOverlay(prev => {
+                                    if (!prev || prev.sessionId !== nextBatch.sessionId) return prev;
+                                    const metadataProcessed = Math.min(prev.total || 0, (prev.metadataProcessed || 0) + 1);
+                                    const addedCount = Math.min(prev.total || 0, (prev.addedCount || 0) + 1);
+                                    const readyForDone = prev.scanFinished && metadataProcessed >= (prev.total || 0) && folderImportQueueRef.current.length === 0;
+                                    return {
+                                        ...prev,
+                                        metadataProcessed,
+                                        addedCount,
+                                        phase: readyForDone ? 'done' : (prev.scanFinished ? 'metadata' : prev.phase),
+                                    };
+                                });
+                            }
+                        });
+
+                        await yieldToUi();
+                    }
                 }
             } finally {
                 folderImportProcessingRef.current = false;
+                if (cancelFolderImportRef.current) {
+                    finishFolderImportOverlay(prev => {
+                        if (!prev) return prev;
+                        return {
+                            ...prev,
+                            phase: 'cancelled',
+                            scanFinished: true,
+                        };
+                    });
+                }
             }
-        }, [bookPayloadsToFiles, finishFolderImportOverlay, processFiles, yieldToUi]);
+        }, [finishFolderImportOverlay, processFiles, resolveImportEntryToFile, yieldToUi]);
 
         const cancelActiveFolderImport = useCallback(async () => {
             const sessionId = activeFolderImportIdRef.current;
@@ -1153,7 +1334,14 @@ const applyImportedBookData = (book, imported) => {
             if (window.electronAPI?.cancelFolderImport) {
                 await window.electronAPI.cancelFolderImport(sessionId);
             }
-        }, []);
+            if (!folderImportProcessingRef.current) {
+                finishFolderImportOverlay(prev => prev && prev.sessionId === sessionId ? {
+                    ...prev,
+                    phase: 'cancelled',
+                    scanFinished: true,
+                } : prev);
+            }
+        }, [finishFolderImportOverlay]);
 
         useEffect(() => {
             if (!window.electronAPI?.onFolderImportProgress) return;
@@ -1276,25 +1464,29 @@ const applyImportedBookData = (book, imported) => {
 
         const deleteBook = useCallback((bookId) => {
             if (!window.confirm(t.confirmDelete)) return;
-            const book = books.find(b => b.id === bookId);
+            const book = booksById.get(bookId);
             if (book?.url) URL.revokeObjectURL(book.url);
             const tabToClose = tabs.find(tb => tb.bookId === bookId);
             if (tabToClose) closeTab(tabToClose.id);
             setBooks(prev => prev.filter(b => b.id !== bookId));
             if (lastReadId === bookId) setLastReadId(null);
             deleteBookFromDB(bookId);
-        }, [books, tabs, lastReadId, t, closeTab]);
+        }, [booksById, tabs, lastReadId, t, closeTab]);
 
         const updateBookLocation = useCallback((bookId, cfi, percent) => {
-            setBooks(prev => {
-                const book = prev.find(b => b.id === bookId);
-                if (!book) return prev;
-                const hasPercent = percent !== null && percent !== undefined;
-                const newProgress = hasPercent ? percent : book.progress;
-                if (book.lastLocation === cfi && book.progress === newProgress) return prev;
-                return prev.map(b => b.id === bookId
-                    ? { ...b, lastLocation: cfi, progress: newProgress, lastReadDate: Date.now() }
-                    : b);
+            startTransition(() => {
+                setBooks(prev => {
+                    const book = prev.find(b => b.id === bookId);
+                    if (!book) return prev;
+                    const hasPercent = percent !== null && percent !== undefined;
+                    const newProgress = hasPercent ? percent : book.progress;
+                    if (book.lastLocation === cfi && book.progress === newProgress) return prev;
+                    return updateBookInList(prev, bookId, {
+                        lastLocation: cfi,
+                        progress: newProgress,
+                        lastReadDate: Date.now()
+                    });
+                });
             });
             // Clear the initial CFI target once relocated
             setTabTargetCfi(prev => {
@@ -1369,8 +1561,8 @@ const applyImportedBookData = (book, imported) => {
                 if (currentFilter === 'recents') return (b.dateAdded > Date.now() - 7 * 24 * 60 * 60 * 1000) || (b.lastReadDate > Date.now() - 14 * 24 * 60 * 60 * 1000);
                 if (currentFilter.startsWith('author:')) return b.author === currentFilter.slice(7);
                 if (currentFilter !== 'all' && currentFilter !== 'favorites' && b.category !== currentFilter) return false;
-                if (searchTerm) {
-                    const term = searchTerm.toLowerCase();
+                if (deferredSearchTerm) {
+                    const term = deferredSearchTerm.toLowerCase();
                     return b.name.toLowerCase().includes(term) || b.author.toLowerCase().includes(term) ||
                         (b.tags && b.tags.toLowerCase().includes(term)) || (b.series && b.series.toLowerCase().includes(term)) ||
                         (b.description && b.description.toLowerCase().includes(term)) || (b.publisher && b.publisher.toLowerCase().includes(term));
@@ -1385,11 +1577,11 @@ const applyImportedBookData = (book, imported) => {
                 if (sortBy === 'rating') return (b.rating || 0) - (a.rating || 0);
                 return 0;
             });
-        }, [books, currentFilter, searchTerm, sortBy]);
+        }, [books, currentFilter, deferredSearchTerm, sortBy]);
 
         const searchResultsWithMatches = useMemo(() => {
             if (!searchTerm) return null;
-            const term = searchTerm.toLowerCase();
+            const term = deferredSearchTerm.toLowerCase();
             return displayedBooks.map(b => ({
                 ...b,
                 matchedFields: [
@@ -1401,7 +1593,7 @@ const applyImportedBookData = (book, imported) => {
                     b.publisher && b.publisher.toLowerCase().includes(term) && 'Editorial',
                 ].filter(Boolean)
             }));
-        }, [displayedBooks, searchTerm]);
+        }, [deferredSearchTerm, displayedBooks]);
 
         const exportQuotesAsImage = () => {
             const allQuotes = books.flatMap(b =>
@@ -1505,6 +1697,8 @@ const applyImportedBookData = (book, imported) => {
             const total = Math.max(folderImport.total || 0, folderImport.discovered || 0, 0);
             const imported = Math.min(folderImport.imported || 0, total || folderImport.imported || 0);
             const metadataProcessed = Math.min(folderImport.metadataProcessed || 0, total || folderImport.metadataProcessed || 0);
+            const addedCount = Math.min(folderImport.addedCount || 0, metadataProcessed);
+            const skippedDuplicates = folderImport.skippedDuplicates || 0;
 
             if (folderImport.phase === 'empty') {
                 return { ...folderImport, title: 'No se encontraron libros', detail: 'La carpeta seleccionada no contiene EPUB, PDF o MOBI.', progress: 100, indeterminate: false, canCancel: false };
@@ -1515,11 +1709,13 @@ const applyImportedBookData = (book, imported) => {
             }
 
             if (folderImport.phase === 'cancelled') {
-                return { ...folderImport, title: 'Importacion cancelada', detail: `Se procesaron ${metadataProcessed} de ${total || imported || 0} libros antes de detenerse.`, progress: total > 0 ? Math.round((metadataProcessed / total) * 100) : 0, indeterminate: false, canCancel: false };
+                const skippedText = skippedDuplicates > 0 ? ` Se omitieron ${skippedDuplicates} duplicado(s).` : '';
+                return { ...folderImport, title: 'Importacion cancelada', detail: `Se procesaron ${metadataProcessed} de ${total || imported || 0} libros antes de detenerse.${skippedText}`, progress: total > 0 ? Math.round((metadataProcessed / total) * 100) : 0, indeterminate: false, canCancel: false };
             }
 
             if (folderImport.phase === 'done') {
-                return { ...folderImport, title: 'Importacion completada', detail: `Se agregaron ${metadataProcessed} libros${folderImport.folderName ? ` desde ${folderImport.folderName}` : ''}.`, progress: 100, indeterminate: false, canCancel: false };
+                const skippedText = skippedDuplicates > 0 ? ` Se omitieron ${skippedDuplicates} duplicado(s).` : '';
+                return { ...folderImport, title: 'Importacion completada', detail: `Se agregaron ${addedCount} libros${folderImport.folderName ? ` desde ${folderImport.folderName}` : ''}.${skippedText}`, progress: 100, indeterminate: false, canCancel: false };
             }
 
             if (folderImport.phase === 'metadata') {
@@ -1614,15 +1810,9 @@ const applyImportedBookData = (book, imported) => {
                                     </div>
                                 </div>
 
-                                {folderImportOverlay.currentName && (
-                                    <div className="mt-4 rounded-2xl border border-white/8 bg-black/20 px-4 py-3">
-                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/35">Procesando ahora</p>
-                                        <p className="mt-2 truncate text-sm font-semibold text-white/80">{folderImportOverlay.currentName}</p>
                                     </div>
-                                )}
+                                </div>
                             </div>
-                        </div>
-                    </div>
                 )}
 
                 {view === 'library' && (
@@ -1690,13 +1880,14 @@ const applyImportedBookData = (book, imported) => {
                                                     onExport={() => { exportAllData(); setShowUserMenu(false); }}
                                                     onImport={() => { importInputRef.current.click(); setShowUserMenu(false); }}
                                                     onLogout={() => { setUserProfile(null); setShowUserMenu(false); }}
-                                                    onDeleteAccount={() => {
+                                                    onDeleteAccount={async () => {
                                                     // Wipe all user-related localStorage keys
                                                     const keysToDelete = [
                                                         'sharkreader_user',
                                                         'sharkreader_meta',
                                                         'sharkreader_stats',
                                                         'sharkreader_categories',
+                                                        'sharkreader_achievements',
                                                         'sharkreader_addons',
                                                         'sharkreader_journal',
                                                         'sharkreader_vocab',
@@ -1707,13 +1898,43 @@ const applyImportedBookData = (book, imported) => {
                                                         'sharkreader_migrated_v5',
                                                         'sharkreader_lang',
                                                         'sharkreader_theme',
+                                                        'sharkreader_flow',
+                                                        'sharkreader_layout',
+                                                        'sharkreader_warm',
+                                                        'sharkreader_ai_provider',
+                                                        'sharkreader_ai_key',
+                                                        'sharkreader_sync_folder',
+                                                        'sharkreader_libview',
+                                                        'sharkreader_daily_goal',
+                                                        'sharkreader_yearly_goal',
+                                                        'sharkreader_accent',
                                                         'sharkreader_readFlow',
                                                         'sharkreader_readLayout',
                                                         'sharkreader_pageTransition',
                                                         'sharkreader_libraryView',
                                                         'sharkreader_sortBy',
+                                                        'page_transition',
                                                     ];
                                                     keysToDelete.forEach(k => localStorage.removeItem(k));
+                                                    try {
+                                                        booksRef.current.forEach(book => {
+                                                            if (book?.url) URL.revokeObjectURL(book.url);
+                                                        });
+                                                    } catch (_) {}
+                                                    clearTimeout(noticeToastTimerRef.current);
+                                                    setAchievementToast(null);
+                                                    setNoticeToast(null);
+                                                    setAchievements({});
+                                                    setStats({
+                                                        timeRead: 0, pagesTurned: 0, streak: 0, lastStreakDate: '',
+                                                        currentDailyMins: 0, lastActiveDate: '', streakSavers: 0, history: {}, minutesByDay: {}
+                                                    });
+                                                    setVocabulary([]);
+                                                    setJournalEntries([]);
+                                                    setAddons({});
+                                                    setUserProfile(null);
+                                                    setBooks([]);
+                                                    await resetAllAppData();
                                                     setShowUserMenu(false);
                                                     window.location.reload();
                                                     }}
@@ -2083,6 +2304,7 @@ const applyImportedBookData = (book, imported) => {
                                     className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
                                     <span className="text-base">📊</span> Analíticas
                                 </button>
+                                {userProfile && (
                                 <button onClick={() => { setView('achievements'); setSidebarOpen(false); }}
                                     className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
                                     <span className="text-base">🏆</span> Logros
@@ -2090,6 +2312,7 @@ const applyImportedBookData = (book, imported) => {
                                         {Object.keys(achievements).length}/{ACHIEVEMENTS.length}
                                     </span>
                                 </button>
+                                )}
                                 <button onClick={() => { setShowWorkshop(true); setSidebarOpen(false); }}
                                     className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
                                     <span className="text-base">🔧</span> Workshop
@@ -2584,7 +2807,7 @@ const applyImportedBookData = (book, imported) => {
                                 {/* Selector de qué tab mostrar en el panel derecho */}
                                 <div className="flex-shrink-0 flex items-center gap-1 px-2 h-9 overflow-x-auto" style={{ backgroundColor: 'rgba(0,0,0,0.4)', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
                                     {tabs.filter(tb => tb.id !== activeTabId).map(tb => {
-                                        const bk = books.find(b => b.id === tb.bookId);
+                                        const bk = booksById.get(tb.bookId);
                                         return (
                                             <button key={tb.id} onClick={() => setRightTabId(tb.id)}
                                                 className={`flex-shrink-0 px-3 py-1 rounded-lg text-[11px] font-semibold text-white transition ${rightTabId === tb.id ? 'bg-white/20' : 'hover:bg-white/10 opacity-60'}`}>
@@ -2672,7 +2895,7 @@ const applyImportedBookData = (book, imported) => {
                 )}
 
                 {/* ── ACHIEVEMENT TOAST ── */}
-                {achievementToast && (() => {
+                {achievementToast && userProfile && (() => {
                     const r = RARITY[achievementToast.rarity];
                     return (
                         <div className="fixed bottom-6 right-6 z-[9999] fade-in" style={{ animation: 'fadeInUp 0.4s ease' }}>
@@ -2690,6 +2913,26 @@ const applyImportedBookData = (book, imported) => {
                         </div>
                     );
                 })()}
+
+                {noticeToast && (
+                    <div className="fixed bottom-6 left-6 z-[9998] fade-in" style={{ animation: 'fadeInUp 0.35s ease' }}>
+                        <div
+                            className="flex items-start gap-3 px-4 py-3 rounded-2xl shadow-2xl border max-w-sm"
+                            style={{
+                                backgroundColor: 'var(--surface-bg)',
+                                borderColor: noticeToast.tone === 'warning' ? 'rgba(251,191,36,0.45)' : 'rgba(59,130,246,0.35)'
+                            }}
+                        >
+                            <div className="text-xl leading-none">{noticeToast.tone === 'warning' ? '⚠️' : 'ℹ️'}</div>
+                            <div className="min-w-0">
+                                <p className="text-[10px] font-black uppercase tracking-[0.18em] opacity-55">
+                                    {noticeToast.tone === 'warning' ? 'Importacion' : 'Aviso'}
+                                </p>
+                                <p className="mt-1 text-sm font-semibold opacity-85">{noticeToast.message}</p>
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 {/* ── READING JOURNAL MODAL ── */}
                 {showJournalModal && (

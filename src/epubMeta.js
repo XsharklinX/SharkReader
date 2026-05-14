@@ -79,7 +79,10 @@ export async function extractEpubMeta(file) {
         // 1. Find container.xml
         const containerKey = Object.keys(zip.files).find(k => k.toLowerCase() === 'meta-inf/container.xml');
         const containerStr = containerKey ? await zip.files[containerKey].async('string') : null;
-        if (!containerStr) { alert('No container.xml'); return null; }
+        if (!containerStr) {
+            console.warn('[SharkReader] EPUB sin container.xml');
+            return null;
+        }
 
         // 2. Parse OPF path from container
         const containerDoc = parseXml(containerStr);
@@ -92,15 +95,24 @@ export async function extractEpubMeta(file) {
         if (!opfPath) {
             opfPath = Object.keys(zip.files).find(k => /\.opf$/i.test(k)) || '';
         }
-        if (!opfPath) { alert('No opfPath'); return null; }
+        if (!opfPath) {
+            console.warn('[SharkReader] EPUB sin OPF detectable');
+            return null;
+        }
 
         // 3. Parse OPF
         const opfFile = findCaseInsensitive(zip, opfPath);
         const opfStr = await opfFile?.async('string');
-        if (!opfStr) { alert('No opfStr'); return null; }
+        if (!opfStr) {
+            console.warn('[SharkReader] EPUB sin contenido OPF legible');
+            return null;
+        }
 
         const opfDoc = parseXml(opfStr);
-        if (!opfDoc) { alert('No opfDoc'); return null; }
+        if (!opfDoc) {
+            console.warn('[SharkReader] EPUB con OPF invalido');
+            return null;
+        }
 
         const opfDir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
 
@@ -189,7 +201,6 @@ export async function extractEpubMeta(file) {
 
         return { title, creator, description, publisher, subject, coverBase64 };
     } catch (err) {
-        alert('EpubMeta Error: ' + err.message + '\n' + err.stack);
         console.error('[SharkReader] extractEpubMeta failed:', err);
         return null;
     }
