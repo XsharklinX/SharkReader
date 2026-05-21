@@ -1,6 +1,10 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
+const dns = require('dns');
+const net = require('net');
 const { execSync } = require('child_process');
 const JSZip = require('jszip');
 
@@ -16,6 +20,9 @@ app.commandLine.appendSwitch('js-flags', '--harmony');
 let mainWindow = null;
 const folderImportSessions = new Map();
 const IMPORT_BATCH_SIZE = 12;
+const CATALOG_MAX_BYTES = 2 * 1024 * 1024;
+const BOOK_DOWNLOAD_MAX_BYTES = 250 * 1024 * 1024;
+const EXTERNAL_FETCH_TIMEOUT_MS = 15000;
 
 // Extraer ruta de archivo epub/mobi de los argumentos
 function getFileFromArgs(argv) {
@@ -51,7 +58,8 @@ function createWindow() {
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
-            webSecurity: false,
+            webSecurity: true,
+            allowRunningInsecureContent: false,
             preload: path.join(__dirname, 'preload.js'),
             backgroundThrottling: false,   // keep timers/RAF accurate when window is hidden
             v8CacheOptions: 'bypassHeatCheck', // cache V8 bytecode from first run
@@ -82,10 +90,229 @@ function notifyRenderer(channel, payload) {
 }
 
 // Seleccionar carpeta de sincronización
-const BOOK_EXTENSIONS = new Set(['.epub', '.pdf']);
+const BOOK_EXTENSIONS = new Set(['.epub', '.pdf', '.mobi']);
 
 function isBookPath(filePath) {
     return BOOK_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+function isSafeHttpUrl(url) {
+    try {
+        const parsed = new URL(url);
+        return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+        return false;
+    }
+}
+
+function isPrivateHostname(hostname) {
+    const normalized = String(hostname || '').toLowerCase();
+    return normalized === 'localhost' || normalized.endsWith('.localhost');
+}
+
+function isPrivateIp(address) {
+    if (!address) return true;
+    if (address === '::1' || address.startsWith('fe80:')) return true;
+    if (address.startsWith('::ffff:')) return isPrivateIp(address.slice(7));
+
+    if (net.isIP(address) === 4) {
+        const parts = address.split('.').map(Number);
+        const [a, b] = parts;
+        return (
+            a === 10 ||
+            a === 127 ||
+            (a === 172 && b >= 16 && b <= 31) ||
+            (a === 192 && b === 168) ||
+            (a === 169 && b === 254) ||
+            a === 0
+        );
+    }
+
+    return net.isIP(address) === 6 && (
+        address === '::' ||
+        address.startsWith('fc') ||
+        address.startsWith('fd')
+    );
+}
+
+async function assertNetworkTargetAllowed(url, allowPrivateNetwork = false) {
+    const parsed = new URL(url);
+    if (allowPrivateNetwork) return;
+    if (isPrivateHostname(parsed.hostname) || isPrivateIp(parsed.hostname)) {
+        throw new Error('Fuente de red local bloqueada. Activa acceso local solo para fuentes propias.');
+    }
+
+    const addresses = await dns.promises.lookup(parsed.hostname, { all: true, verbatim: true });
+    if (addresses.some(entry => isPrivateIp(entry.address))) {
+        throw new Error('Fuente bloqueada: resuelve a una red privada/local.');
+    }
+}
+
+function resolveExternalUrl(baseUrl, href) {
+    try {
+        return new URL(href, baseUrl).toString();
+    } catch {
+        return null;
+    }
+}
+
+async function fetchBuffer(url, { maxBytes, timeoutMs = EXTERNAL_FETCH_TIMEOUT_MS, redirects = 0, allowPrivateNetwork = false } = {}) {
+    await assertNetworkTargetAllowed(url, allowPrivateNetwork);
+    return new Promise((resolve, reject) => {
+        if (!isSafeHttpUrl(url)) {
+            reject(new Error('URL no permitida'));
+            return;
+        }
+
+        const parsed = new URL(url);
+        const client = parsed.protocol === 'https:' ? https : http;
+        const req = client.get(parsed, {
+            timeout: timeoutMs,
+            headers: {
+                'User-Agent': 'SharkReader/2.5',
+                'Accept': 'application/atom+xml,application/xml,text/xml,application/epub+zip,application/pdf,application/x-mobipocket-ebook,*/*;q=0.8',
+            },
+        }, (res) => {
+            if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirects < 4) {
+                res.resume();
+                const nextUrl = resolveExternalUrl(url, res.headers.location);
+                if (!nextUrl) {
+                    reject(new Error('Redireccion invalida'));
+                    return;
+                }
+                fetchBuffer(nextUrl, { maxBytes, timeoutMs, redirects: redirects + 1, allowPrivateNetwork }).then(resolve, reject);
+                return;
+            }
+
+            if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+                res.resume();
+                reject(new Error(`HTTP ${res.statusCode || 'desconocido'}`));
+                return;
+            }
+
+            const chunks = [];
+            let total = 0;
+            res.on('data', chunk => {
+                total += chunk.length;
+                if (total > maxBytes) {
+                    req.destroy(new Error('Respuesta demasiado grande'));
+                    return;
+                }
+                chunks.push(chunk);
+            });
+            res.on('end', () => resolve({
+                buffer: Buffer.concat(chunks),
+                contentType: String(res.headers['content-type'] || ''),
+                finalUrl: url,
+            }));
+        });
+
+        req.on('timeout', () => req.destroy(new Error('Tiempo de espera agotado')));
+        req.on('error', reject);
+    });
+}
+
+function detectBookExtFromBuffer(buffer, contentType = '', sourceUrl = '') {
+    const header = buffer.subarray(0, 160).toString('latin1');
+    if (header.startsWith('%PDF')) return '.pdf';
+    if (header.startsWith('PK')) return '.epub';
+    if (/BOOKMOBI|MOBI/i.test(header)) return '.mobi';
+    const extFromUrl = path.extname(new URL(sourceUrl).pathname).toLowerCase();
+    if (BOOK_EXTENSIONS.has(extFromUrl)) return extFromUrl;
+    if (/pdf/i.test(contentType)) return '.pdf';
+    if (/mobi|mobipocket/i.test(contentType)) return '.mobi';
+    if (/epub|zip/i.test(contentType)) return '.epub';
+    return null;
+}
+
+function decodeXmlEntities(value = '') {
+    return String(value)
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+        .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
+        .trim();
+}
+
+function getXmlTag(xml, tagName) {
+    const match = new RegExp(`<(?:\\w+:)?${tagName}\\b[^>]*>([\\s\\S]*?)<\\/(?:\\w+:)?${tagName}>`, 'i').exec(xml);
+    return match ? decodeXmlEntities(match[1].replace(/<[^>]+>/g, ' ')) : '';
+}
+
+function parseXmlAttrs(tag) {
+    const attrs = {};
+    const attrRegex = /([\w:-]+)\s*=\s*["']([^"']*)["']/g;
+    let match;
+    while ((match = attrRegex.exec(tag))) {
+        attrs[match[1]] = decodeXmlEntities(match[2]);
+    }
+    return attrs;
+}
+
+function parseOpdsCatalog(xml, sourceUrl) {
+    const catalogTitle = getXmlTag(xml, 'title') || 'Catalogo OPDS';
+    const entries = [];
+    const navigation = [];
+    const entryRegex = /<(?:\w+:)?entry\b[^>]*>([\s\S]*?)<\/(?:\w+:)?entry>/gi;
+    let entryMatch;
+
+    while ((entryMatch = entryRegex.exec(xml))) {
+        const entryXml = entryMatch[1];
+        const title = getXmlTag(entryXml, 'title') || 'Sin titulo';
+        const author = getXmlTag(entryXml, 'name');
+        const summary = getXmlTag(entryXml, 'summary') || getXmlTag(entryXml, 'content');
+        const links = [];
+        const linkRegex = /<(?:\w+:)?link\b[^>]*\/?>/gi;
+        let linkMatch;
+
+        while ((linkMatch = linkRegex.exec(entryXml))) {
+            const attrs = parseXmlAttrs(linkMatch[0]);
+            if (!attrs.href) continue;
+            const href = resolveExternalUrl(sourceUrl, attrs.href);
+            if (!href) continue;
+            links.push({
+                href,
+                rel: attrs.rel || '',
+                type: attrs.type || '',
+                title: attrs.title || '',
+            });
+        }
+
+        const acquisition = links.find(link =>
+            /acquisition|open-access/i.test(link.rel) ||
+            /epub|pdf|mobipocket|mobi/i.test(link.type) ||
+            /\.(epub|pdf|mobi)(?:$|[?#])/i.test(link.href)
+        );
+        const nav = links.find(link =>
+            /subsection|collection|start|alternate/i.test(link.rel) &&
+            !/acquisition/i.test(link.rel)
+        );
+        const image = links.find(link => /image/i.test(link.type) || /cover|thumbnail/i.test(link.rel));
+
+        if (acquisition) {
+            entries.push({
+                id: acquisition.href,
+                title,
+                author,
+                summary,
+                downloadUrl: acquisition.href,
+                format: acquisition.type || path.extname(new URL(acquisition.href).pathname).replace('.', ''),
+                coverUrl: image?.href || null,
+            });
+        } else if (nav) {
+            navigation.push({
+                id: nav.href,
+                title,
+                url: nav.href,
+                type: nav.type || 'application/atom+xml',
+            });
+        }
+    }
+
+    return { title: catalogTitle, entries, navigation, sourceUrl };
 }
 
 function walkBookFiles(dirPath) {
@@ -276,7 +503,7 @@ async function readBookPayload(filePath) {
         return {
             name: path.basename(filePath),
             path: filePath,
-            type: ext === '.pdf' ? 'application/pdf' : 'application/epub+zip',
+            type: ext === '.pdf' ? 'application/pdf' : ext === '.mobi' ? 'application/x-mobipocket-ebook' : 'application/epub+zip',
             lastModified: stats.mtimeMs,
             dataBase64: data.toString('base64'),
             meta
@@ -297,7 +524,7 @@ function createBookImportStub(filePath) {
     return {
         name: path.basename(filePath),
         path: filePath,
-        type: ext === '.pdf' ? 'application/pdf' : 'application/epub+zip',
+        type: ext === '.pdf' ? 'application/pdf' : ext === '.mobi' ? 'application/x-mobipocket-ebook' : 'application/epub+zip',
         lastModified,
     };
 }
@@ -451,7 +678,7 @@ ipcMain.handle('pick-book-files', async () => {
     if (!mainWindow) return [];
     const result = await dialog.showOpenDialog(mainWindow, {
         properties: ['openFile', 'multiSelections'],
-        filters: [{ name: 'Libros', extensions: ['epub', 'pdf'] }],
+        filters: [{ name: 'Libros', extensions: ['epub', 'pdf', 'mobi'] }],
         title: 'Añadir libros'
     });
     if (result.canceled) return [];
@@ -521,6 +748,56 @@ ipcMain.handle('read-book-file', async (_e, filePath) => {
     }
 });
 
+ipcMain.handle('fetch-external-catalog', async (_e, sourceUrl, options = {}) => {
+    try {
+        if (!isSafeHttpUrl(sourceUrl)) return { ok: false, msg: 'URL no permitida' };
+        const { buffer, contentType, finalUrl } = await fetchBuffer(sourceUrl, {
+            maxBytes: CATALOG_MAX_BYTES,
+            timeoutMs: EXTERNAL_FETCH_TIMEOUT_MS,
+            allowPrivateNetwork: !!options.allowPrivateNetwork,
+        });
+        if (!/xml|atom|opds|text/i.test(contentType) && !/<(?:\w+:)?feed\b/i.test(buffer.toString('utf8', 0, Math.min(buffer.length, 512)))) {
+            return { ok: false, msg: 'La fuente no parece ser un catalogo OPDS/XML' };
+        }
+        return { ok: true, catalog: parseOpdsCatalog(buffer.toString('utf8'), finalUrl) };
+    } catch (err) {
+        return { ok: false, msg: err.message };
+    }
+});
+
+ipcMain.handle('download-external-book', async (_e, downloadUrl, fallbackName = 'book', options = {}) => {
+    try {
+        if (!isSafeHttpUrl(downloadUrl)) return { ok: false, msg: 'URL no permitida' };
+        const { buffer, contentType, finalUrl } = await fetchBuffer(downloadUrl, {
+            maxBytes: BOOK_DOWNLOAD_MAX_BYTES,
+            timeoutMs: 30000,
+            allowPrivateNetwork: !!options.allowPrivateNetwork,
+        });
+        const parsed = new URL(finalUrl);
+        const ext = detectBookExtFromBuffer(buffer, contentType, finalUrl);
+        if (!ext) {
+            return { ok: false, msg: 'La descarga no parece ser un EPUB, PDF o MOBI valido.' };
+        }
+        const safeBase = String(fallbackName || path.basename(parsed.pathname) || 'book')
+            .replace(/\.[^/.]+$/, '')
+            .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+            .slice(0, 120) || 'book';
+        return {
+            ok: true,
+            payload: {
+                name: `${safeBase}${ext}`,
+                path: finalUrl,
+                type: ext === '.pdf' ? 'application/pdf' : ext === '.mobi' ? 'application/x-mobipocket-ebook' : 'application/epub+zip',
+                lastModified: Date.now(),
+                dataBase64: buffer.toString('base64'),
+                meta: null,
+            },
+        };
+    } catch (err) {
+        return { ok: false, msg: err.message };
+    }
+});
+
 ipcMain.handle('pick-folder', async () => {
     if (!mainWindow) return null;
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -558,18 +835,21 @@ ipcMain.handle('register-file-associations', async () => {
     const appDir = __dirname.replace(/\\/g, '\\\\');
     // El comando que Windows usará para abrir el archivo:
     // electron.exe "ruta/al/proyecto" "%1"
-    const openCmd = `\\"${exePath}\\" \\"${appDir}\\" \\"%1\\"`;
+    const openCmd = app.isPackaged
+        ? `\\"${exePath}\\" \\"%1\\"`
+        : `\\"${exePath}\\" \\"${appDir}\\" \\"%1\\"`;
 
     const formats = [
-        { ext: '.epub', progId: 'SharkReader.epub', desc: 'EPUB Document' },
-        { ext: '.mobi', progId: 'SharkReader.mobi', desc: 'MOBI Document' },
+        { ext: '.epub', progId: 'SharkReader.epub', desc: 'EPUB Document', contentType: 'application/epub+zip' },
+        { ext: '.pdf', progId: 'SharkReader.pdf', desc: 'PDF Document', contentType: 'application/pdf' },
+        { ext: '.mobi', progId: 'SharkReader.mobi', desc: 'MOBI Document', contentType: 'application/x-mobipocket-ebook' },
     ];
 
     try {
         for (const fmt of formats) {
             // Asociar extensión al ProgId
             execSync(`reg add "HKCU\\Software\\Classes\\${fmt.ext}" /ve /d "${fmt.progId}" /f`);
-            execSync(`reg add "HKCU\\Software\\Classes\\${fmt.ext}" /v "Content Type" /d "application/epub+zip" /f`);
+            execSync(`reg add "HKCU\\Software\\Classes\\${fmt.ext}" /v "Content Type" /d "${fmt.contentType}" /f`);
 
             // Registrar ProgId
             execSync(`reg add "HKCU\\Software\\Classes\\${fmt.progId}" /ve /d "${fmt.desc} — Shark Reader" /f`);
@@ -593,10 +873,19 @@ ipcMain.handle('register-file-associations', async () => {
 ipcMain.handle('remove-file-associations', async () => {
     if (process.platform !== 'win32') return { ok: false };
     try {
-        execSync('reg delete "HKCU\\Software\\Classes\\SharkReader.epub" /f');
-        execSync('reg delete "HKCU\\Software\\Classes\\SharkReader.mobi" /f');
-        execSync('reg delete "HKCU\\Software\\Classes\\.epub" /f');
-        execSync('reg delete "HKCU\\Software\\Classes\\.mobi" /f');
+        [
+            'SharkReader.epub',
+            'SharkReader.pdf',
+            'SharkReader.mobi',
+            '.epub',
+            '.pdf',
+            '.mobi',
+        ].forEach(key => {
+            try {
+                execSync(`reg delete "HKCU\\Software\\Classes\\${key}" /f`);
+            } catch (_) {}
+        });
+        try { execSync('ie4uinit.exe -show', { stdio: 'ignore' }); } catch (_) {}
         return { ok: true };
     } catch (err) {
         return { ok: false, msg: err.message };

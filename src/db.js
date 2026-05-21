@@ -1,7 +1,7 @@
 // SharkReader - Database & Storage utilities
 
 const DB_NAME = 'SharkReaderDB';
-const DB_VERSION = 5; // v5: books store is the source of truth for library metadata
+const DB_VERSION = 6; // v6: book metadata is lightweight; file blobs live in files store
 const LEGACY_DB_NAME = 'SharkReaderDB_v4';
 const LEGACY_MIGRATION_KEY = 'sharkreader_migrated_v5';
 
@@ -81,6 +81,55 @@ const putIntoStore = async (db, storeName, record) => {
     await runTransaction(db, storeName, 'readwrite', (store) => store.put(record));
 };
 
+const mergeBookRecordForPersistence = (existing = {}, next = {}) => {
+    if (!next?.id) return null;
+    const merged = { ...existing, ...next };
+    delete merged.file;
+    if (!merged.sourcePath && existing?.sourcePath) merged.sourcePath = existing.sourcePath;
+    return merged;
+};
+
+const stripFileFromBookRecord = (record = {}) => {
+    const { file, ...lightRecord } = record;
+    return lightRecord;
+};
+
+const buildFileStoreRecord = (record = {}) => {
+    if (!record?.id || !record.file) return null;
+    return {
+        id: record.id,
+        file: record.file,
+        coverBase64: record.coverBase64 || null,
+        originalTitle: record.originalTitle || '',
+        originalAuthor: record.originalAuthor || '',
+        dateAdded: record.dateAdded || Date.now(),
+        sourcePath: record.sourcePath || record.file?.sourcePath || null,
+        type: record.type || inferBookType(record),
+    };
+};
+
+const patchBookRecords = async (db, records) => {
+    const validRecords = Array.isArray(records) ? records.filter(record => record?.id) : [];
+    if (!validRecords.length || !db.objectStoreNames.contains(BOOKS_STORE)) return;
+
+    await new Promise((resolve, reject) => {
+        const tx = db.transaction(BOOKS_STORE, 'readwrite');
+        const store = tx.objectStore(BOOKS_STORE);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+
+        validRecords.forEach((record) => {
+            const getReq = store.get(record.id);
+            getReq.onsuccess = () => {
+                const merged = mergeBookRecordForPersistence(getReq.result || {}, record);
+                if (merged) store.put(merged);
+            };
+            getReq.onerror = () => reject(getReq.error);
+        });
+    });
+};
+
 const deleteFromStore = async (db, storeName, key) => {
     await runTransaction(db, storeName, 'readwrite', (store) => store.delete(key));
 };
@@ -127,6 +176,9 @@ const buildBookRecordFromLegacy = (fileRecord, metaRecord = {}) => ({
     dateStarted: metaRecord.dateStarted || null,
     dateFinished: metaRecord.dateFinished || null,
     isWishlist: !!metaRecord.isWishlist,
+    updatedAt: metaRecord.updatedAt || metaRecord.lastReadDate || fileRecord.dateAdded || Date.now(),
+    progressUpdatedAt: metaRecord.progressUpdatedAt || metaRecord.lastReadDate || metaRecord.updatedAt || fileRecord.dateAdded || Date.now(),
+    metadataUpdatedAt: metaRecord.metadataUpdatedAt || metaRecord.updatedAt || fileRecord.dateAdded || Date.now(),
 });
 
 const migrateLegacyExternalDB = async (db) => {
@@ -252,7 +304,13 @@ export const saveBookToDB = async (bookRecord) => {
     if (!bookRecord?.id) return;
     try {
         const db = await initDB();
-        await putIntoStore(db, BOOKS_STORE, bookRecord);
+        if (Object.prototype.hasOwnProperty.call(bookRecord, 'file')) {
+            const fileRecord = buildFileStoreRecord(bookRecord);
+            if (fileRecord) await putIntoStore(db, FILES_STORE, fileRecord);
+            await putIntoStore(db, BOOKS_STORE, stripFileFromBookRecord(bookRecord));
+        } else {
+            await patchBookRecords(db, [bookRecord]);
+        }
     } catch (error) {
         console.error('saveBookToDB', error);
     }
@@ -262,7 +320,14 @@ export const saveBooksToDB = async (bookRecords) => {
     if (!Array.isArray(bookRecords)) return;
     try {
         const db = await initDB();
-        await putManyIntoStore(db, BOOKS_STORE, bookRecords);
+        const hasFilePayloads = bookRecords.some(record => Object.prototype.hasOwnProperty.call(record || {}, 'file'));
+        if (hasFilePayloads) {
+            const fileRecords = bookRecords.map(buildFileStoreRecord).filter(Boolean);
+            if (fileRecords.length) await putManyIntoStore(db, FILES_STORE, fileRecords);
+            await putManyIntoStore(db, BOOKS_STORE, bookRecords.map(stripFileFromBookRecord));
+        } else {
+            await patchBookRecords(db, bookRecords);
+        }
     } catch (error) {
         console.error('saveBooksToDB', error);
     }
@@ -271,7 +336,32 @@ export const saveBooksToDB = async (bookRecords) => {
 export const loadBooksFromDB = async () => {
     try {
         const db = await initDB();
-        return await getAllFromStore(db, BOOKS_STORE);
+        const [bookRecords, fileRecords] = await Promise.all([
+            getAllFromStore(db, BOOKS_STORE),
+            getAllFromStore(db, FILES_STORE),
+        ]);
+        const filesById = new Map(fileRecords.map(record => [record.id, record]));
+        const migratedLightRecords = [];
+        const migratedFileRecords = [];
+
+        const hydrated = bookRecords.map((book) => {
+            const fileRecord = filesById.get(book.id);
+            if (book.file && !fileRecord) {
+                const nextFileRecord = buildFileStoreRecord(book);
+                if (nextFileRecord) migratedFileRecords.push(nextFileRecord);
+                migratedLightRecords.push(stripFileFromBookRecord(book));
+            }
+            const file = fileRecord?.file || book.file || null;
+            if (file && (fileRecord?.sourcePath || book.sourcePath)) {
+                try { file.sourcePath = fileRecord?.sourcePath || book.sourcePath; } catch (_) {}
+            }
+            return { ...stripFileFromBookRecord(book), file };
+        });
+
+        if (migratedFileRecords.length) putManyIntoStore(db, FILES_STORE, migratedFileRecords).catch(() => {});
+        if (migratedLightRecords.length) putManyIntoStore(db, BOOKS_STORE, migratedLightRecords).catch(() => {});
+
+        return hydrated;
     } catch {
         return [];
     }
@@ -360,6 +450,21 @@ export const loadCache = async (key) => {
 export const saveAppData = saveSetting;
 export const loadAppData = loadSetting;
 
+export const getAppDataCounts = async () => {
+    try {
+        const db = await initDB();
+        const storeNames = [BOOKS_STORE, FILES_STORE, SETTINGS_STORE, CACHE_STORE, LEGACY_APPDATA_STORE];
+        const counts = {};
+        for (const storeName of storeNames) {
+            counts[storeName] = await countStore(db, storeName);
+        }
+        return counts;
+    } catch (error) {
+        console.error('getAppDataCounts', error);
+        return {};
+    }
+};
+
 const deleteDatabaseByName = (name) => new Promise((resolve) => {
     try {
         const req = indexedDB.deleteDatabase(name);
@@ -371,10 +476,33 @@ const deleteDatabaseByName = (name) => new Promise((resolve) => {
     }
 });
 
+const clearStoresInDb = async (db, storeNames) => {
+    const existingStores = storeNames.filter((storeName) => db.objectStoreNames.contains(storeName));
+    if (!existingStores.length) return;
+
+    await new Promise((resolve, reject) => {
+        const tx = db.transaction(existingStores, 'readwrite');
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+
+        existingStores.forEach((storeName) => {
+            tx.objectStore(storeName).clear();
+        });
+    });
+};
+
 export const resetAllAppData = async () => {
-    await closeCurrentDB();
+    try {
+        const db = await initDB();
+        await clearStoresInDb(db, [BOOKS_STORE, FILES_STORE, SETTINGS_STORE, CACHE_STORE, LEGACY_APPDATA_STORE]);
+        try { db.close(); } catch (_) {}
+    } catch (error) {
+        console.error('[SharkReader] Error limpiando la base principal:', error);
+    }
+
+    _dbPromise = null;
     await Promise.all([
-        deleteDatabaseByName(DB_NAME),
         deleteDatabaseByName(LEGACY_DB_NAME),
         deleteDatabaseByName('SharkLocationsCache'),
     ]);

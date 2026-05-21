@@ -2,22 +2,35 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense, startTransition, useDeferredValue } from 'react';
 import { Icons, renderAvatar } from './icons';
 import { translations, languageNames, RANDOM_EMOJIS } from './translations';
-import { safeParse, loadBooksFromDB, saveBookToDB, saveBooksToDB, deleteBookFromDB, saveAppData, loadAppData, saveSetting, loadSetting, resetAllAppData } from './db';
+import { safeParse, loadBooksFromDB, saveBookToDB, saveBooksToDB, deleteBookFromDB, saveAppData, loadAppData, saveSetting, resetAllAppData, getAppDataCounts } from './db';
 import { extractEpubMeta } from './epubMeta';
 import { checkNewAchievements, ACHIEVEMENTS, RARITY } from './achievements';
+import { DEFAULT_EXTERNAL_SOURCES, migrateWorkshopData, normalizeAddonConfig, normalizeAddonState, validateAddonToggle } from './workshopModules';
+import {
+    UNKNOWN_AUTHOR_FALLBACK,
+    applyImportedBookData,
+    getBookDedupKey,
+    getBookSearchIndex,
+    getBookTitleDedupKey,
+    hydrateStoredBook,
+    stripBookFilesForExport,
+    toStoredBookRecord,
+    updateBookInList,
+} from './bookModel';
+import { buildPortableBackup, mergeBackupData } from './backupMerge';
 import BookCard from './BookCard';
+import SettingsPanel from './SettingsPanel';
 import TabBar from './TabBar';
+import UserMenu from './UserMenu';
 import { EpubReaderBoundary, ErrorBoundary } from './ErrorBoundaries';
 
 const EpubReader = lazy(() => import('./EpubReader'));
 const PdfReader = lazy(() => import('./PdfReader'));
 const AnalyticsView = lazy(() => import('./AnalyticsView'));
 const WorkshopPanel = lazy(() => import('./WorkshopPanel'));
-const SettingsPanel = lazy(() => import('./SettingsPanel'));
-const UserMenu = lazy(() => import('./UserMenu'));
 
-const UNKNOWN_AUTHOR_FALLBACK = 'Autor desconocido';
-const buildBookColor = (seed) => `hsl(${(parseInt(String(seed).slice(-3), 16) || 0) % 360}, 70%, 40%)`;
+const LIBRARY_VIRTUALIZE_THRESHOLD = 80;
+const LIBRARY_SCROLL_OVERSCAN = 4;
 const panelLoader = (label = 'Cargando panel...') => (
     <div className="flex items-center justify-center py-8 px-6 text-sm font-semibold opacity-70">
         <div className="w-2.5 h-2.5 rounded-full bg-[var(--highlight)] animate-pulse mr-3"></div>
@@ -35,169 +48,6 @@ const readerLoader = (label = 'Preparando lector...') => (
         </div>
     </div>
 );
-const updateBookInList = (bookList, bookId, updater) => {
-    const index = bookList.findIndex(book => book.id === bookId);
-    if (index === -1) return bookList;
-
-    const currentBook = bookList[index];
-    const nextBook = typeof updater === 'function' ? updater(currentBook) : { ...currentBook, ...updater };
-    if (!nextBook || nextBook === currentBook) return bookList;
-
-    const nextList = bookList.slice();
-    nextList[index] = nextBook;
-    return nextList;
-};
-const normalizeBookIdentity = (value) => String(value || '').trim().toLowerCase();
-const normalizeBookStem = (value) => normalizeBookIdentity(value)
-    .replace(/\.[^/.]+$/, '')
-    .replace(/\s*\(\d+\)\s*$/, '')
-    .replace(/\s+/g, ' ');
-const getBookTitleDedupKey = (bookLike) => {
-    const fileName = bookLike?.file?.name || bookLike?.name || bookLike?.originalTitle || '';
-    const nativeMeta = bookLike?.nativeMeta || bookLike?.file?.nativeMeta || null;
-    const rawTitle = nativeMeta?.title || bookLike?.originalTitle || bookLike?.name || fileName;
-    const rawAuthor = nativeMeta?.creator || bookLike?.originalAuthor || bookLike?.author || '';
-    const normalizedTitle = normalizeBookStem(rawTitle);
-    const normalizedAuthor = normalizeBookIdentity(rawAuthor).replace(/\s+/g, ' ');
-    const type = bookLike?.type || (/\.pdf$/i.test(fileName) ? 'pdf' : /\.mobi$/i.test(fileName) ? 'mobi' : 'epub');
-    return `title:${type}|${normalizedTitle}|${normalizedAuthor}`;
-};
-const getBookDedupKey = (bookLike) => {
-    const sourcePath = bookLike?.sourcePath || bookLike?.path || bookLike?.file?.sourcePath || null;
-    if (sourcePath) return `path:${normalizeBookIdentity(sourcePath)}`;
-
-    const fileName = bookLike?.file?.name || bookLike?.name || bookLike?.originalTitle || '';
-    const type = bookLike?.type || (/\.pdf$/i.test(fileName) ? 'pdf' : /\.mobi$/i.test(fileName) ? 'mobi' : 'epub');
-    const size = bookLike?.file?.size ?? bookLike?.size ?? '';
-    return `file:${type}|${normalizeBookStem(fileName)}|${size}`;
-};
-const getBookType = (file, fallbackType = 'epub') => {
-    const fileName = file?.name || '';
-    if (/\.pdf$/i.test(fileName)) return 'pdf';
-    if (/\.mobi$/i.test(fileName)) return 'mobi';
-    return fallbackType;
-};
-const toStoredBookRecord = (book, overrides = {}) => {
-    const snapshot = { ...book, ...overrides };
-    return {
-        id: snapshot.id,
-        sourcePath: snapshot.sourcePath || snapshot.file?.sourcePath || null,
-        file: snapshot.file || null,
-        type: snapshot.type || getBookType(snapshot.file, 'epub'),
-        originalTitle: snapshot.originalTitle || snapshot.name || 'Libro sin titulo',
-        originalAuthor: snapshot.originalAuthor || snapshot.author || UNKNOWN_AUTHOR_FALLBACK,
-        coverBase64: snapshot.coverBase64 || null,
-        description: snapshot.description || '',
-        publisher: snapshot.publisher || '',
-        tags: snapshot.tags || '',
-        series: snapshot.series || '',
-        seriesIndex: snapshot.seriesIndex || 0,
-        progress: snapshot.progress || 0,
-        bookmarks: Array.isArray(snapshot.bookmarks) ? snapshot.bookmarks : [],
-        notes: snapshot.notes || '',
-        customTitle: snapshot.name && snapshot.name !== snapshot.originalTitle ? snapshot.name : '',
-        customAuthor: snapshot.author && snapshot.author !== snapshot.originalAuthor ? snapshot.author : '',
-        customCover: snapshot.customCover ?? (snapshot.coverUrl && snapshot.coverUrl !== snapshot.coverBase64 ? snapshot.coverUrl : null),
-        isFav: !!snapshot.isFav,
-        rating: snapshot.rating || 0,
-        lastLocation: snapshot.lastLocation || null,
-        dateAdded: snapshot.dateAdded || Date.now(),
-        lastReadDate: snapshot.lastReadDate || 0,
-        category: snapshot.category || null,
-        readingMinutes: snapshot.readingMinutes || 0,
-        isFinished: !!snapshot.isFinished,
-        dateStarted: snapshot.dateStarted || null,
-        dateFinished: snapshot.dateFinished || null,
-        isWishlist: !!snapshot.isWishlist,
-    };
-};
-const hydrateStoredBook = (stored) => {
-    const file = stored.file || null;
-    if (file && stored.sourcePath) file.sourcePath = stored.sourcePath;
-
-    const originalTitle = stored.originalTitle || stored.customTitle || file?.name?.replace(/\.[^/.]+$/, '') || 'Libro sin titulo';
-    const originalAuthor = stored.originalAuthor || stored.customAuthor || UNKNOWN_AUTHOR_FALLBACK;
-
-    return {
-        id: stored.id,
-        name: stored.customTitle || originalTitle,
-        author: stored.customAuthor || originalAuthor,
-        originalTitle,
-        originalAuthor,
-        coverBase64: stored.coverBase64 || null,
-        description: stored.description || '',
-        publisher: stored.publisher || '',
-        tags: stored.tags || '',
-        series: stored.series || '',
-        seriesIndex: stored.seriesIndex || 0,
-        file,
-        sourcePath: stored.sourcePath || file?.sourcePath || null,
-        type: stored.type || getBookType(file, 'epub'),
-        url: file ? URL.createObjectURL(file) : null,
-        coverUrl: stored.customCover || stored.coverBase64 || null,
-        color: stored.color || buildBookColor(stored.id),
-        isFav: !!stored.isFav,
-        rating: stored.rating || 0,
-        progress: stored.progress || 0,
-        lastLocation: stored.lastLocation || null,
-        dateAdded: stored.dateAdded || Date.now(),
-        lastReadDate: stored.lastReadDate || 0,
-        bookmarks: Array.isArray(stored.bookmarks) ? stored.bookmarks : [],
-        notes: stored.notes || '',
-        isFinished: !!stored.isFinished,
-        dateStarted: stored.dateStarted || null,
-        dateFinished: stored.dateFinished || null,
-        readingMinutes: stored.readingMinutes || 0,
-        category: stored.category || null,
-        loading: false,
-        isWishlist: !!stored.isWishlist,
-    };
-};
-const stripBookFilesForExport = (book) => {
-    const { file, ...record } = toStoredBookRecord(book);
-    return record;
-};
-const applyImportedBookData = (book, imported) => {
-    if (!imported) return book;
-
-    const originalTitle = imported.originalTitle || book.originalTitle;
-    const originalAuthor = imported.originalAuthor || book.originalAuthor;
-    const customTitle = imported.customTitle || '';
-    const customAuthor = imported.customAuthor || '';
-    const coverBase64 = imported.coverBase64 ?? book.coverBase64 ?? null;
-    const customCover = imported.customCover ?? null;
-
-    return {
-        ...book,
-        originalTitle,
-        originalAuthor,
-        name: customTitle || originalTitle,
-        author: customAuthor || originalAuthor,
-        coverBase64,
-        coverUrl: customCover || coverBase64 || book.coverUrl || null,
-        description: imported.description ?? book.description ?? '',
-        publisher: imported.publisher ?? book.publisher ?? '',
-        tags: imported.tags ?? book.tags ?? '',
-        series: imported.series ?? book.series ?? '',
-        seriesIndex: imported.seriesIndex ?? book.seriesIndex ?? 0,
-        progress: imported.progress ?? book.progress ?? 0,
-        bookmarks: Array.isArray(imported.bookmarks) ? imported.bookmarks : book.bookmarks,
-        notes: imported.notes ?? book.notes ?? '',
-        isFav: imported.isFav ?? book.isFav ?? false,
-        rating: imported.rating ?? book.rating ?? 0,
-        lastLocation: imported.lastLocation ?? book.lastLocation ?? null,
-        dateAdded: imported.dateAdded ?? book.dateAdded ?? Date.now(),
-        lastReadDate: imported.lastReadDate ?? book.lastReadDate ?? 0,
-        category: imported.category ?? book.category ?? null,
-        readingMinutes: imported.readingMinutes ?? book.readingMinutes ?? 0,
-        isFinished: imported.isFinished ?? book.isFinished ?? false,
-        dateStarted: imported.dateStarted ?? book.dateStarted ?? null,
-        dateFinished: imported.dateFinished ?? book.dateFinished ?? null,
-        sourcePath: imported.sourcePath || book.sourcePath || null,
-    };
-};
-
-
     // ─────────────────────────────────────────
     // APP PRINCIPAL
     // ─────────────────────────────────────────
@@ -206,6 +56,7 @@ const applyImportedBookData = (book, imported) => {
         // ── LIBROS ──
         const [books, setBooks] = useState([]);
         const [isDbLoaded, setIsDbLoaded] = useState(false);
+        const [isStateHydrated, setIsStateHydrated] = useState(false);
 
         // ── NAVEGACIÓN / TABS ──
         const [view, setView] = useState('library');
@@ -232,8 +83,8 @@ const applyImportedBookData = (book, imported) => {
         const [isDragging, setIsDragging] = useState(false);
 
         // ── USUARIO / STATS ──
-        const [userProfile, setUserProfile] = useState(() => safeParse('sharkreader_user', null));
-        const [stats, setStats] = useState(() => safeParse('sharkreader_stats', null) || {
+        const [userProfile, setUserProfile] = useState(null);
+        const [stats, setStats] = useState({
             timeRead: 0, pagesTurned: 0, streak: 0, lastStreakDate: '',
             currentDailyMins: 0, lastActiveDate: '', streakSavers: 0, history: {}, minutesByDay: {}
         });
@@ -263,16 +114,16 @@ const applyImportedBookData = (book, imported) => {
         const [warmMode, setWarmMode] = useState(() => safeParse('sharkreader_warm', false));
 
         // ── VOCABULARIO ──
-        const [vocabulary, setVocabulary] = useState(() => safeParse('sharkreader_vocab', []));
+        const [vocabulary, setVocabulary] = useState([]);
         const [showVocabPanel, setShowVocabPanel] = useState(false);
         const [vocabSearch, setVocabSearch] = useState('');
 
         // ── AI ──
-        const [aiProvider, setAiProvider] = useState(() => safeParse('sharkreader_ai_provider', 'groq'));
-        const [aiApiKey, setAiApiKey] = useState(() => safeParse('sharkreader_ai_key', ''));
+        const [aiProvider, setAiProvider] = useState('groq');
+        const [aiApiKey, setAiApiKey] = useState('');
 
         // ── SYNC CARPETA LOCAL ──
-        const [syncFolder, setSyncFolder] = useState(() => safeParse('sharkreader_sync_folder', ''));
+        const [syncFolder, setSyncFolder] = useState('');
 
         // ── ACCENT COLOR ──
         const [accentColor, setAccentColor] = useState(() => safeParse('sharkreader_accent', null));
@@ -288,34 +139,45 @@ const applyImportedBookData = (book, imported) => {
         const [anniversaryInfo, setAnniversaryInfo] = useState(null);
 
         // ── OBJETIVOS ──
-        const [dailyGoalMins, setDailyGoalMins] = useState(() => safeParse('sharkreader_daily_goal', 30));
-        const [yearlyGoal, setYearlyGoal] = useState(() => safeParse('sharkreader_yearly_goal', 12));
+        const [dailyGoalMins, setDailyGoalMins] = useState(30);
+        const [yearlyGoal, setYearlyGoal] = useState(12);
 
         // ── REFS ──
         const fileInputRef = useRef(null);
         const folderInputRef = useRef(null);
         const importInputRef = useRef(null);
         const avatarInputRef = useRef(null);
+        const coverInputRef = useRef(null);
+        const libraryScrollRef = useRef(null);
         const booksRef = useRef([]); // To safely access books in async effects without dependencies
         const persistTimerRef = useRef(null);       // books debounce
         const persistStatsRef = useRef(null);       // stats debounce
         const persistSettingsRef = useRef(null);    // settings debounce
+        const syncTimerRef = useRef(null);
         const noticeToastTimerRef = useRef(null);
         const activeBookIdRef = useRef(null);
         const metadataRepairingRef = useRef(new Set());
         const bookDedupKeysRef = useRef(new Set());
         const bookTitleDedupKeysRef = useRef(new Set());
+        const isResettingRef = useRef(false);
+        const activeObjectUrlsRef = useRef(new Set());
+        const progressUpdateThrottleRef = useRef(new Map());
 
         // ── LOGROS / WORKSHOP / ANALYTICS ──
-        const [achievements, setAchievements] = useState(() => safeParse('sharkreader_achievements', {}));
-        const [addons, setAddons] = useState(() => safeParse('sharkreader_addons', {}));
+        const [achievements, setAchievements] = useState({});
+        const [addons, setAddons] = useState({});
+        const [addonConfig, setAddonConfig] = useState(() => normalizeAddonConfig({}));
+        const [externalSources, setExternalSources] = useState(DEFAULT_EXTERNAL_SOURCES);
+        const [externalCatalogState, setExternalCatalogState] = useState({ loading: false, error: '', catalog: null, importingId: null });
         const addonsRef = useRef({});
         const [showWorkshop, setShowWorkshop] = useState(false);
         const [achievementToast, setAchievementToast] = useState(null);
         const [noticeToast, setNoticeToast] = useState(null);
-        const [journalEntries, setJournalEntries] = useState(() => safeParse('sharkreader_journal', []));
+        const [journalEntries, setJournalEntries] = useState([]);
         const [showJournalModal, setShowJournalModal] = useState(false);
         const [folderImport, setFolderImport] = useState(null);
+        const [failedImportRetryQueue, setFailedImportRetryQueue] = useState([]);
+        const [libraryViewport, setLibraryViewport] = useState({ width: 0, height: 0, scrollTop: 0 });
         const folderImportQueueRef = useRef([]);
         const folderImportProcessingRef = useRef(false);
         const activeFolderImportIdRef = useRef(null);
@@ -378,6 +240,35 @@ const applyImportedBookData = (book, imported) => {
         }, []);
 
         useEffect(() => {
+            if (view !== 'library') return;
+            const node = libraryScrollRef.current;
+            if (!node) return;
+
+            let frame = 0;
+            const syncViewport = () => {
+                cancelAnimationFrame(frame);
+                frame = requestAnimationFrame(() => {
+                    setLibraryViewport({
+                        width: node.clientWidth,
+                        height: node.clientHeight,
+                        scrollTop: node.scrollTop,
+                    });
+                });
+            };
+
+            syncViewport();
+            node.addEventListener('scroll', syncViewport, { passive: true });
+            const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(syncViewport) : null;
+            resizeObserver?.observe(node);
+
+            return () => {
+                cancelAnimationFrame(frame);
+                node.removeEventListener('scroll', syncViewport);
+                resizeObserver?.disconnect();
+            };
+        }, [view]);
+
+        useEffect(() => {
             document.body.className = `theme-${theme}`;
             setStats(prev => {
                 const used = new Set(prev.themesUsed || []);
@@ -399,6 +290,7 @@ const applyImportedBookData = (book, imported) => {
                 root.style.removeProperty('--highlight');
                 root.style.removeProperty('--progress-bg');
                 root.style.removeProperty('--topbar-bg');
+                localStorage.removeItem('sharkreader_accent');
             }
         }, [accentColor]);
 
@@ -409,13 +301,18 @@ const applyImportedBookData = (book, imported) => {
             let didResolve = false;
 
             const hideLoader = () => {
-                const loader = document.getElementById('shark-preloader');
-                if (loader) {
-                    loader.style.opacity = '0';
-                    setTimeout(() => {
-                        loader.style.visibility = 'hidden';
-                    }, 420);
+                if (typeof window !== 'undefined' && typeof window.__hideSharkPreloader === 'function') {
+                    window.__hideSharkPreloader();
+                    return;
                 }
+                const loader = document.getElementById('shark-preloader');
+                if (!loader) return;
+                loader.style.opacity = '0';
+                setTimeout(() => {
+                    loader.style.visibility = 'hidden';
+                    loader.style.pointerEvents = 'none';
+                    loader.style.display = 'none';
+                }, 160);
             };
 
             const fallbackTimer = setTimeout(() => {
@@ -426,9 +323,20 @@ const applyImportedBookData = (book, imported) => {
                 hideLoader();
             }, 9000);
 
-            loadBooksFromDB().then(storedBooks => {
+            loadBooksFromDB().then(async storedBooks => {
                 if (cancelled) return;
                 didResolve = true;
+                if (sessionStorage.getItem('sharkreader_pending_reset_verify') === 'true') {
+                    const counts = await getAppDataCounts();
+                    const hasResidualData = Object.values(counts).some(count => Number(count) > 0);
+                    if (hasResidualData) {
+                        console.warn('[SharkReader] Reset incompleto detectado al arrancar; limpiando stores restantes.', counts);
+                        await resetAllAppData();
+                        storedBooks = [];
+                    }
+                    sessionStorage.removeItem('sharkreader_pending_reset_verify');
+                    setIsStateHydrated(true);
+                }
                 const loaded = storedBooks.map(hydrateStoredBook);
                 setBooks(loaded);
                 setIsDbLoaded(true);
@@ -440,6 +348,12 @@ const applyImportedBookData = (book, imported) => {
                 console.error('[SharkReader] Error cargando libros desde IndexedDB:', err);
                 if (cancelled) return;
                 didResolve = true;
+                if (sessionStorage.getItem('sharkreader_pending_reset_verify') === 'true') {
+                    resetAllAppData().finally(() => {
+                        sessionStorage.removeItem('sharkreader_pending_reset_verify');
+                        setIsStateHydrated(true);
+                    });
+                }
                 clearTimeout(fallbackTimer);
                 setIsDbLoaded(true);
                 hideLoader();
@@ -451,16 +365,77 @@ const applyImportedBookData = (book, imported) => {
             };
         }, []);
 
-        // Cargar datos pesados desde IDB (async, override de localStorage si hay datos más recientes)
+        // Cargar estado crítico desde IndexedDB; localStorage solo se usa como migración legacy.
         useEffect(() => {
-            loadAppData('stats').then(s => { if (s) setStats(s); });
-            loadAppData('journalEntries').then(j => { if (j) setJournalEntries(j); });
-            loadAppData('vocabulary').then(v => { if (v) setVocabulary(v); });
-            loadSetting('categories').then(c => {
-                if (Array.isArray(c)) {
-                    setCustomCategories(c.filter(cat => String(cat).toLowerCase() !== 'favoritos'));
+            if (sessionStorage.getItem('sharkreader_pending_reset_verify') === 'true') return;
+            let cancelled = false;
+            const legacyFallbacks = {
+                stats: () => safeParse('sharkreader_stats', null),
+                journalEntries: () => safeParse('sharkreader_journal', null),
+                vocabulary: () => safeParse('sharkreader_vocab', null),
+                categories: () => safeParse('sharkreader_categories', null),
+                currentFilter: () => safeParse('sharkreader_current_filter', null),
+                sortBy: () => safeParse('sharkreader_sort_by', null),
+                userProfile: () => safeParse('sharkreader_user', null),
+                aiProvider: () => safeParse('sharkreader_ai_provider', null),
+                aiApiKey: () => safeParse('sharkreader_ai_key', null),
+                syncFolder: () => safeParse('sharkreader_sync_folder', null),
+                dailyGoalMins: () => safeParse('sharkreader_daily_goal', null),
+                yearlyGoal: () => safeParse('sharkreader_yearly_goal', null),
+                achievements: () => safeParse('sharkreader_achievements', null),
+                addons: () => safeParse('sharkreader_addons', null),
+                addonConfig: () => safeParse('sharkreader_addon_config', null),
+                externalSources: () => safeParse('sharkreader_external_sources', null),
+            };
+            const applyStoredValue = async (key, setter, validator = value => value !== null && value !== undefined) => {
+                let value = await loadAppData(key);
+                if ((value === null || value === undefined) && legacyFallbacks[key]) {
+                    value = legacyFallbacks[key]();
+                    if (value !== null && value !== undefined) saveAppData(key, value);
                 }
+                if (!cancelled && validator(value)) setter(value);
+            };
+
+            const loadStoredState = async () => {
+                await Promise.all([
+                    applyStoredValue('stats', setStats),
+                    applyStoredValue('journalEntries', setJournalEntries, Array.isArray),
+                    applyStoredValue('vocabulary', setVocabulary, Array.isArray),
+                    applyStoredValue('categories', value => setCustomCategories(value.filter(cat => String(cat).toLowerCase() !== 'favoritos')), Array.isArray),
+                    applyStoredValue('currentFilter', setCurrentFilter),
+                    applyStoredValue('sortBy', setSortBy),
+                    applyStoredValue('userProfile', setUserProfile),
+                    applyStoredValue('theme', setTheme),
+                    applyStoredValue('lang', setLang),
+                    applyStoredValue('readFlow', setReadFlow),
+                    applyStoredValue('readLayout', setReadLayout),
+                    applyStoredValue('pageTransition', setPageTransition),
+                    applyStoredValue('warmMode', setWarmMode, value => typeof value === 'boolean'),
+                    applyStoredValue('aiProvider', setAiProvider),
+                    applyStoredValue('aiApiKey', setAiApiKey),
+                    applyStoredValue('syncFolder', setSyncFolder),
+                    applyStoredValue('libraryView', setLibraryView),
+                    applyStoredValue('dailyGoalMins', setDailyGoalMins, value => Number.isFinite(Number(value))),
+                    applyStoredValue('yearlyGoal', setYearlyGoal, value => Number.isFinite(Number(value))),
+                    applyStoredValue('achievements', setAchievements),
+                    applyStoredValue('addons', value => setAddons(normalizeAddonState(value))),
+                    applyStoredValue('addonConfig', value => setAddonConfig(normalizeAddonConfig(value))),
+                    applyStoredValue('externalSources', setExternalSources, Array.isArray),
+                    applyStoredValue('accentColor', setAccentColor),
+                ]);
+            };
+
+            loadStoredState().catch((error) => {
+                if (!cancelled) {
+                    console.error('[SharkReader] Error cargando estado desde IndexedDB:', error);
+                }
+            }).finally(() => {
+                if (!cancelled) setIsStateHydrated(true);
             });
+
+            return () => {
+                cancelled = true;
+            };
         }, []);
 
         // Re-extracción de metadata en background para libros sin autor real o portada
@@ -525,6 +500,7 @@ const applyImportedBookData = (book, imported) => {
                         const realAuthor = (meta.creator || '').trim() || book.originalAuthor;
                         const coverBase64 = meta.coverBase64 || null;
                         const finalCover = book.coverUrl || coverBase64;
+                        const now = Date.now();
 
                         startTransition(() => {
                             setBooks(prev => updateBookInList(prev, book.id, (b) => ({
@@ -539,6 +515,8 @@ const applyImportedBookData = (book, imported) => {
                                 description:    b.description || meta.description || '',
                                 publisher:      b.publisher  || meta.publisher || '',
                                 tags:           b.tags       || meta.subject || '',
+                                metadataUpdatedAt: now,
+                                updatedAt: now,
                             })));
                         });
                         await saveBookToDB(toStoredBookRecord({
@@ -552,6 +530,8 @@ const applyImportedBookData = (book, imported) => {
                             description: book.description || meta.description || '',
                             publisher: book.publisher || meta.publisher || '',
                             tags: book.tags || meta.subject || '',
+                            metadataUpdatedAt: now,
+                            updatedAt: now,
                         }));
                     } catch (err) {
                         console.error(`[SharkReader] Error procesando ${book.originalTitle}:`, err);
@@ -569,19 +549,14 @@ const applyImportedBookData = (book, imported) => {
 
         // ── PERSIST: books + categories (debounce 2000ms + idle so it never blocks reading)
         useEffect(() => {
-            if (!isDbLoaded) return;
+            if (!isDbLoaded || !isStateHydrated || isResettingRef.current) return;
             clearTimeout(persistTimerRef.current);
             persistTimerRef.current = setTimeout(() => {
                 // Use requestIdleCallback so JSON serialization doesn't block page turns
                 const doSave = () => {
-                    const bookRecords = books.filter(b => !b.loading).map(b => toStoredBookRecord(b));
+                    const bookRecords = books.filter(b => !b.loading).map(b => toStoredBookRecord(b, {}, { includeFile: false }));
                     saveBooksToDB(bookRecords);
-                    localStorage.setItem('sharkreader_categories', JSON.stringify(customCategories));
                     saveSetting('categories', customCategories);
-                    if (syncFolder && window.electronAPI) {
-                        const syncData = JSON.stringify({ books: bookRecords.map(({ file, ...record }) => record), exportedAt: new Date().toISOString() }, null, 2);
-                        window.electronAPI.writeSyncFile(syncFolder, syncData).catch(() => {});
-                    }
                 };
                 if ('requestIdleCallback' in window) {
                     requestIdleCallback(doSave, { timeout: 5000 });
@@ -590,51 +565,101 @@ const applyImportedBookData = (book, imported) => {
                 }
             }, 2000);
             return () => clearTimeout(persistTimerRef.current);
-        }, [books, customCategories, isDbLoaded, syncFolder]);
+        }, [books, customCategories, isDbLoaded, isStateHydrated]);
+
+        useEffect(() => {
+            if (!isDbLoaded || !isStateHydrated || isResettingRef.current || !syncFolder || !window.electronAPI) return;
+            clearTimeout(syncTimerRef.current);
+            syncTimerRef.current = setTimeout(async () => {
+                const bookRecords = books.filter(b => !b.loading).map(b => toStoredBookRecord(b, {}, { includeFile: false }));
+                const localBackup = buildPortableBackup({
+                    books: bookRecords.map(({ file, ...record }) => record),
+                    categories: customCategories,
+                    stats,
+                    user: userProfile || {},
+                    workshop: migrateWorkshopData({ addons, addonConfig, externalSources }),
+                });
+                let backupToWrite = localBackup;
+                if (window.electronAPI.readSyncFile) {
+                    try {
+                        const existing = await window.electronAPI.readSyncFile(syncFolder);
+                        if (existing) {
+                            backupToWrite = mergeBackupData(localBackup, JSON.parse(existing));
+                        }
+                    } catch (err) {
+                        console.warn('[SharkReader] No se pudo fusionar backup de sync existente:', err);
+                    }
+                }
+                const syncData = JSON.stringify(backupToWrite, null, 2);
+                window.electronAPI.writeSyncFile(syncFolder, syncData).catch(() => {});
+            }, 5000);
+            return () => clearTimeout(syncTimerRef.current);
+        }, [books, customCategories, stats, userProfile, addons, addonConfig, externalSources, isDbLoaded, isStateHydrated, syncFolder]);
 
         // ── PERSIST: stats only (changes every page turn + every 60s — debounce 3000ms)
         useEffect(() => {
-            if (!isDbLoaded) return;
+            if (!isDbLoaded || !isStateHydrated || isResettingRef.current) return;
             clearTimeout(persistStatsRef.current);
             persistStatsRef.current = setTimeout(() => {
-                localStorage.setItem('sharkreader_stats', JSON.stringify(stats));
                 saveAppData('stats', stats);
             }, 3000);
             return () => clearTimeout(persistStatsRef.current);
-        }, [stats, isDbLoaded]);
+        }, [stats, isDbLoaded, isStateHydrated]);
 
         // ── PERSIST: settings (change only on user interaction — debounce 1000ms)
         useEffect(() => {
-            if (!isDbLoaded) return;
+            if (!isDbLoaded || !isStateHydrated || isResettingRef.current) return;
             clearTimeout(persistSettingsRef.current);
             persistSettingsRef.current = setTimeout(() => {
-                if (userProfile) localStorage.setItem('sharkreader_user', JSON.stringify(userProfile));
-                else localStorage.removeItem('sharkreader_user');
                 localStorage.setItem('sharkreader_theme', JSON.stringify(theme));
                 localStorage.setItem('sharkreader_lang', JSON.stringify(lang));
                 localStorage.setItem('sharkreader_flow', JSON.stringify(readFlow));
                 localStorage.setItem('sharkreader_layout', JSON.stringify(readLayout));
                 localStorage.setItem('sharkreader_warm', JSON.stringify(warmMode));
-                localStorage.setItem('sharkreader_vocab', JSON.stringify(vocabulary));
-                saveAppData('vocabulary', vocabulary);
-                localStorage.setItem('sharkreader_ai_provider', JSON.stringify(aiProvider));
-                localStorage.setItem('sharkreader_ai_key', JSON.stringify(aiApiKey));
-                localStorage.setItem('sharkreader_sync_folder', JSON.stringify(syncFolder));
                 localStorage.setItem('sharkreader_libview', JSON.stringify(libraryView));
-                localStorage.setItem('sharkreader_daily_goal', JSON.stringify(dailyGoalMins));
-                localStorage.setItem('sharkreader_yearly_goal', JSON.stringify(yearlyGoal));
-                localStorage.setItem('sharkreader_achievements', JSON.stringify(achievements));
-                localStorage.setItem('sharkreader_addons', JSON.stringify(addons));
-                localStorage.setItem('sharkreader_journal', JSON.stringify(journalEntries));
+                localStorage.setItem('page_transition', pageTransition);
+                saveAppData('userProfile', userProfile);
+                saveAppData('theme', theme);
+                saveAppData('lang', lang);
+                saveAppData('readFlow', readFlow);
+                saveAppData('readLayout', readLayout);
+                saveAppData('pageTransition', pageTransition);
+                saveAppData('warmMode', warmMode);
+                saveAppData('vocabulary', vocabulary);
+                saveAppData('aiProvider', aiProvider);
+                saveAppData('aiApiKey', aiApiKey);
+                saveAppData('syncFolder', syncFolder);
+                saveAppData('libraryView', libraryView);
+                saveAppData('dailyGoalMins', dailyGoalMins);
+                saveAppData('yearlyGoal', yearlyGoal);
+                saveAppData('achievements', achievements);
+                saveAppData('addons', addons);
+                saveAppData('addonConfig', addonConfig);
+                saveAppData('externalSources', externalSources);
+                saveAppData('workshop', migrateWorkshopData({ addons, addonConfig, externalSources }));
                 saveAppData('journalEntries', journalEntries);
+                saveAppData('accentColor', accentColor);
+                saveAppData('currentFilter', currentFilter);
+                saveAppData('sortBy', sortBy);
             }, 1000);
             return () => clearTimeout(persistSettingsRef.current);
         }, [userProfile, theme, lang, readFlow, readLayout, warmMode, vocabulary, aiProvider, aiApiKey,
-            syncFolder, libraryView, dailyGoalMins, yearlyGoal, achievements, addons, journalEntries, isDbLoaded]);
+            syncFolder, libraryView, dailyGoalMins, yearlyGoal, achievements, addons, addonConfig, externalSources, journalEntries, accentColor, pageTransition, currentFilter, sortBy, isDbLoaded, isStateHydrated]);
 
-        // Cleanup blob URLs al desmontar
+        // Cleanup incremental de ObjectURL para portadas/libros hidratados desde IndexedDB.
         useEffect(() => {
-            return () => { books.forEach(b => { if (b.url) URL.revokeObjectURL(b.url); }); };
+            const nextUrls = new Set(books.map(book => book.url).filter(Boolean));
+            activeObjectUrlsRef.current.forEach(url => {
+                if (!nextUrls.has(url)) URL.revokeObjectURL(url);
+            });
+            activeObjectUrlsRef.current = nextUrls;
+        }, [books]);
+
+        useEffect(() => {
+            return () => {
+                activeObjectUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
+                activeObjectUrlsRef.current.clear();
+            };
         }, []);
 
         // Listeners globales
@@ -750,7 +775,7 @@ const applyImportedBookData = (book, imported) => {
 
         // Comprobar logros cuando cambian stats o libros
         useEffect(() => {
-            if (!isDbLoaded || !userProfile) return;
+            if (!isDbLoaded || !isStateHydrated || !userProfile) return;
             const context = { stats, books, vocabulary, achievements, addons, yearlyGoal };
             const newOnes = checkNewAchievements(context, achievements);
             if (!newOnes.length) return;
@@ -758,7 +783,7 @@ const applyImportedBookData = (book, imported) => {
             const updated = { ...achievements };
             newOnes.forEach(a => { updated[a.id] = { unlockedAt: now }; });
             setAchievements(updated);
-            localStorage.setItem('sharkreader_achievements', JSON.stringify(updated));
+            saveAppData('achievements', updated);
             // Show toast for the first new achievement
             setAchievementToast(newOnes[0]);
             setTimeout(() => setAchievementToast(null), 4000);
@@ -774,6 +799,11 @@ const applyImportedBookData = (book, imported) => {
         // TABS
         // ─────────────────────────────────────────
         const openBook = useCallback((bookId, cfi = null) => {
+            const bookToOpen = booksRef.current.find(book => book.id === bookId);
+            if (bookToOpen?.type === 'mobi') {
+                showNoticeToast('MOBI se puede organizar en la biblioteca, pero el lector interno aun no soporta ese formato.', 'warning');
+                return;
+            }
             const existing = tabs.find(t => t.bookId === bookId);
             if (existing) {
                 setActiveTabId(existing.id);
@@ -788,10 +818,11 @@ const applyImportedBookData = (book, imported) => {
             setLastReadId(bookId);
             setBooks(prev => prev.map(b => {
                 if (b.id !== bookId) return b;
-                return { ...b, lastReadDate: Date.now(), dateStarted: b.dateStarted || Date.now() };
+                const now = Date.now();
+                return { ...b, lastReadDate: now, dateStarted: b.dateStarted || now, progressUpdatedAt: now, updatedAt: now };
             }));
             setView('reader');
-        }, [tabs]);
+        }, [tabs, showNoticeToast]);
 
         const closeTab = useCallback((tabId, e) => {
             if (e) { e.stopPropagation(); e.preventDefault(); }
@@ -810,7 +841,7 @@ const applyImportedBookData = (book, imported) => {
                             const alreadyBookmarked = book.bookmarks?.some(bm => bm.cfi === book.lastLocation);
                             if (!alreadyBookmarked) {
                                 const autoMark = { cfi: book.lastLocation, note: `📌 Auto — ${new Date().toLocaleDateString()}`, date: new Date().toLocaleDateString() };
-                                return booksSnap.map(b => b.id === closingTab.bookId ? { ...b, bookmarks: [...(b.bookmarks || []), autoMark] } : b);
+                                return booksSnap.map(b => b.id === closingTab.bookId ? { ...b, bookmarks: [...(b.bookmarks || []), autoMark], metadataUpdatedAt: Date.now(), updatedAt: Date.now() } : b);
                             }
                         }
                     }
@@ -874,20 +905,210 @@ const applyImportedBookData = (book, imported) => {
             setShowEditProfileModal(false);
         };
 
+        const handleCoverUpload = useCallback((event) => {
+            const file = event.target.files?.[0];
+            if (!file || !activeBookModal) return;
+            const reader = new FileReader();
+            reader.onload = ev => {
+                const now = Date.now();
+                setActiveBookModal(prev => prev ? {
+                    ...prev,
+                    coverUrl: ev.target.result,
+                    customCover: ev.target.result,
+                    metadataUpdatedAt: now,
+                    updatedAt: now,
+                } : prev);
+            };
+            reader.readAsDataURL(file);
+            event.target.value = '';
+        }, [activeBookModal]);
+
+        const restoreOriginalMetadata = useCallback(() => {
+            const now = Date.now();
+            setActiveBookModal(prev => prev ? {
+                ...prev,
+                name: prev.originalTitle || prev.name,
+                author: prev.originalAuthor || prev.author,
+                coverUrl: prev.coverBase64 || null,
+                customCover: null,
+                metadataUpdatedAt: now,
+                updatedAt: now,
+            } : prev);
+        }, []);
+
+        const saveActiveBookMetadata = useCallback(() => {
+            if (!activeBookModal) return;
+            const now = Date.now();
+            const nextBook = { ...activeBookModal, metadataUpdatedAt: now, updatedAt: now };
+            setBooks(prev => updateBookInList(prev, activeBookModal.id, nextBook));
+            saveBookToDB(toStoredBookRecord(nextBook, {}, { includeFile: false }));
+            setActiveBookModal(null);
+        }, [activeBookModal]);
+
+        const deleteAccountAndData = useCallback(async () => {
+            isResettingRef.current = true;
+            sessionStorage.setItem('sharkreader_pending_reset_verify', 'true');
+
+            const keysToDelete = [
+                'sharkreader_user',
+                'sharkreader_meta',
+                'sharkreader_stats',
+                'sharkreader_categories',
+                'sharkreader_achievements',
+                'sharkreader_addons',
+                'sharkreader_addon_config',
+                'sharkreader_external_sources',
+                'sharkreader_journal',
+                'sharkreader_vocab',
+                'sharkreader_last_open',
+                'sharkreader_prev_open',
+                'sharkreader_lastReadId',
+                'sharkreader_migrated_v2',
+                'sharkreader_migrated_v5',
+                'sharkreader_lang',
+                'sharkreader_theme',
+                'sharkreader_flow',
+                'sharkreader_layout',
+                'sharkreader_warm',
+                'sharkreader_ai_provider',
+                'sharkreader_ai_key',
+                'sharkreader_sync_folder',
+                'sharkreader_libview',
+                'sharkreader_daily_goal',
+                'sharkreader_yearly_goal',
+                'sharkreader_accent',
+                'sharkreader_readFlow',
+                'sharkreader_readLayout',
+                'sharkreader_pageTransition',
+                'sharkreader_libraryView',
+                'sharkreader_sortBy',
+                'sharkreader_current_filter',
+                'sharkreader_sort_by',
+                'page_transition',
+            ];
+
+            clearTimeout(persistTimerRef.current);
+            clearTimeout(persistStatsRef.current);
+            clearTimeout(persistSettingsRef.current);
+            clearTimeout(syncTimerRef.current);
+            clearTimeout(noticeToastTimerRef.current);
+
+            try {
+                booksRef.current.forEach((book) => {
+                    if (book?.url) URL.revokeObjectURL(book.url);
+                });
+                activeObjectUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
+                activeObjectUrlsRef.current.clear();
+            } catch (_) {}
+
+            keysToDelete.forEach((key) => localStorage.removeItem(key));
+            bookDedupKeysRef.current.clear();
+            bookTitleDedupKeysRef.current.clear();
+            metadataRepairingRef.current.clear();
+            folderImportQueueRef.current = [];
+            folderImportProcessingRef.current = false;
+            activeFolderImportIdRef.current = null;
+            cancelFolderImportRef.current = true;
+            activeBookIdRef.current = null;
+            setAchievementToast(null);
+            setNoticeToast(null);
+            setAchievements({});
+            setStats({
+                timeRead: 0, pagesTurned: 0, streak: 0, lastStreakDate: '',
+                currentDailyMins: 0, lastActiveDate: '', streakSavers: 0, history: {}, minutesByDay: {}
+            });
+            setVocabulary([]);
+            setJournalEntries([]);
+            setAddons(normalizeAddonState({}));
+            setAddonConfig(normalizeAddonConfig({}));
+            setExternalSources(DEFAULT_EXTERNAL_SOURCES);
+            setCustomCategories(['Pendientes', 'Estudio']);
+            setTabs([]);
+            setActiveTabId(null);
+            setRightTabId(null);
+            setPanelMode(false);
+            setLastReadId(null);
+            setCurrentFilter('all');
+            setView('library');
+            setShowUserMenu(false);
+            setSettingsOpen(false);
+            setShowEditProfileModal(false);
+            setFolderImport(null);
+            setUserProfile(null);
+            setBooks([]);
+
+            await resetAllAppData();
+            window.location.replace(window.location.pathname);
+        }, []);
+
         const assignBookCategory = useCallback((bookId, category) => {
-            setBooks(prev => prev.map(b => b.id === bookId ? { ...b, category } : b));
+            const now = Date.now();
+            setBooks(prev => prev.map(b => b.id === bookId ? { ...b, category, metadataUpdatedAt: now, updatedAt: now } : b));
             setDraggedBookId(null);
             setDropTargetCat(null);
         }, []);
 
         const toggleAddon = (id) => {
             setAddons(prev => {
-                const updated = { ...prev, [id]: !prev[id] };
+                const validation = validateAddonToggle(id, !prev[id], { userProfile });
+                if (!validation.ok) {
+                    showNoticeToast(validation.reason, 'warning');
+                    return prev;
+                }
+                const updated = { ...normalizeAddonState(prev), [id]: validation.enabled };
                 addonsRef.current = updated;
-                localStorage.setItem('sharkreader_addons', JSON.stringify(updated));
+                saveAppData('addons', updated);
                 return updated;
             });
         };
+
+        const updateAddonConfig = useCallback((id, patch) => {
+            setAddonConfig(prev => {
+                const updated = normalizeAddonConfig({
+                    ...prev,
+                    [id]: { ...(prev?.[id] || {}), ...patch },
+                });
+                saveAppData('addonConfig', updated);
+                return updated;
+            });
+        }, []);
+
+        const browseExternalCatalogUrl = useCallback(async (url, options = {}) => {
+            if (!window.electronAPI?.fetchExternalCatalog) {
+                setExternalCatalogState({ loading: false, error: 'Integracion externa no disponible en este entorno.', catalog: null, importingId: null });
+                return;
+            }
+            setExternalCatalogState(prev => ({ ...prev, loading: true, error: '', importingId: null }));
+            const result = await window.electronAPI.fetchExternalCatalog(url, {
+                allowPrivateNetwork: !!options.allowPrivateNetwork,
+            });
+            if (!result?.ok) {
+                setExternalCatalogState({ loading: false, error: result?.msg || 'No se pudo cargar la fuente.', catalog: null, importingId: null });
+                return;
+            }
+            setExternalCatalogState({
+                loading: false,
+                error: '',
+                catalog: {
+                    ...result.catalog,
+                    allowPrivateNetwork: !!options.allowPrivateNetwork,
+                    sourceName: options.sourceName || result.catalog?.title || '',
+                },
+                importingId: null,
+            });
+        }, []);
+
+        const browseExternalSource = useCallback((source) => {
+            if (!source?.enabled) {
+                showNoticeToast('Activa la fuente antes de explorarla.', 'warning');
+                return;
+            }
+            browseExternalCatalogUrl(source.url, {
+                allowPrivateNetwork: !!source.allowPrivateNetwork || source.type === 'calibre',
+                sourceName: source.name,
+            });
+        }, [browseExternalCatalogUrl, showNoticeToast]);
+
         // Keep addonsRef in sync
         useEffect(() => { addonsRef.current = addons; }, [addons]);
 
@@ -906,8 +1127,9 @@ const applyImportedBookData = (book, imported) => {
             if (stats.lastActiveDate === todayStr) return;
             const prevOpen = parseInt(localStorage.getItem('sharkreader_prev_open') || '0', 10);
             const hoursSincePrev = prevOpen ? (Date.now() - prevOpen) / 3600000 : Infinity;
+            const minHoursSinceLastOpen = addonConfig.reminders?.minHoursSinceLastOpen || 1;
             // Only remind if more than 1 hour has passed since last session
-            if (hoursSincePrev < 1) return;
+            if (hoursSincePrev < minHoursSinceLastOpen) return;
             const fire = () => {
                 Notification.requestPermission().then(perm => {
                     if (perm !== 'granted') return;
@@ -920,7 +1142,7 @@ const applyImportedBookData = (book, imported) => {
             const t = setTimeout(fire, 4000);
             return () => clearTimeout(t);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        }, [addons.reminders, userProfile]);
+        }, [addons.reminders, userProfile, addonConfig.reminders]);
 
         const addJournalEntry = (bookName, minutes, progress) => {
             if (!addons.readingJournal) return;
@@ -935,12 +1157,13 @@ const applyImportedBookData = (book, imported) => {
 
         const exportAllData = () => {
             if (!userProfile) { alert("Inicia sesión para exportar."); return; }
-            const data = {
+            const data = buildPortableBackup({
                 books: books.filter(b => !b.loading).map(stripBookFilesForExport),
                 categories: customCategories,
                 stats,
                 user: userProfile || {},
-            };
+                workshop: migrateWorkshopData({ addons, addonConfig, externalSources }),
+            });
             const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
             const a = document.createElement('a'); a.href = url; a.download = `SharkReader_Backup_${new Date().toISOString().split('T')[0]}.json`; a.click(); URL.revokeObjectURL(url);
         };
@@ -970,21 +1193,26 @@ const applyImportedBookData = (book, imported) => {
                     if (d.categories) {
                         const nextCategories = Array.isArray(d.categories) ? d.categories.filter(cat => String(cat).toLowerCase() !== 'favoritos') : customCategories;
                         setCustomCategories(nextCategories);
-                        localStorage.setItem('sharkreader_categories', JSON.stringify(nextCategories));
                         saveSetting('categories', nextCategories);
                     }
                     if (d.stats) {
                         setStats(d.stats);
-                        localStorage.setItem('sharkreader_stats', JSON.stringify(d.stats));
                         saveAppData('stats', d.stats);
                     }
                     if (d.user) {
                         setUserProfile(d.user);
-                        localStorage.setItem('sharkreader_user', JSON.stringify(d.user));
+                        saveAppData('userProfile', d.user);
+                    }
+                    if (d.workshop) {
+                        const migratedWorkshop = migrateWorkshopData(d.workshop);
+                        setAddons(migratedWorkshop.addons);
+                        setAddonConfig(migratedWorkshop.addonConfig);
+                        setExternalSources(migratedWorkshop.externalSources);
+                        saveAppData('workshop', migratedWorkshop);
                     }
 
                     setBooks(nextBooks);
-                    saveBooksToDB(nextBooks.filter(book => !book.loading).map(toStoredBookRecord));
+                    saveBooksToDB(nextBooks.filter(book => !book.loading).map(book => toStoredBookRecord(book, {}, { includeFile: false })));
                     alert("Datos restaurados.");
                 } catch (_) { alert("Archivo inválido."); }
             };
@@ -1027,6 +1255,7 @@ const applyImportedBookData = (book, imported) => {
                     metadataProcessed: 0,
                     addedCount: 0,
                     skippedDuplicates: 0,
+                    failedFiles: [],
                     currentName: '',
                     scanFinished: false,
                     isCancelling: false,
@@ -1059,8 +1288,8 @@ const applyImportedBookData = (book, imported) => {
         };
 
         const processFiles = async (files, options = {}) => {
-            const valid = files.filter(f => /\.(epub|pdf)$/i.test(f.name));
-            if (!valid.length) { alert("Solo se aceptan archivos .epub y .pdf"); return; }
+            const valid = files.filter(f => /\.(epub|pdf|mobi)$/i.test(f.name));
+            if (!valid.length) { alert("Solo se aceptan archivos .epub, .pdf y .mobi"); return; }
 
             const existingKeys = new Set(bookDedupKeysRef.current);
             const existingTitleKeys = new Set(bookTitleDedupKeysRef.current);
@@ -1106,7 +1335,7 @@ const applyImportedBookData = (book, imported) => {
             const newBooks = uniqueValid.map(file => {
                 const id = Date.now().toString() + Math.random().toString(36).substr(2, 5);
                 const baseName = file.name.replace(/\.[^/.]+$/, '');
-                const type = /\.pdf$/i.test(file.name) ? 'pdf' : 'epub';
+                const type = /\.pdf$/i.test(file.name) ? 'pdf' : /\.mobi$/i.test(file.name) ? 'mobi' : 'epub';
                 const unknownAuthor = t.unknownAuthor || 'Autor desconocido';
                 const nativeMeta = type === 'epub' ? file.nativeMeta : null;
                 const nativeTitle = (nativeMeta?.title || '').trim();
@@ -1140,6 +1369,9 @@ const applyImportedBookData = (book, imported) => {
                     dateFinished: null,
                     readingMinutes: 0,
                     loading: false,
+                    updatedAt: Date.now(),
+                    progressUpdatedAt: Date.now(),
+                    metadataUpdatedAt: Date.now(),
                 };
             });
 
@@ -1197,12 +1429,14 @@ const applyImportedBookData = (book, imported) => {
                             description: meta.description || '',
                             publisher: meta.publisher || '',
                             tags: meta.subject || '',
+                            metadataUpdatedAt: Date.now(),
+                            updatedAt: Date.now(),
                         };
 
                         startTransition(() => {
                             setBooks(prev => updateBookInList(prev, book.id, updated));
                         });
-                        await saveBookToDB(toStoredBookRecord({ ...book, ...updated }));
+                        await saveBookToDB(toStoredBookRecord({ ...book, ...updated }, {}, { includeFile: false }));
                         notifyMetadataProcessed(updated);
                     } catch (err) {
                         console.error('[SharkReader] Error finalizando metadata del libro:', book.name, err);
@@ -1215,6 +1449,23 @@ const applyImportedBookData = (book, imported) => {
             return { added: newBooks.length, skipped: duplicateNames.length, duplicates: duplicateNames };
         };
 
+        const importExternalCatalogEntry = useCallback(async (entry) => {
+            if (!entry?.downloadUrl || !window.electronAPI?.downloadExternalBook) return;
+            const confirmed = window.confirm(`Importar "${entry.title}" desde esta fuente externa?\n\nSharkReader no valida derechos de autor. Importa solo contenido propio, publico o autorizado.`);
+            if (!confirmed) return;
+            setExternalCatalogState(prev => ({ ...prev, importingId: entry.id, error: '' }));
+            const result = await window.electronAPI.downloadExternalBook(entry.downloadUrl, entry.title, {
+                allowPrivateNetwork: !!externalCatalogState.catalog?.allowPrivateNetwork,
+            });
+            if (!result?.ok || !result.payload) {
+                setExternalCatalogState(prev => ({ ...prev, importingId: null, error: result?.msg || 'No se pudo descargar el libro.' }));
+                return;
+            }
+            const files = bookPayloadsToFiles([result.payload]);
+            if (files.length) await processFiles(files);
+            setExternalCatalogState(prev => ({ ...prev, importingId: null }));
+        }, [bookPayloadsToFiles, externalCatalogState.catalog, processFiles]);
+
         const finishFolderImportOverlay = useCallback((updater) => {
             setFolderImport(prev => {
                 if (!prev) return prev;
@@ -1222,6 +1473,10 @@ const applyImportedBookData = (book, imported) => {
                 if (!next) return next;
                 if (next.phase === 'done' || next.phase === 'cancelled' || next.phase === 'error' || next.phase === 'empty') {
                     activeFolderImportIdRef.current = null;
+                    if (next.phase === 'done' && (next.failedFiles || []).length > 0) {
+                        setFailedImportRetryQueue(next.failedFiles || []);
+                        return next;
+                    }
                     setTimeout(() => {
                         setFolderImport(current => current?.sessionId === next.sessionId ? null : current);
                     }, next.phase === 'done' ? 1400 : 1800);
@@ -1261,10 +1516,16 @@ const applyImportedBookData = (book, imported) => {
                             finishFolderImportOverlay(prev => {
                                 if (!prev || prev.sessionId !== nextBatch.sessionId) return prev;
                                 const metadataProcessed = Math.min(prev.total || 0, (prev.metadataProcessed || 0) + 1);
+                                const failedFile = {
+                                    name: entry?.name || entry?.path || 'Archivo desconocido',
+                                    path: entry?.path || null,
+                                    reason: 'No se pudo leer el archivo',
+                                };
                                 const readyForDone = prev.scanFinished && metadataProcessed >= (prev.total || 0) && folderImportQueueRef.current.length === 0;
                                 return {
                                     ...prev,
                                     metadataProcessed,
+                                    failedFiles: [...(prev.failedFiles || []), failedFile],
                                     phase: readyForDone ? 'done' : (prev.scanFinished ? 'metadata' : prev.phase),
                                 };
                             });
@@ -1343,6 +1604,75 @@ const applyImportedBookData = (book, imported) => {
             }
         }, [finishFolderImportOverlay]);
 
+        const retryFailedFolderImports = useCallback(async () => {
+            const retryable = failedImportRetryQueue.filter(item => item?.path);
+            if (!retryable.length) {
+                setFolderImport(null);
+                setFailedImportRetryQueue([]);
+                return;
+            }
+
+            const retrySessionId = `retry-import-${Date.now()}`;
+            activeFolderImportIdRef.current = retrySessionId;
+            cancelFolderImportRef.current = false;
+            setFolderImport({
+                sessionId: retrySessionId,
+                folderName: 'Reintento',
+                phase: 'metadata',
+                discovered: retryable.length,
+                total: retryable.length,
+                imported: 0,
+                metadataProcessed: 0,
+                addedCount: 0,
+                skippedDuplicates: 0,
+                failedFiles: [],
+                currentName: '',
+                scanFinished: true,
+                isCancelling: false,
+            });
+
+            let processed = 0;
+            const failures = [];
+            for (const entry of retryable) {
+                if (cancelFolderImportRef.current) break;
+                try {
+                    const file = await resolveImportEntryToFile(entry);
+                    if (!file) throw new Error('No se pudo leer el archivo');
+                    await processFiles([file], {
+                        shouldContinue: () => !cancelFolderImportRef.current,
+                        onFileSkipped: (_, reason) => {
+                            if (reason !== 'duplicate') return;
+                            setFolderImport(prev => prev?.sessionId === retrySessionId ? {
+                                ...prev,
+                                skippedDuplicates: (prev.skippedDuplicates || 0) + 1,
+                            } : prev);
+                        },
+                        onMetadataProcessed: () => {},
+                    });
+                } catch (error) {
+                    failures.push({ ...entry, reason: error.message || 'No se pudo importar' });
+                } finally {
+                    processed += 1;
+                    setFolderImport(prev => prev?.sessionId === retrySessionId ? {
+                        ...prev,
+                        imported: processed,
+                        metadataProcessed: processed,
+                        addedCount: Math.max(0, processed - failures.length - (prev.skippedDuplicates || 0)),
+                        failedFiles: failures,
+                    } : prev);
+                    await yieldToUi();
+                }
+            }
+
+            setFailedImportRetryQueue(failures);
+            finishFolderImportOverlay(prev => prev?.sessionId === retrySessionId ? {
+                ...prev,
+                phase: cancelFolderImportRef.current ? 'cancelled' : 'done',
+                failedFiles: failures,
+                scanFinished: true,
+            } : prev);
+        }, [failedImportRetryQueue, finishFolderImportOverlay, processFiles, resolveImportEntryToFile, yieldToUi]);
+
         useEffect(() => {
             if (!window.electronAPI?.onFolderImportProgress) return;
 
@@ -1404,6 +1734,10 @@ const applyImportedBookData = (book, imported) => {
                             imported,
                             scanFinished: true,
                             error: payload.error,
+                            failedFiles: [
+                                ...(prev.failedFiles || []),
+                                { name: prev.folderName || 'Importacion', path: null, reason: payload.error },
+                            ],
                         };
                     }
 
@@ -1452,13 +1786,24 @@ const applyImportedBookData = (book, imported) => {
         // LIBROS
         // ─────────────────────────────────────────
         const handleContextMenu = useCallback((e, book) => { e.preventDefault(); setContextMenu({ x: e.pageX, y: e.pageY, book }); }, []);
-        const toggleFavorite = useCallback((bookId) => setBooks(prev => prev.map(b => b.id === bookId ? { ...b, isFav: !b.isFav } : b)), []);
+        const toggleFavorite = useCallback((bookId) => {
+            const now = Date.now();
+            setBooks(prev => prev.map(b => b.id === bookId ? { ...b, isFav: !b.isFav, metadataUpdatedAt: now, updatedAt: now } : b));
+        }, []);
 
         const markFinished = useCallback((bookId) => {
             setBooks(prev => prev.map(b => {
                 if (b.id !== bookId) return b;
+                const now = Date.now();
                 const nowFinished = !b.isFinished;
-                return { ...b, isFinished: nowFinished, progress: nowFinished ? 100 : b.progress, dateFinished: nowFinished ? Date.now() : null };
+                return {
+                    ...b,
+                    isFinished: nowFinished,
+                    progress: nowFinished ? 100 : b.progress,
+                    dateFinished: nowFinished ? now : null,
+                    progressUpdatedAt: now,
+                    updatedAt: now,
+                };
             }));
         }, []);
 
@@ -1474,17 +1819,28 @@ const applyImportedBookData = (book, imported) => {
         }, [booksById, tabs, lastReadId, t, closeTab]);
 
         const updateBookLocation = useCallback((bookId, cfi, percent) => {
+            const now = Date.now();
+            const previousUpdate = progressUpdateThrottleRef.current.get(bookId) || { ts: 0, percent: null, cfi: null };
+            const hasPercent = percent !== null && percent !== undefined;
+            const roundedPercent = hasPercent ? Math.round(percent * 10) / 10 : null;
+            const percentChanged = roundedPercent !== previousUpdate.percent;
+            const cfiChanged = cfi && cfi !== previousUpdate.cfi;
+            if (!percentChanged && !cfiChanged && now - previousUpdate.ts < 1200) return;
+            if (!percentChanged && now - previousUpdate.ts < 1200) return;
+            progressUpdateThrottleRef.current.set(bookId, { ts: now, percent: roundedPercent, cfi });
+
             startTransition(() => {
                 setBooks(prev => {
                     const book = prev.find(b => b.id === bookId);
                     if (!book) return prev;
-                    const hasPercent = percent !== null && percent !== undefined;
                     const newProgress = hasPercent ? percent : book.progress;
                     if (book.lastLocation === cfi && book.progress === newProgress) return prev;
                     return updateBookInList(prev, bookId, {
                         lastLocation: cfi,
                         progress: newProgress,
-                        lastReadDate: Date.now()
+                        lastReadDate: now,
+                        progressUpdatedAt: now,
+                        updatedAt: now,
                     });
                 });
             });
@@ -1497,12 +1853,13 @@ const applyImportedBookData = (book, imported) => {
         }, [tabs]);
 
         const toggleBookmarkInApp = useCallback((bookId, cfi, note = "Marcador", isDelete = false) => {
+            const now = Date.now();
             setBooks(prev => prev.map(b => {
                 if (b.id !== bookId) return b;
-                if (isDelete) return { ...b, bookmarks: b.bookmarks.filter(bm => bm.cfi !== cfi) };
+                if (isDelete) return { ...b, bookmarks: b.bookmarks.filter(bm => bm.cfi !== cfi), metadataUpdatedAt: now, updatedAt: now };
                 const exists = b.bookmarks.find(bm => bm.cfi === cfi && bm.note === note);
-                if (exists) return { ...b, bookmarks: b.bookmarks.filter(bm => !(bm.cfi === cfi && bm.note === note)) };
-                return { ...b, bookmarks: [...b.bookmarks, { cfi, note, date: new Date().toLocaleDateString() }] };
+                if (exists) return { ...b, bookmarks: b.bookmarks.filter(bm => !(bm.cfi === cfi && bm.note === note)), metadataUpdatedAt: now, updatedAt: now };
+                return { ...b, bookmarks: [...b.bookmarks, { cfi, note, date: new Date().toLocaleDateString() }], metadataUpdatedAt: now, updatedAt: now };
             }));
         }, []);
 
@@ -1552,20 +1909,19 @@ const applyImportedBookData = (book, imported) => {
         };
 
         const displayedBooks = useMemo(() => {
+            const now = Date.now();
+            const searchNeedle = deferredSearchTerm.trim().toLowerCase();
             const filtered = books.filter(b => {
                 if (b.loading) return false;
                 if (currentFilter === 'favorites' && !b.isFav) return false;
                 if (currentFilter === 'unstarted') return !b.lastReadDate && !b.isFinished;
                 if (currentFilter === 'reading') return b.lastReadDate > 0 && !b.isFinished;
                 if (currentFilter === 'finished') return b.isFinished === true;
-                if (currentFilter === 'recents') return (b.dateAdded > Date.now() - 7 * 24 * 60 * 60 * 1000) || (b.lastReadDate > Date.now() - 14 * 24 * 60 * 60 * 1000);
+                if (currentFilter === 'recents') return (b.dateAdded > now - 7 * 24 * 60 * 60 * 1000) || (b.lastReadDate > now - 14 * 24 * 60 * 60 * 1000);
                 if (currentFilter.startsWith('author:')) return b.author === currentFilter.slice(7);
                 if (currentFilter !== 'all' && currentFilter !== 'favorites' && b.category !== currentFilter) return false;
-                if (deferredSearchTerm) {
-                    const term = deferredSearchTerm.toLowerCase();
-                    return b.name.toLowerCase().includes(term) || b.author.toLowerCase().includes(term) ||
-                        (b.tags && b.tags.toLowerCase().includes(term)) || (b.series && b.series.toLowerCase().includes(term)) ||
-                        (b.description && b.description.toLowerCase().includes(term)) || (b.publisher && b.publisher.toLowerCase().includes(term));
+                if (searchNeedle) {
+                    return getBookSearchIndex(b).includes(searchNeedle);
                 }
                 return true;
             });
@@ -1575,6 +1931,13 @@ const applyImportedBookData = (book, imported) => {
                 if (sortBy === 'name') return a.name.localeCompare(b.name);
                 if (sortBy === 'progress') return (b.progress || 0) - (a.progress || 0);
                 if (sortBy === 'rating') return (b.rating || 0) - (a.rating || 0);
+                if (sortBy === 'series') {
+                    const seriesCompare = (a.series || '').localeCompare(b.series || '');
+                    if (seriesCompare !== 0) return seriesCompare;
+                    const indexCompare = (a.seriesIndex || 0) - (b.seriesIndex || 0);
+                    if (indexCompare !== 0) return indexCompare;
+                    return a.name.localeCompare(b.name);
+                }
                 return 0;
             });
         }, [books, currentFilter, deferredSearchTerm, sortBy]);
@@ -1594,6 +1957,90 @@ const applyImportedBookData = (book, imported) => {
                 ].filter(Boolean)
             }));
         }, [deferredSearchTerm, displayedBooks]);
+
+        const libraryDerived = useMemo(() => {
+            const now = Date.now();
+            const authorsSet = new Set();
+            const counts = {
+                all: 0,
+                reading: 0,
+                unstarted: 0,
+                finished: 0,
+                favorites: 0,
+                recents: 0,
+            };
+            const categoryCounts = new Map(customCategories.map(category => [category, 0]));
+            const authorCounts = new Map();
+
+            books.forEach(book => {
+                if (book.loading) return;
+                counts.all += 1;
+                if (book.author) {
+                    authorsSet.add(book.author);
+                    authorCounts.set(book.author, (authorCounts.get(book.author) || 0) + 1);
+                }
+                if (book.lastReadDate > 0 && !book.isFinished) counts.reading += 1;
+                if (!book.lastReadDate && !book.isFinished) counts.unstarted += 1;
+                if (book.isFinished) counts.finished += 1;
+                if (book.isFav) counts.favorites += 1;
+                if ((book.dateAdded > now - 7 * 24 * 60 * 60 * 1000) || (book.lastReadDate > now - 14 * 24 * 60 * 60 * 1000)) counts.recents += 1;
+                if (book.category && categoryCounts.has(book.category)) {
+                    categoryCounts.set(book.category, (categoryCounts.get(book.category) || 0) + 1);
+                }
+            });
+
+            return {
+                authors: [...authorsSet].sort(),
+                counts,
+                authorCounts,
+                categoryCounts,
+            };
+        }, [books, customCategories]);
+
+        const virtualLibrary = useMemo(() => {
+            const total = displayedBooks.length;
+            const enabled = !searchTerm && total > LIBRARY_VIRTUALIZE_THRESHOLD && libraryViewport.height > 0;
+            if (!enabled) {
+                return { enabled: false, items: displayedBooks, top: 0, totalHeight: 0, columns: 1 };
+            }
+
+            if (libraryView === 'list') {
+                const itemHeight = 88;
+                const startIndex = Math.max(0, Math.floor(libraryViewport.scrollTop / itemHeight) - LIBRARY_SCROLL_OVERSCAN);
+                const visibleCount = Math.ceil(libraryViewport.height / itemHeight) + LIBRARY_SCROLL_OVERSCAN * 2;
+                const endIndex = Math.min(total, startIndex + visibleCount);
+                return {
+                    enabled: true,
+                    items: displayedBooks.slice(startIndex, endIndex),
+                    top: startIndex * itemHeight,
+                    totalHeight: total * itemHeight,
+                    columns: 1,
+                };
+            }
+
+            const horizontalPadding = libraryViewport.width >= 768 ? 96 : 32;
+            const availableWidth = Math.max(260, libraryViewport.width - horizontalPadding);
+            const minCardWidth = addons.netflixView ? 200 : 160;
+            const columnGap = 24;
+            const rowGap = addons.netflixView ? 32 : 40;
+            const columns = Math.max(1, Math.floor((availableWidth + columnGap) / (minCardWidth + columnGap)));
+            const cardWidth = (availableWidth - columnGap * (columns - 1)) / columns;
+            const rowHeight = Math.ceil(cardWidth * 1.5 + 74 + rowGap);
+            const rowCount = Math.ceil(total / columns);
+            const startRow = Math.max(0, Math.floor(libraryViewport.scrollTop / rowHeight) - LIBRARY_SCROLL_OVERSCAN);
+            const visibleRows = Math.ceil(libraryViewport.height / rowHeight) + LIBRARY_SCROLL_OVERSCAN * 2;
+            const endRow = Math.min(rowCount, startRow + visibleRows);
+            const startIndex = startRow * columns;
+            const endIndex = Math.min(total, endRow * columns);
+
+            return {
+                enabled: true,
+                items: displayedBooks.slice(startIndex, endIndex),
+                top: startRow * rowHeight,
+                totalHeight: rowCount * rowHeight,
+                columns,
+            };
+        }, [addons.netflixView, displayedBooks, libraryView, libraryViewport.height, libraryViewport.scrollTop, libraryViewport.width, searchTerm]);
 
         const exportQuotesAsImage = () => {
             const allQuotes = books.flatMap(b =>
@@ -1699,6 +2146,7 @@ const applyImportedBookData = (book, imported) => {
             const metadataProcessed = Math.min(folderImport.metadataProcessed || 0, total || folderImport.metadataProcessed || 0);
             const addedCount = Math.min(folderImport.addedCount || 0, metadataProcessed);
             const skippedDuplicates = folderImport.skippedDuplicates || 0;
+            const failedCount = (folderImport.failedFiles || []).length;
 
             if (folderImport.phase === 'empty') {
                 return { ...folderImport, title: 'No se encontraron libros', detail: 'La carpeta seleccionada no contiene EPUB, PDF o MOBI.', progress: 100, indeterminate: false, canCancel: false };
@@ -1715,7 +2163,8 @@ const applyImportedBookData = (book, imported) => {
 
             if (folderImport.phase === 'done') {
                 const skippedText = skippedDuplicates > 0 ? ` Se omitieron ${skippedDuplicates} duplicado(s).` : '';
-                return { ...folderImport, title: 'Importacion completada', detail: `Se agregaron ${addedCount} libros${folderImport.folderName ? ` desde ${folderImport.folderName}` : ''}.${skippedText}`, progress: 100, indeterminate: false, canCancel: false };
+                const failedText = failedCount > 0 ? ` ${failedCount} archivo(s) fallaron.` : '';
+                return { ...folderImport, title: failedCount > 0 ? 'Importacion completada con avisos' : 'Importacion completada', detail: `Se agregaron ${addedCount} libros${folderImport.folderName ? ` desde ${folderImport.folderName}` : ''}.${skippedText}${failedText}`, progress: 100, indeterminate: false, canCancel: false, failedCount };
             }
 
             if (folderImport.phase === 'metadata') {
@@ -1795,7 +2244,7 @@ const applyImportedBookData = (book, imported) => {
                                     </div>
                                 </div>
 
-                                <div className="mt-4 grid grid-cols-3 gap-3">
+                                <div className="mt-4 grid grid-cols-4 gap-3">
                                     <div className="rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-3">
                                         <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Detectados</p>
                                         <p className="mt-2 text-lg font-black text-white">{folderImportOverlay.total || folderImportOverlay.discovered || 0}</p>
@@ -1808,7 +2257,26 @@ const applyImportedBookData = (book, imported) => {
                                         <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Listos</p>
                                         <p className="mt-2 text-lg font-black text-white">{folderImportOverlay.metadataProcessed || 0}</p>
                                     </div>
+                                    <div className="rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-3">
+                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Omitidos</p>
+                                        <p className="mt-2 text-lg font-black text-white">{(folderImportOverlay.skippedDuplicates || 0) + (folderImportOverlay.failedCount || 0)}</p>
+                                    </div>
                                 </div>
+
+                                {(folderImportOverlay.failedCount || 0) > 0 && (
+                                    <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-3">
+                                        <p className="text-[11px] font-black uppercase tracking-[0.18em] text-amber-200">Fallidos</p>
+                                        <div className="mt-2 max-h-20 overflow-y-auto text-xs text-white/70">
+                                            {(folderImportOverlay.failedFiles || []).slice(0, 6).map((item, index) => (
+                                                <div key={`${item.name}-${index}`} className="truncate">{item.name} — {item.reason}</div>
+                                            ))}
+                                        </div>
+                                        <div className="mt-3 flex gap-2">
+                                            <button onClick={retryFailedFolderImports} className="rounded-xl bg-amber-300 px-3 py-2 text-xs font-black text-slate-950 hover:bg-amber-200">Reintentar fallidos</button>
+                                            <button onClick={() => { setFolderImport(null); setFailedImportRetryQueue([]); }} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-bold text-white/80 hover:bg-white/10">Cerrar</button>
+                                        </div>
+                                    </div>
+                                )}
 
                                     </div>
                                 </div>
@@ -1844,6 +2312,7 @@ const applyImportedBookData = (book, imported) => {
                                         <option value="name">{t.sortName}</option>
                                         <option value="progress">{t.sortProgress}</option>
                                         <option value="rating">Valoración</option>
+                                        <option value="series">Serie</option>
                                     </select>
                                 )}
                                 <div className="flex bg-black/20 rounded-xl p-0.5 border border-white/10">
@@ -1870,79 +2339,19 @@ const applyImportedBookData = (book, imported) => {
                                             <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-lg shadow-md border-2 border-white/20 overflow-hidden">{renderAvatar(userProfile.avatar)}</div>
                                         </button>
                                         {showUserMenu && (
-                                            <Suspense fallback={panelLoader('Cargando menu...')}>
-                                                <UserMenu
-                                                    userProfile={userProfile}
-                                                    stats={stats}
-                                                    achievements={achievements}
-                                                    books={books}
-                                                    onNavigate={(v) => { setView(v); setShowUserMenu(false); }}
-                                                    onExport={() => { exportAllData(); setShowUserMenu(false); }}
-                                                    onImport={() => { importInputRef.current.click(); setShowUserMenu(false); }}
-                                                    onLogout={() => { setUserProfile(null); setShowUserMenu(false); }}
-                                                    onDeleteAccount={async () => {
-                                                    // Wipe all user-related localStorage keys
-                                                    const keysToDelete = [
-                                                        'sharkreader_user',
-                                                        'sharkreader_meta',
-                                                        'sharkreader_stats',
-                                                        'sharkreader_categories',
-                                                        'sharkreader_achievements',
-                                                        'sharkreader_addons',
-                                                        'sharkreader_journal',
-                                                        'sharkreader_vocab',
-                                                        'sharkreader_last_open',
-                                                        'sharkreader_prev_open',
-                                                        'sharkreader_lastReadId',
-                                                        'sharkreader_migrated_v2',
-                                                        'sharkreader_migrated_v5',
-                                                        'sharkreader_lang',
-                                                        'sharkreader_theme',
-                                                        'sharkreader_flow',
-                                                        'sharkreader_layout',
-                                                        'sharkreader_warm',
-                                                        'sharkreader_ai_provider',
-                                                        'sharkreader_ai_key',
-                                                        'sharkreader_sync_folder',
-                                                        'sharkreader_libview',
-                                                        'sharkreader_daily_goal',
-                                                        'sharkreader_yearly_goal',
-                                                        'sharkreader_accent',
-                                                        'sharkreader_readFlow',
-                                                        'sharkreader_readLayout',
-                                                        'sharkreader_pageTransition',
-                                                        'sharkreader_libraryView',
-                                                        'sharkreader_sortBy',
-                                                        'page_transition',
-                                                    ];
-                                                    keysToDelete.forEach(k => localStorage.removeItem(k));
-                                                    try {
-                                                        booksRef.current.forEach(book => {
-                                                            if (book?.url) URL.revokeObjectURL(book.url);
-                                                        });
-                                                    } catch (_) {}
-                                                    clearTimeout(noticeToastTimerRef.current);
-                                                    setAchievementToast(null);
-                                                    setNoticeToast(null);
-                                                    setAchievements({});
-                                                    setStats({
-                                                        timeRead: 0, pagesTurned: 0, streak: 0, lastStreakDate: '',
-                                                        currentDailyMins: 0, lastActiveDate: '', streakSavers: 0, history: {}, minutesByDay: {}
-                                                    });
-                                                    setVocabulary([]);
-                                                    setJournalEntries([]);
-                                                    setAddons({});
-                                                    setUserProfile(null);
-                                                    setBooks([]);
-                                                    await resetAllAppData();
-                                                    setShowUserMenu(false);
-                                                    window.location.reload();
-                                                    }}
-                                                    onShowWorkshop={() => { setShowWorkshop(true); setShowUserMenu(false); }}
-                                                    onEditProfile={openEditProfile}
-                                                    importInputRef={importInputRef}
-                                                />
-                                            </Suspense>
+                                            <UserMenu
+                                                userProfile={userProfile}
+                                                stats={stats}
+                                                achievements={achievements}
+                                                books={books}
+                                                onNavigate={(v) => { setView(v); setShowUserMenu(false); }}
+                                                onExport={() => { exportAllData(); setShowUserMenu(false); }}
+                                                onImport={() => { importInputRef.current.click(); setShowUserMenu(false); }}
+                                                onLogout={() => { setUserProfile(null); setShowUserMenu(false); }}
+                                                onShowWorkshop={() => { setShowWorkshop(true); setShowUserMenu(false); }}
+                                                onEditProfile={openEditProfile}
+                                                importInputRef={importInputRef}
+                                            />
                                         )}
                                     </>
                                 )}
@@ -1964,10 +2373,11 @@ const applyImportedBookData = (book, imported) => {
                 )}
 
                 {/* Inputs ocultos */}
-                <input type="file" accept=".epub,.pdf" multiple ref={fileInputRef} className="hidden" onChange={handleFilesUpload} />
-                <input type="file" multiple ref={folderInputRef} accept=".epub,.pdf" className="hidden" onChange={handleFilesUpload} webkitdirectory="" directory="" />
+                <input type="file" accept=".epub,.pdf,.mobi" multiple ref={fileInputRef} className="hidden" onChange={handleFilesUpload} />
+                <input type="file" multiple ref={folderInputRef} accept=".epub,.pdf,.mobi" className="hidden" onChange={handleFilesUpload} webkitdirectory="" directory="" />
                 <input type="file" accept=".json" ref={importInputRef} className="hidden" onChange={importData} />
                 <input type="file" accept="image/*" ref={avatarInputRef} className="hidden" onChange={handleAvatarUpload} />
+                <input type="file" accept="image/*" ref={coverInputRef} className="hidden" onChange={handleCoverUpload} />
 
                 {/* ── MODALS ── */}
 
@@ -2096,12 +2506,12 @@ const applyImportedBookData = (book, imported) => {
                                 )}
                                 <div className="space-y-1">
                                     {[
-                                        { filter: 'all', icon: <Icons.Library />, label: t.library, count: books.filter(b => !b.loading).length },
-                                        { filter: 'reading', icon: <span>📖</span>, label: 'Leyendo', count: books.filter(b => !b.loading && b.lastReadDate > 0 && !b.isFinished).length },
-                                        { filter: 'unstarted', icon: <span>📚</span>, label: 'Sin empezar', count: books.filter(b => !b.loading && !b.lastReadDate && !b.isFinished).length },
-                                        { filter: 'finished', icon: <span>🏁</span>, label: 'Terminados', count: books.filter(b => !b.loading && b.isFinished).length },
-                                        { filter: 'favorites', icon: <Icons.Heart className="text-red-500" />, label: t.favorites, count: books.filter(b => b.isFav).length },
-                                        { filter: 'recents', icon: <span>🕐</span>, label: 'Recientes', count: books.filter(b => !b.loading && ((b.dateAdded > Date.now() - 7*24*60*60*1000) || (b.lastReadDate > Date.now() - 14*24*60*60*1000))).length },
+                                        { filter: 'all', icon: <Icons.Library />, label: t.library, count: libraryDerived.counts.all },
+                                        { filter: 'reading', icon: <span>📖</span>, label: 'Leyendo', count: libraryDerived.counts.reading },
+                                        { filter: 'unstarted', icon: <span>📚</span>, label: 'Sin empezar', count: libraryDerived.counts.unstarted },
+                                        { filter: 'finished', icon: <span>🏁</span>, label: 'Terminados', count: libraryDerived.counts.finished },
+                                        { filter: 'favorites', icon: <Icons.Heart className="text-red-500" />, label: t.favorites, count: libraryDerived.counts.favorites },
+                                        { filter: 'recents', icon: <span>🕐</span>, label: 'Recientes', count: libraryDerived.counts.recents },
                                     ].map(item => (
                                         <button key={item.filter} onClick={() => { setCurrentFilter(item.filter); setView('library'); setSidebarOpen(false); }}
                                             className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition text-left font-semibold ${currentFilter === item.filter ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
@@ -2111,8 +2521,8 @@ const applyImportedBookData = (book, imported) => {
                                     ))}
 
                                     {/* Por Autor */}
-                                    {books.filter(b => b.author && !b.loading).length > 0 && (() => {
-                                        const authors = [...new Set(books.filter(b => b.author && !b.loading).map(b => b.author))].sort();
+                                    {libraryDerived.authors.length > 0 && (() => {
+                                        const authors = libraryDerived.authors;
                                         return (
                                             <div>
                                                 <button onClick={() => setShowAuthorSection(p => !p)}
@@ -2127,7 +2537,7 @@ const applyImportedBookData = (book, imported) => {
                                                             <button key={author} onClick={() => { setCurrentFilter(`author:${author}`); setView('library'); setSidebarOpen(false); }}
                                                                 className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left text-sm ${currentFilter === `author:${author}` ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
                                                                 <span className="truncate flex-1 opacity-80">{author}</span>
-                                                                <span className="text-[10px] font-bold opacity-40 flex-shrink-0">{books.filter(b => b.author === author).length}</span>
+                                                                <span className="text-[10px] font-bold opacity-40 flex-shrink-0">{libraryDerived.authorCounts.get(author) || 0}</span>
                                                             </button>
                                                         ))}
                                                     </div>
@@ -2145,7 +2555,7 @@ const applyImportedBookData = (book, imported) => {
                                         <div key={cat} className={`flex items-center rounded-xl transition group ${currentFilter === cat ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
                                             <button onClick={() => { setCurrentFilter(cat); setView('library'); setSidebarOpen(false); }} className="flex-1 flex items-center gap-4 px-4 py-3 text-left font-semibold">
                                                 <span className="opacity-80"><Icons.FolderPlus /></span> {cat}
-                                                <span className="ml-auto text-xs font-bold px-2 py-1 bg-black/5 dark:bg-white/10 rounded-lg">{books.filter(b => b.category === cat).length}</span>
+                                                <span className="ml-auto text-xs font-bold px-2 py-1 bg-black/5 dark:bg-white/10 rounded-lg">{libraryDerived.categoryCounts.get(cat) || 0}</span>
                                             </button>
                                             <button onClick={e => { e.stopPropagation(); removeCategory(cat); }} className="opacity-0 group-hover:opacity-100 p-3 text-red-500 hover:text-red-600 transition"><Icons.Trash className="w-4 h-4" /></button>
                                         </div>
@@ -2464,7 +2874,7 @@ const applyImportedBookData = (book, imported) => {
 
                 {/* ── BIBLIOTECA ── */}
                 {view === 'library' && (
-                    <div className="flex-1 library-container w-full relative overflow-y-auto">
+                    <div ref={libraryScrollRef} className="flex-1 library-container w-full relative overflow-y-auto">
 
                         {/* Vista de resultados de búsqueda */}
                         {searchTerm && searchResultsWithMatches && (
@@ -2539,19 +2949,43 @@ const applyImportedBookData = (book, imported) => {
                                     </div>
                                 )}
                                 {displayedBooks.length > 0 && libraryView === 'grid' && (
-                                    <div className={`books-grid fade-in ${addons.netflixView ? 'netflix-grid' : ''}`}>
-                                        {displayedBooks.map(book => (
-                                            <div key={book.id} draggable
-                                                onDragStart={e => { e.dataTransfer.setData('bookId', book.id); setDraggedBookId(book.id); }}
-                                                onDragEnd={() => { setDraggedBookId(null); setDropTargetCat(null); }}>
-                                                <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={openBook} onContextMenu={handleContextMenu} />
+                                    virtualLibrary.enabled ? (
+                                        <div className="virtual-library-spacer" style={{ height: virtualLibrary.totalHeight }}>
+                                            <div
+                                                className={`books-grid virtual-books-grid ${addons.netflixView ? 'netflix-grid' : ''}`}
+                                                style={{
+                                                    transform: `translateY(${virtualLibrary.top}px)`,
+                                                    gridTemplateColumns: `repeat(${virtualLibrary.columns}, minmax(0, 1fr))`,
+                                                }}>
+                                                {virtualLibrary.items.map(book => (
+                                                    <div key={book.id} draggable
+                                                        onDragStart={e => { e.dataTransfer.setData('bookId', book.id); setDraggedBookId(book.id); }}
+                                                        onDragEnd={() => { setDraggedBookId(null); setDropTargetCat(null); }}>
+                                                        <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={openBook} onContextMenu={handleContextMenu} />
+                                                    </div>
+                                                ))}
                                             </div>
-                                        ))}
-                                    </div>
+                                        </div>
+                                    ) : (
+                                        <div className={`books-grid fade-in ${addons.netflixView ? 'netflix-grid' : ''}`}>
+                                            {displayedBooks.map(book => (
+                                                <div key={book.id} draggable
+                                                    onDragStart={e => { e.dataTransfer.setData('bookId', book.id); setDraggedBookId(book.id); }}
+                                                    onDragEnd={() => { setDraggedBookId(null); setDropTargetCat(null); }}>
+                                                    <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={openBook} onContextMenu={handleContextMenu} />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )
                                 )}
                                 {displayedBooks.length > 0 && libraryView === 'list' && (
-                                    <div className="p-4 flex flex-col gap-2 fade-in max-w-4xl mx-auto w-full">
-                                        {displayedBooks.map(book => {
+                                    <div
+                                        className={`p-4 flex flex-col gap-2 fade-in max-w-4xl mx-auto w-full ${virtualLibrary.enabled ? 'virtual-list-spacer' : ''}`}
+                                        style={virtualLibrary.enabled ? { height: virtualLibrary.totalHeight } : undefined}>
+                                        <div
+                                            className="flex flex-col gap-2 w-full"
+                                            style={virtualLibrary.enabled ? { transform: `translateY(${virtualLibrary.top}px)` } : undefined}>
+                                        {(virtualLibrary.enabled ? virtualLibrary.items : displayedBooks).map(book => {
                                             const statusIcon = book.isFinished ? '✅' : book.lastReadDate > 0 ? '📖' : '📚';
                                             return (
                                                 <div key={book.id}
@@ -2584,6 +3018,7 @@ const applyImportedBookData = (book, imported) => {
                                                 </div>
                                             );
                                         })}
+                                        </div>
                                     </div>
                                 )}
                             </>
@@ -2621,6 +3056,10 @@ const applyImportedBookData = (book, imported) => {
                                 <div className="w-full mt-2">
                                     <label className="text-[10px] font-bold opacity-40 uppercase tracking-widest block mb-1">{t.cover}</label>
                                     <input className="w-full bg-black/5 dark:bg-white/5 p-2 text-xs rounded-lg border border-transparent focus:border-[var(--highlight)] outline-none transition" value={activeBookModal.coverUrl || ''} placeholder="https://..." onChange={e => setActiveBookModal({ ...activeBookModal, coverUrl: e.target.value })} />
+                                    <div className="mt-2 grid grid-cols-2 gap-2">
+                                        <button onClick={() => coverInputRef.current?.click()} className="rounded-xl bg-black/5 dark:bg-white/10 px-3 py-2 text-xs font-bold hover:bg-black/10 dark:hover:bg-white/20">Reemplazar portada</button>
+                                        <button onClick={restoreOriginalMetadata} className="rounded-xl bg-black/5 dark:bg-white/10 px-3 py-2 text-xs font-bold hover:bg-black/10 dark:hover:bg-white/20">Restaurar original</button>
+                                    </div>
                                 </div>
                                 <div className="flex gap-2 w-full justify-center mt-4">
                                     <span className="text-xs px-3 py-1.5 bg-slate-500/10 text-slate-600 dark:text-slate-300 rounded-lg uppercase font-bold tracking-wider">{activeBookModal.type}</span>
@@ -2636,8 +3075,16 @@ const applyImportedBookData = (book, imported) => {
                             </div>
                             <div className="flex flex-col w-full md:w-2/3">
                                 <div className="space-y-4 flex-1">
-                                    <input className="w-full bg-transparent text-2xl md:text-4xl font-black border-b border-transparent hover:border-gray-500/30 focus:border-[var(--highlight)] outline-none transition py-1" value={activeBookModal.name} onChange={e => setActiveBookModal({ ...activeBookModal, name: e.target.value })} />
-                                    <input className="w-full bg-transparent text-lg font-semibold opacity-70 border-b border-transparent hover:border-gray-500/30 focus:border-[var(--highlight)] outline-none transition py-1" value={activeBookModal.author} onChange={e => setActiveBookModal({ ...activeBookModal, author: e.target.value })} />
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="text-xs font-bold opacity-40 uppercase tracking-widest block mb-1">Título</label>
+                                            <input className="w-full bg-black/5 dark:bg-white/5 p-3 text-sm rounded-xl border border-transparent focus:border-[var(--highlight)] outline-none transition font-bold" value={activeBookModal.name} onChange={e => setActiveBookModal({ ...activeBookModal, name: e.target.value })} />
+                                        </div>
+                                        <div>
+                                            <label className="text-xs font-bold opacity-40 uppercase tracking-widest block mb-1">Autor</label>
+                                            <input className="w-full bg-black/5 dark:bg-white/5 p-3 text-sm rounded-xl border border-transparent focus:border-[var(--highlight)] outline-none transition font-semibold" value={activeBookModal.author} onChange={e => setActiveBookModal({ ...activeBookModal, author: e.target.value })} />
+                                        </div>
+                                    </div>
                                     {/* Series */}
                                     <div className="grid grid-cols-2 gap-3">
                                         <div>
@@ -2700,7 +3147,7 @@ const applyImportedBookData = (book, imported) => {
 
                                 <div className="flex gap-3 mt-6">
                                     <button onClick={() => setActiveBookModal(null)} className="flex-1 bg-black/5 dark:bg-white/5 py-4 rounded-xl font-bold hover:opacity-80 transition">{t.cancel}</button>
-                                    <button onClick={() => { setBooks(prev => prev.map(b => b.id === activeBookModal.id ? activeBookModal : b)); setActiveBookModal(null); }} className="flex-1 bg-[var(--highlight)] text-white py-4 rounded-xl font-bold shadow-lg hover:brightness-110 transition">{t.save}</button>
+                                    <button onClick={saveActiveBookMetadata} className="flex-1 bg-[var(--highlight)] text-white py-4 rounded-xl font-bold shadow-lg hover:brightness-110 transition">{t.save}</button>
                                 </div>
                             </div>
                         </div>
@@ -2709,22 +3156,21 @@ const applyImportedBookData = (book, imported) => {
 
                 {/* ── MODAL SETTINGS (extracted) ── */}
                 {settingsOpen && (
-                    <Suspense fallback={panelLoader('Cargando configuracion...')}>
-                        <SettingsPanel
-                            open={settingsOpen} onClose={() => setSettingsOpen(false)}
-                            theme={theme} setTheme={setTheme}
-                            warmMode={warmMode} setWarmMode={setWarmMode}
-                            readFlow={readFlow} setReadFlow={setReadFlow}
-                            readLayout={readLayout} setReadLayout={setReadLayout}
-                            pageTransition={pageTransition} setPageTransition={(v) => { setPageTransition(v); localStorage.setItem('page_transition', v); }}
-                            lang={lang} setLang={setLang}
-                            aiProvider={aiProvider} setAiProvider={setAiProvider}
-                            aiApiKey={aiApiKey} setAiApiKey={setAiApiKey}
-                            syncFolder={syncFolder} setSyncFolder={setSyncFolder}
-                            accentColor={accentColor} setAccentColor={setAccentColor}
-                            t={t}
-                        />
-                    </Suspense>
+                    <SettingsPanel
+                        open={settingsOpen} onClose={() => setSettingsOpen(false)}
+                        theme={theme} setTheme={setTheme}
+                        warmMode={warmMode} setWarmMode={setWarmMode}
+                        readFlow={readFlow} setReadFlow={setReadFlow}
+                        readLayout={readLayout} setReadLayout={setReadLayout}
+                        pageTransition={pageTransition} setPageTransition={setPageTransition}
+                        lang={lang} setLang={setLang}
+                        aiProvider={aiProvider} setAiProvider={setAiProvider}
+                        aiApiKey={aiApiKey} setAiApiKey={setAiApiKey}
+                        syncFolder={syncFolder} setSyncFolder={setSyncFolder}
+                        accentColor={accentColor} setAccentColor={setAccentColor}
+                        onDeleteAccount={deleteAccountAndData}
+                        t={t}
+                    />
                 )}
 
                 {/* ── ANALYTICS VIEW ── */}
@@ -2860,7 +3306,18 @@ const applyImportedBookData = (book, imported) => {
                     <Suspense fallback={panelLoader('Cargando workshop...')}>
                         <WorkshopPanel
                             addons={addons}
+                            addonConfig={addonConfig}
+                            externalSources={externalSources}
                             onToggle={toggleAddon}
+                            onUpdateAddonConfig={updateAddonConfig}
+                            onUpdateExternalSources={setExternalSources}
+                            catalogState={externalCatalogState}
+                            onBrowseSource={browseExternalSource}
+                            onNavigateCatalog={(url) => browseExternalCatalogUrl(url, {
+                                allowPrivateNetwork: !!externalCatalogState.catalog?.allowPrivateNetwork,
+                                sourceName: externalCatalogState.catalog?.sourceName,
+                            })}
+                            onImportCatalogEntry={importExternalCatalogEntry}
                             onClose={() => setShowWorkshop(false)}
                         />
                     </Suspense>

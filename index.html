@@ -16,50 +16,14 @@
 <body class="theme-dark">
 
     <div id="shark-preloader" aria-live="polite">
-        <div class="preloader-app">
-            <div class="preloader-topbar">
-                <div class="preloader-brand">
-                    <span class="preloader-brand-mark">SR</span>
-                    <div class="preloader-brand-copy">
-                        <span class="preloader-brand-title">Shark Reader</span>
-                        <span class="preloader-brand-subtitle">Desktop Library</span>
-                    </div>
-                </div>
-                <div class="preloader-search"></div>
-                <div class="preloader-topbar-actions">
-                    <span></span><span></span><span></span>
-                </div>
+        <div class="preloader-minimal">
+            <div class="preloader-minimal-mark">SR</div>
+            <div class="preloader-minimal-copy">
+                <span class="preloader-minimal-title">Shark Reader</span>
+                <span class="preloader-minimal-subtitle">Cargando biblioteca</span>
             </div>
-
-            <div class="preloader-main">
-                <aside class="preloader-sidebar">
-                    <div class="preloader-nav-item active"></div>
-                    <div class="preloader-nav-item"></div>
-                    <div class="preloader-nav-item short"></div>
-                    <div class="preloader-nav-spacer"></div>
-                    <div class="preloader-nav-item tiny"></div>
-                    <div class="preloader-nav-item tiny"></div>
-                </aside>
-
-                <section class="preloader-library">
-                    <div class="preloader-status">
-                        <span class="loading-dot"></span>
-                        <span>Cargando biblioteca</span>
-                    </div>
-
-                    <div class="loading-bar">
-                        <div class="loading-progress"></div>
-                    </div>
-
-                    <div class="preloader-grid">
-                        <div class="preloader-book-card"><span></span><span></span></div>
-                        <div class="preloader-book-card"><span></span><span></span></div>
-                        <div class="preloader-book-card"><span></span><span></span></div>
-                        <div class="preloader-book-card"><span></span><span></span></div>
-                        <div class="preloader-book-card"><span></span><span></span></div>
-                        <div class="preloader-book-card"><span></span><span></span></div>
-                    </div>
-                </section>
+            <div class="preloader-minimal-bar">
+                <span></span>
             </div>
         </div>
     </div>
@@ -75,10 +39,12 @@
             setTimeout(() => {
                 loader.style.visibility = 'hidden';
                 loader.style.pointerEvents = 'none';
-            }, 420);
+                loader.style.display = 'none';
+                if (loader.parentNode) loader.parentNode.removeChild(loader);
+            }, 140);
         };
         window.addEventListener('error', () => window.__hideSharkPreloader());
-        setTimeout(() => window.__hideSharkPreloader(), 2200);
+        setTimeout(() => window.__hideSharkPreloader(), 1200);
     </script>
 
     <script type="module" src="/src/main.jsx"></script>

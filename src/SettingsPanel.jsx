@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Icons } from './icons';
 import { translations, languageNames } from './translations';
 
@@ -33,10 +33,23 @@ const SettingsPanel = ({
     aiProvider, setAiProvider, aiApiKey, setAiApiKey,
     syncFolder, setSyncFolder,
     accentColor, setAccentColor,
+    onDeleteAccount,
     t
 }) => {
     const [showLangMenu, setShowLangMenu] = useState(false);
     const [assocStatus, setAssocStatus] = useState('');
+    const assocStatusTimerRef = useRef(null);
+    const [confirmDelete, setConfirmDelete] = useState(false);
+
+    const showAssocStatus = (value, ms = 0) => {
+        clearTimeout(assocStatusTimerRef.current);
+        setAssocStatus(value);
+        if (ms > 0) {
+            assocStatusTimerRef.current = setTimeout(() => setAssocStatus(''), ms);
+        }
+    };
+
+    useEffect(() => () => clearTimeout(assocStatusTimerRef.current), []);
 
     if (!open) return null;
 
@@ -185,7 +198,7 @@ const SettingsPanel = ({
                         value={aiApiKey} onChange={e => setAiApiKey(e.target.value)}
                         className="w-full bg-black/5 dark:bg-white/5 p-3 text-sm rounded-xl border border-transparent focus:border-[var(--highlight)] outline-none transition font-mono mb-2"
                         style={{ color: 'var(--text-color)' }} />
-                    <button onClick={() => { localStorage.setItem('sharkreader_ai_key', JSON.stringify(aiApiKey)); localStorage.setItem('sharkreader_ai_provider', JSON.stringify(aiProvider)); setAssocStatus('saved'); setTimeout(() => setAssocStatus(''), 2000); }}
+                    <button onClick={() => showAssocStatus('saved', 2000)}
                         className="w-full py-2.5 rounded-xl text-sm font-bold text-white transition hover:opacity-90"
                         style={{ backgroundColor: 'var(--highlight)' }}>
                         {assocStatus === 'saved' ? '✅ Clave guardada' : '💾 Guardar clave'}
@@ -208,8 +221,8 @@ const SettingsPanel = ({
                             <button onClick={async () => {
                                 try {
                                     const folder = await window.electronAPI.pickFolder();
-                                    if (folder) { setSyncFolder(folder); setAssocStatus('sync_ok'); setTimeout(() => setAssocStatus(''), 2500); }
-                                } catch (e) { setAssocStatus('sync_err'); }
+                                    if (folder) { setSyncFolder(folder); showAssocStatus('sync_ok', 2500); }
+                                } catch (e) { showAssocStatus('sync_err'); }
                             }} className="flex-1 py-2.5 rounded-xl font-bold text-sm text-white hover:brightness-110 transition"
                                 style={{ backgroundColor: 'var(--highlight)' }}>
                                 📂 {syncFolder ? 'Cambiar carpeta' : 'Elegir carpeta'}
@@ -239,6 +252,37 @@ const SettingsPanel = ({
                         )}
                     </div>
                 )}
+
+                <div className="mt-6 pt-5 border-t" style={{ borderColor: 'var(--border-color)' }}>
+                    <label className="block text-xs font-black mb-3 opacity-50 uppercase tracking-widest pl-1">Cuenta y datos</label>
+                    {!confirmDelete ? (
+                        <button
+                            onClick={() => setConfirmDelete(true)}
+                            className="w-full py-3 rounded-2xl font-bold text-sm border border-red-500/25 text-red-400 bg-red-500/10 hover:bg-red-500/15 transition"
+                        >
+                            Eliminar la cuenta y los datos
+                        </button>
+                    ) : (
+                        <div className="rounded-2xl border border-red-500/25 bg-red-500/10 p-4">
+                            <p className="text-sm font-bold text-red-300">Se borraran el perfil, la biblioteca, el progreso, los logros y los ajustes locales.</p>
+                            <p className="mt-1 text-xs opacity-70">La accion no se puede deshacer.</p>
+                            <div className="mt-4 flex gap-2">
+                                <button
+                                    onClick={() => setConfirmDelete(false)}
+                                    className="flex-1 py-2.5 rounded-xl text-sm font-bold bg-black/10 dark:bg-white/5 hover:opacity-80 transition"
+                                >
+                                    Cancelar
+                                </button>
+                                <button
+                                    onClick={onDeleteAccount}
+                                    className="flex-1 py-2.5 rounded-xl text-sm font-bold bg-red-500 hover:bg-red-600 text-white transition"
+                                >
+                                    Si, eliminar todo
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </div>
             </div>
         </div>
     );

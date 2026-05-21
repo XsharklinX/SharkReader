@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     startFolderImport: () => ipcRenderer.invoke('start-folder-import'),
     cancelFolderImport: (sessionId) => ipcRenderer.invoke('cancel-folder-import', sessionId),
     readBookFile: (filePath) => ipcRenderer.invoke('read-book-file', filePath),
+    fetchExternalCatalog: (sourceUrl, options) => ipcRenderer.invoke('fetch-external-catalog', sourceUrl, options),
+    downloadExternalBook: (downloadUrl, fallbackName, options) => ipcRenderer.invoke('download-external-book', downloadUrl, fallbackName, options),
     pickFolder: () => ipcRenderer.invoke('pick-folder'),
     writeSyncFile: (folder, content) => ipcRenderer.invoke('write-sync-file', folder, content),
     readSyncFile: (folder) => ipcRenderer.invoke('read-sync-file', folder),
