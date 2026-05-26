@@ -1,0 +1,192 @@
+﻿import { useCallback, startTransition } from 'react';
+import { updateBookInList } from '../bookModel';
+import { deleteBookFromDB } from '../db';
+
+export function useBookActions({
+    books,
+    booksById,
+    setBooks,
+    tabs,
+    closeTab,
+    lastReadId,
+    setLastReadId,
+    progressUpdateThrottleRef,
+    sharkyActionsRef,
+    addonsRef,
+    setTabTargetCfi,
+    setContextMenu,
+    setVocabulary,
+    customCategories,
+    setCustomCategories,
+    currentFilter,
+    setCurrentFilter,
+    t,
+}) {
+    const handleContextMenu = useCallback((e, book) => {
+        e.preventDefault();
+        setContextMenu({ x: e.pageX, y: e.pageY, book });
+    }, [setContextMenu]);
+
+    const toggleFavorite = useCallback((bookId) => {
+        const now = Date.now();
+        setBooks(prev => prev.map(b => b.id === bookId ? { ...b, isFav: !b.isFav, metadataUpdatedAt: now, updatedAt: now } : b));
+    }, [setBooks]);
+
+    const markFinished = useCallback((bookId) => {
+        setBooks(prev => {
+            const next = prev.map(b => {
+                if (b.id !== bookId) return b;
+                const now = Date.now();
+                const nowFinished = !b.isFinished;
+                if (nowFinished) {
+                    sharkyActionsRef.current?.notifyBookFinished(b.name, b.readingMinutes || 0);
+                    // Suggest next book in series
+                    if (b.series && b.seriesIndex) {
+                        const nextBook = prev.find(x => x.series === b.series && x.seriesIndex === b.seriesIndex + 1 && !x.isFinished);
+                        if (nextBook) {
+                            setTimeout(() => sharkyActionsRef.current?.notifyNextInSeries({ seriesName: b.series, nextBookName: nextBook.name }), 2000);
+                        }
+                    }
+                }
+                return { ...b, isFinished: nowFinished, progress: nowFinished ? 100 : b.progress, dateFinished: nowFinished ? now : null, progressUpdatedAt: now, updatedAt: now };
+            });
+            return next;
+        });
+    }, [setBooks, sharkyActionsRef]);
+
+    const deleteBook = useCallback((bookId) => {
+        if (!window.confirm(t.confirmDelete)) return;
+        const book = booksById.get(bookId);
+        if (book?.url) URL.revokeObjectURL(book.url);
+        const tabToClose = tabs.find(tb => tb.bookId === bookId);
+        if (tabToClose) closeTab(tabToClose.id);
+        setBooks(prev => prev.filter(b => b.id !== bookId));
+        if (lastReadId === bookId) setLastReadId(null);
+        progressUpdateThrottleRef.current.delete(bookId);
+        deleteBookFromDB(bookId);
+    }, [booksById, tabs, lastReadId, t, closeTab, setBooks, setLastReadId, progressUpdateThrottleRef]);
+
+    const updateBookLocation = useCallback((bookId, cfi, percent) => {
+        const now = Date.now();
+        const previousUpdate = progressUpdateThrottleRef.current.get(bookId) || { ts: 0, percent: null, cfi: null };
+        const hasPercent = percent !== null && percent !== undefined;
+        const roundedPercent = hasPercent ? Math.round(percent * 10) / 10 : null;
+        const percentChanged = roundedPercent !== previousUpdate.percent;
+        const cfiChanged = cfi && cfi !== previousUpdate.cfi;
+        // Throttle: skip if nothing changed AND last update was recent
+        if (!percentChanged && !cfiChanged && now - previousUpdate.ts < 1200) return;
+        progressUpdateThrottleRef.current.set(bookId, { ts: now, percent: roundedPercent, cfi });
+
+        startTransition(() => {
+            setBooks(prev => {
+                const book = prev.find(b => b.id === bookId);
+                if (!book) return prev;
+                const newProgress = hasPercent ? percent : book.progress;
+                if (book.lastLocation === cfi && book.progress === newProgress) return prev;
+                if (addonsRef.current.sharkyMascot && hasPercent) {
+                    const previousProgress = Number(book.progress || 0);
+                    const nextProgress = Number(newProgress || 0);
+                    [25, 50, 75, 100].forEach(mark => {
+                        sharkyActionsRef.current?.notifyMilestone(bookId, mark, book.name, previousProgress, nextProgress);
+                    });
+                }
+                return updateBookInList(prev, bookId, {
+                    lastLocation: cfi,
+                    progress: newProgress,
+                    lastReadDate: now,
+                    progressUpdatedAt: now,
+                    updatedAt: now,
+                });
+            });
+        });
+        setTabTargetCfi(prev => {
+            const tab = tabs.find(t => t.bookId === bookId);
+            if (!tab || !prev[tab.id]) return prev;
+            const n = { ...prev }; delete n[tab.id]; return n;
+        });
+    }, [tabs, progressUpdateThrottleRef, addonsRef, sharkyActionsRef, setBooks, setTabTargetCfi]);
+
+    const toggleBookmarkInApp = useCallback((bookId, cfi, note = "Marcador", isDelete = false, options = {}) => {
+        const now = Date.now();
+        setBooks(prev => prev.map(b => {
+            if (b.id !== bookId) return b;
+            if (isDelete) return { ...b, bookmarks: b.bookmarks.filter(bm => bm.cfi !== cfi), metadataUpdatedAt: now, updatedAt: now };
+            const exists = b.bookmarks.find(bm => bm.cfi === cfi && bm.note === note);
+            if (exists) return { ...b, bookmarks: b.bookmarks.filter(bm => !(bm.cfi === cfi && bm.note === note)), metadataUpdatedAt: now, updatedAt: now };
+            return {
+                ...b,
+                bookmarks: [
+                    ...b.bookmarks,
+                    {
+                        cfi,
+                        note,
+                        date: new Date().toISOString().slice(0, 10),
+                        color: options.color || null,
+                        kind: options.kind || null,
+                    },
+                ],
+                metadataUpdatedAt: now,
+                updatedAt: now,
+            };
+        }));
+    }, [setBooks]);
+
+    const saveWordToVocab = useCallback((word, definition, bookId, bookName) => {
+        setVocabulary(prev => {
+            if (prev.some(v => v.word.toLowerCase() === word.toLowerCase() && v.bookId === bookId)) return prev;
+            return [...prev, { id: Date.now().toString(), word, definition, bookId, bookName, date: new Date().toLocaleDateString() }];
+        });
+    }, [setVocabulary]);
+
+    const exportAnnotations = useCallback((format = 'txt') => {
+        const booksWithMarks = books.filter(b => b.bookmarks && b.bookmarks.length > 0);
+        if (!booksWithMarks.length) { alert(t.noBookmarks); return; }
+        let content, mime, ext;
+        if (format === 'md') {
+            content = `# ðŸ¦ˆ Mis Anotaciones â€” Shark Reader\n\n`;
+            booksWithMarks.forEach(b => {
+                content += `## ðŸ“š ${b.name} â€” *${b.author}*\n\n`;
+                b.bookmarks.forEach(bm => {
+                    if (bm.note?.includes('[Subrayado]')) content += `> ${bm.note.replace('[Subrayado] ', '')}\n>\n> â€” *${bm.date}*\n\n`;
+                    else content += `- **${bm.note}** *(${bm.date})*\n`;
+                });
+                content += '\n---\n\n';
+            });
+            mime = 'text/markdown'; ext = 'md';
+        } else {
+            content = "ðŸ¦ˆ SHARK READER - TUS ANOTACIONES\n\n";
+            booksWithMarks.forEach(b => {
+                content += `=========================================\nðŸ“š ${b.name.toUpperCase()} - ${b.author}\n=========================================\n\n`;
+                b.bookmarks.forEach(bm => { content += `[${bm.date}] - ${bm.note}\n(CFI: ${bm.cfi})\n\n`; });
+            });
+            mime = 'text/plain'; ext = 'txt';
+        }
+        const url = URL.createObjectURL(new Blob([content], { type: mime }));
+        const a = document.createElement('a'); a.href = url; a.download = `Mis_Anotaciones.${ext}`; a.click(); URL.revokeObjectURL(url);
+    }, [books, t]);
+
+    const addNewCategory = useCallback(() => {
+        const c = prompt('Nueva categorÃ­a:');
+        if (c && c.trim() && !customCategories.includes(c.trim())) setCustomCategories(prev => [...prev, c.trim()]);
+    }, [customCategories, setCustomCategories]);
+
+    const removeCategory = useCallback((cat) => {
+        if (!confirm(`Â¿Eliminar "${cat}"?`)) return;
+        setCustomCategories(prev => prev.filter(c => c !== cat));
+        setBooks(prev => prev.map(b => b.category === cat ? { ...b, category: null } : b));
+        if (currentFilter === cat) setCurrentFilter('all');
+    }, [currentFilter, setBooks, setCurrentFilter, setCustomCategories]);
+
+    return {
+        handleContextMenu,
+        toggleFavorite,
+        markFinished,
+        deleteBook,
+        updateBookLocation,
+        toggleBookmarkInApp,
+        saveWordToVocab,
+        exportAnnotations,
+        addNewCategory,
+        removeCategory,
+    };
+}

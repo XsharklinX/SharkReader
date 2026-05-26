@@ -362,7 +362,8 @@ export const loadBooksFromDB = async () => {
         if (migratedLightRecords.length) putManyIntoStore(db, BOOKS_STORE, migratedLightRecords).catch(() => {});
 
         return hydrated;
-    } catch {
+    } catch (err) {
+        console.error('[SharkReader] loadBooksFromDB failed:', err);
         return [];
     }
 };
@@ -372,9 +373,13 @@ export const deleteBookFromDB = async (id) => {
         const db = await initDB();
         await deleteFromStore(db, BOOKS_STORE, id);
         if (db.objectStoreNames.contains(FILES_STORE)) {
-            await deleteFromStore(db, FILES_STORE, id).catch(() => {});
+            await deleteFromStore(db, FILES_STORE, id).catch((err) => {
+                console.warn('[SharkReader] deleteBookFromDB: no se pudo borrar el fichero del libro:', err);
+            });
         }
-    } catch (_) {}
+    } catch (err) {
+        console.error('[SharkReader] deleteBookFromDB failed:', err);
+    }
 };
 
 // Legacy helpers kept for compatibility with older code paths
@@ -401,7 +406,8 @@ export const loadFilesFromDB = async () => {
     try {
         const db = await initDB();
         return await getAllFromStore(db, FILES_STORE);
-    } catch {
+    } catch (err) {
+        console.error('[SharkReader] loadFilesFromDB failed:', err);
         return [];
     }
 };
@@ -423,7 +429,8 @@ export const loadSetting = async (key) => {
 
         const legacy = await getByKeyFromStore(db, LEGACY_APPDATA_STORE, key);
         return legacy ? legacy.value : null;
-    } catch {
+    } catch (err) {
+        console.warn('[SharkReader] loadSetting failed for key:', key, err);
         return null;
     }
 };
@@ -442,8 +449,22 @@ export const loadCache = async (key) => {
         const db = await initDB();
         const current = await getByKeyFromStore(db, CACHE_STORE, key);
         return current ? current.value : null;
-    } catch {
+    } catch (err) {
+        console.warn('[SharkReader] loadCache failed for key:', key, err);
         return null;
+    }
+};
+
+export const loadCacheByPrefix = async (prefix) => {
+    try {
+        const db = await initDB();
+        const records = await getAllFromStore(db, CACHE_STORE);
+        return (records || [])
+            .filter(record => typeof record?.key === 'string' && record.key.startsWith(prefix))
+            .map(record => ({ key: record.key, value: record.value }));
+    } catch (err) {
+        console.warn('[SharkReader] loadCacheByPrefix failed for prefix:', prefix, err);
+        return [];
     }
 };
 

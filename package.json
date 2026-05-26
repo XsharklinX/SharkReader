@@ -1,9 +1,9 @@
 {
   "name": "sharkreader",
-  "version": "2.5.0",
+  "version": "2.7.1",
   "description": "Lector de EPUB y PDF con IA, pestañas, Pomodoro y vocabulario",
   "main": "main.js",
-  "author": "SharkReader",
+  "author": "David Bonilla",
   "license": "ISC",
   "type": "commonjs",
   "packageManager": "pnpm@11.1.1",
@@ -11,7 +11,9 @@
     "dev": "node scripts/dev.cjs",
     "start": "node scripts/dev.cjs",
     "build:renderer": "vite build",
-    "build": "pnpm build:renderer && electron-builder --win nsis portable"
+    "build": "pnpm build:renderer && electron-builder --win nsis portable",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "build": {
     "appId": "com.sharkreader.app",
@@ -64,10 +66,14 @@
   "keywords": [],
   "devDependencies": {
     "@vitejs/plugin-react": "^6.0.1",
+    "autoprefixer": "^10.5.0",
     "electron": "^41.1.1",
     "electron-builder": "^26.8.1",
     "png-to-ico": "^3.0.1",
-    "vite": "^8.0.10"
+    "postcss": "^8.5.15",
+    "tailwindcss": "^3.4.19",
+    "vite": "^8.0.10",
+    "vitest": "^4.1.7"
   },
   "dependencies": {
     "epubjs": "^0.3.93",

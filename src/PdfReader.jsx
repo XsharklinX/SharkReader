@@ -5,10 +5,22 @@ import { Icons } from './icons';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
 
+function formatRemainingText(minutes, lang = 'es') {
+    if (!minutes || minutes < 1) return '';
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    if (lang === 'en') {
+        if (hours > 0) return `${hours}h ${mins}m left`;
+        return `${mins}m left`;
+    }
+    if (hours > 0) return `${hours}h ${mins}min para terminar`;
+    return `${mins}min para terminar`;
+}
+
 const PdfReader = ({
-    bookData, theme, t, isFullscreen, focusMode,
+    bookData, theme, t, lang = 'es', isFullscreen, focusMode,
     onClose, onOpenSettings, onOpenBookInfo,
-    updateLocationAndProgress, toggleBookmark, onStatsUpdate,
+    updateLocationAndProgress, toggleBookmark, onStatsUpdate, onPersistPdfZoom,
     tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary
 }) => {
     const canvasRef = useRef(null);
@@ -23,13 +35,15 @@ const PdfReader = ({
 
     const [totalPages, setTotalPages] = useState(0);
     const [currentPage, setCurrentPage] = useState(1);
-    const [scale, setScale] = useState(1.2);
+    const [scale, setScale] = useState(bookData.pdfScale || 1.2);
     const [dualPage, setDualPage] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [pdfError, setPdfError] = useState(null);
     const [inputPage, setInputPage] = useState('1');
     const [showToolbar, setShowToolbar] = useState(true);
     const [isBookmarked, setIsBookmarked] = useState(false);
+    const [pendingNote, setPendingNote] = useState('');
+    const [showNoteModal, setShowNoteModal] = useState(false);
     const [focusToolbarVisible, setFocusToolbarVisible] = useState(true);
     const focusHideTimer = useRef(null);
 
@@ -54,8 +68,18 @@ const PdfReader = ({
     }, [focusMode]);
 
     useEffect(() => {
-        setIsBookmarked(bookData.bookmarks?.some(b => b.cfi === String(currentPage)) || false);
+        setIsBookmarked(bookData.bookmarks?.some(b => b.cfi === String(currentPage) && !b.note?.includes('[Subrayado]') && b.kind !== 'note') || false);
     }, [currentPage, bookData.bookmarks]);
+
+    useEffect(() => {
+        setScale(bookData.pdfScale || 1.2);
+    }, [bookData.id, bookData.pdfScale]);
+
+    useEffect(() => {
+        if (!onPersistPdfZoom) return;
+        const timer = setTimeout(() => onPersistPdfZoom(bookData.id, scale), 250);
+        return () => clearTimeout(timer);
+    }, [bookData.id, onPersistPdfZoom, scale]);
 
 
     // Load PDF
@@ -94,7 +118,7 @@ const PdfReader = ({
             const baseVp = page.getViewport({ scale: 1 });
             const usableW = dual ? (containerW / 2 - 32) : (containerW - 48);
             const autoScale = Math.min(scale, usableW / baseVp.width);
-            const viewport = page.getViewport({ scale: Math.max(autoScale, 0.4) });
+            const viewport = page.getViewport({ scale: Math.max(autoScale, 0.7) });
             canvas.width = viewport.width;
             canvas.height = viewport.height;
             const ctx = canvas.getContext('2d');
@@ -111,7 +135,9 @@ const PdfReader = ({
                     if (!isMountedCheck()) return;
                     const tl = new pdfjsLib.TextLayer({ textContentSource: tc, container: textLayer, viewport });
                     await tl.render();
-                } catch (_) {}
+                } catch (err) {
+                    console.warn('[SharkReader] PDF text layer render failed:', err);
+                }
             }
         } catch (err) {
             if (err?.name !== 'RenderingCancelledException') console.error('Render error:', err);
@@ -203,7 +229,9 @@ const PdfReader = ({
                 }
                 if (results.length >= 40) break;
             }
-        } catch (_) {}
+        } catch (err) {
+            console.warn('[SharkReader] PDF search failed:', err);
+        }
         setSearchResults(results);
         setIsSearching(false);
     };
@@ -218,7 +246,25 @@ const PdfReader = ({
         else toggleBookmark(bookData.id, String(currentPage), `Página ${currentPage}`);
     };
 
+    const handleAddPageNote = () => {
+        setPendingNote('');
+        setShowNoteModal(true);
+    };
+
+    const savePageNote = () => {
+        toggleBookmark(bookData.id, String(currentPage), pendingNote.trim() || `Nota en página ${currentPage}`, false, { kind: 'note' });
+        setShowNoteModal(false);
+        setPendingNote('');
+    };
+
     const pct = totalPages > 0 ? Math.round((currentPage / totalPages) * 100) : 0;
+    const estimatedRemainingText = (() => {
+        const readingMinutes = Number(bookData.readingMinutes || 0);
+        if (pct < 3 || readingMinutes < 3) return '';
+        const estimatedTotal = readingMinutes / (pct / 100);
+        const remaining = Math.max(1, Math.round(estimatedTotal - readingMinutes));
+        return formatRemainingText(remaining, lang);
+    })();
     const bgColor = theme === 'dark' ? '#0f172a' : theme === 'sepia' ? '#f5f0e8' : '#f8fafc';
 
     return (
@@ -281,7 +327,7 @@ const PdfReader = ({
                         <div className="flex items-center gap-1 flex-shrink-0">
                             {/* Zoom */}
                             <div className="flex items-center bg-black/20 rounded-xl overflow-hidden">
-                                <button onClick={() => setScale(s => Math.max(0.4, parseFloat((s - 0.2).toFixed(1))))}
+                                <button onClick={() => setScale(s => Math.max(0.7, parseFloat((s - 0.2).toFixed(1))))}
                                     className="px-2 py-1.5 hover:bg-white/20 transition font-bold text-base leading-none">−</button>
                                 <span className="px-2 text-xs font-black min-w-[44px] text-center">{Math.round(scale * 100)}%</span>
                                 <button onClick={() => setScale(s => Math.min(4, parseFloat((s + 0.2).toFixed(1))))}
@@ -309,6 +355,9 @@ const PdfReader = ({
                             </button>
                             <button onClick={handleAddBookmark} className="p-1.5 hover:bg-white/15 rounded-xl transition" title="Marcador">
                                 <Icons.Bookmark fill={isBookmarked ? '#facc15' : 'none'} color={isBookmarked ? '#facc15' : 'currentColor'} />
+                            </button>
+                            <button onClick={handleAddPageNote} className="p-1.5 hover:bg-white/15 rounded-xl transition" title="Nota de página">
+                                <Icons.Notes />
                             </button>
                             <button onClick={() => setDualPage(p => !p)}
                                 className={`p-1.5 rounded-xl transition hidden sm:flex items-center gap-1 text-xs font-black ${dualPage ? 'bg-white/25' : 'hover:bg-white/15'}`}
@@ -368,6 +417,30 @@ const PdfReader = ({
             </div>
 
             {/* ── SEARCH PANEL ── */}
+            {showNoteModal && (
+                <div className="fixed inset-0 z-[500] flex items-center justify-center bg-black/40 backdrop-blur-sm fade-in" onClick={() => setShowNoteModal(false)}>
+                    <div className="bg-[var(--surface-bg)] rounded-2xl p-6 w-80 shadow-2xl border border-[var(--border-color)]" onClick={e => e.stopPropagation()}>
+                        <h3 className="font-black text-base mb-1">Añadir nota de página</h3>
+                        <p className="text-xs opacity-50 mb-4">La nota quedará ligada a la página actual.</p>
+                        <textarea
+                            value={pendingNote}
+                            onChange={e => setPendingNote(e.target.value)}
+                            placeholder={`Escribe tu nota para la página ${currentPage}...`}
+                            className="w-full min-h-[120px] resize-none bg-black/5 dark:bg-white/5 rounded-xl px-4 py-3 text-sm font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition mb-4"
+                            style={{ color: 'var(--text-color)' }}
+                        />
+                        <div className="flex gap-2">
+                            <button onClick={() => setShowNoteModal(false)} className="flex-1 py-2.5 rounded-xl font-bold text-sm bg-black/5 dark:bg-white/5 hover:opacity-80 transition">
+                                Cancelar
+                            </button>
+                            <button onClick={savePageNote} className="flex-1 py-2.5 rounded-xl font-bold text-sm text-white transition" style={{ backgroundColor: 'var(--highlight)' }}>
+                                Guardar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {showSearch && (
                 <div className="absolute right-0 bottom-7 w-80 z-50 flex flex-col shadow-2xl border-l fade-in"
                     style={{ top: tabs ? '88px' : '64px', backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)' }}
@@ -413,7 +486,7 @@ const PdfReader = ({
                                             dangerouslySetInnerHTML={{
                                                 __html: r.excerpt.replace(
                                                     new RegExp(searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'),
-                                                    m => `<mark style="background:rgba(250,204,21,0.4);border-radius:3px;padding:0 2px">${m}</mark>`
+                                                    m => `<mark style="background:rgba(250,204,21,0.65);border-radius:3px;padding:0 2px">${m}</mark>`
                                                 )
                                             }} />
                                     </button>
@@ -434,6 +507,9 @@ const PdfReader = ({
                 <div className="absolute inset-0 flex items-end justify-between px-4 pb-1">
                     <span className="text-[10px] font-black opacity-40 uppercase tracking-widest truncate max-w-[50%]">{bookData.name}</span>
                     <div className="flex items-center gap-3">
+                        {estimatedRemainingText && (
+                            <span className="text-[10px] font-bold opacity-50">{estimatedRemainingText}</span>
+                        )}
                         <span className="text-[10px] font-bold opacity-50">Pág. {currentPage} / {totalPages}</span>
                         <span className="text-[11px] font-black" style={{ color: 'var(--highlight)' }}>{pct}%</span>
                     </div>

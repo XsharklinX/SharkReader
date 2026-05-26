@@ -2,12 +2,53 @@ import React from 'react';
 import { Icons, renderAvatar } from './icons';
 import { ACHIEVEMENTS, RARITY } from './achievements';
 
-const UserMenu = ({ userProfile, stats, achievements, books, onNavigate, onExport, onImport, onLogout, onShowWorkshop, onEditProfile, importInputRef }) => {
-    if (!userProfile) return null;
+const USER_MENU_TEXT = {
+    es: {
+        level: 'Nivel',
+        reader: 'Lector',
+        editProfile: 'Editar perfil',
+        time: 'Tiempo',
+        pages: 'Páginas',
+        streak: 'Racha',
+        latestAchievements: 'Últimos logros',
+        seeAll: 'Ver todos',
+        finished: 'Terminados',
+        reading: 'Leyendo',
+        notes: 'Notas',
+        analytics: 'Analíticas',
+        export: 'Exportar',
+        import: 'Importar',
+        logout: 'Cerrar sesión',
+        xp: 'XP',
+    },
+    en: {
+        level: 'Level',
+        reader: 'Reader',
+        editProfile: 'Edit profile',
+        time: 'Time',
+        pages: 'Pages',
+        streak: 'Streak',
+        latestAchievements: 'Latest achievements',
+        seeAll: 'See all',
+        finished: 'Finished',
+        reading: 'Reading',
+        notes: 'Notes',
+        analytics: 'Analytics',
+        export: 'Export',
+        import: 'Import',
+        logout: 'Log out',
+        xp: 'XP',
+    },
+};
 
-    const level = Math.floor((stats.timeRead || 0) / 60) + 1;
-    const xpInLevel = (stats.timeRead || 0) % 60;
-    const xpPct = (xpInLevel / 60) * 100;
+const UserMenu = ({ userProfile, stats, achievements, books, onNavigate, onExport, onImport, onLogout, onShowWorkshop, onEditProfile, importInputRef, lang = 'es', levelSystemEnabled = false, readerLevel = null }) => {
+    if (!userProfile) return null;
+    const copy = USER_MENU_TEXT[lang] || USER_MENU_TEXT.es;
+
+    const level = levelSystemEnabled && readerLevel ? readerLevel.level : Math.floor((stats.timeRead || 0) / 60) + 1;
+    const xpInLevel = levelSystemEnabled && readerLevel ? readerLevel.current : (stats.timeRead || 0) % 60;
+    const xpGoal = levelSystemEnabled && readerLevel ? readerLevel.xpPerLevel : 60;
+    const xpPct = Math.min(100, (xpInLevel / xpGoal) * 100);
 
     const recent = Object.entries(achievements)
         .sort((a, b) => (b[1]?.unlockedAt || 0) - (a[1]?.unlockedAt || 0))
@@ -27,13 +68,13 @@ const UserMenu = ({ userProfile, stats, achievements, books, onNavigate, onExpor
                 <div className="flex-1 overflow-hidden min-w-0">
                     <div className="font-black text-lg truncate">{userProfile.name}</div>
                     <p className="text-[10px] opacity-70 uppercase tracking-widest mt-0.5 font-bold" style={{ color: 'var(--highlight)' }}>
-                        Nivel {level} - Lector
+                        {copy.level} {level} - {copy.reader}
                     </p>
                 </div>
                 <button
                     onClick={onEditProfile}
                     className="flex-shrink-0 p-2 rounded-xl opacity-40 hover:opacity-100 hover:bg-black/10 dark:hover:bg-white/10 transition"
-                    title="Editar perfil"
+                    title={copy.editProfile}
                 >
                     <Icons.Settings />
                 </button>
@@ -41,9 +82,9 @@ const UserMenu = ({ userProfile, stats, achievements, books, onNavigate, onExpor
 
             <div className="p-4 grid grid-cols-3 gap-2 text-center border-b border-[var(--border-color)]">
                 {[
-                    { value: stats.timeRead >= 60 ? `${Math.floor(stats.timeRead / 60)}h` : `${stats.timeRead || 0}m`, label: 'Tiempo', color: 'var(--highlight)' },
-                    { value: stats.pagesTurned || 0, label: 'Paginas', color: '#22c55e' },
-                    { value: stats.streak || 0, label: 'Racha', color: '#f97316' },
+                    { value: stats.timeRead >= 60 ? `${Math.floor(stats.timeRead / 60)}h` : `${stats.timeRead || 0}m`, label: copy.time, color: 'var(--highlight)' },
+                    { value: stats.pagesTurned || 0, label: copy.pages, color: '#22c55e' },
+                    { value: stats.streak || 0, label: copy.streak, color: '#f97316' },
                 ].map((item) => (
                     <div key={item.label} className="bg-black/5 dark:bg-white/5 rounded-xl p-2">
                         <div className="text-lg font-black" style={{ color: item.color }}>{item.value}</div>
@@ -54,8 +95,8 @@ const UserMenu = ({ userProfile, stats, achievements, books, onNavigate, onExpor
 
             <div className="px-4 py-3 border-b border-[var(--border-color)]">
                 <div className="flex justify-between items-center mb-1.5">
-                    <span className="text-[10px] font-black opacity-50 uppercase tracking-widest">Nivel {level}</span>
-                    <span className="text-[10px] font-black opacity-50">{xpInLevel}/60 min</span>
+                    <span className="text-[10px] font-black opacity-50 uppercase tracking-widest">{copy.level} {level}</span>
+                    <span className="text-[10px] font-black opacity-50">{xpInLevel}/{xpGoal} {levelSystemEnabled ? copy.xp : 'min'}</span>
                 </div>
                 <div className="w-full h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
                     <div className="h-full rounded-full transition-all" style={{ width: `${xpPct}%`, background: 'linear-gradient(90deg, var(--progress-bg), var(--highlight))' }} />
@@ -65,9 +106,9 @@ const UserMenu = ({ userProfile, stats, achievements, books, onNavigate, onExpor
             {recent.length > 0 && (
                 <div className="px-4 py-3 border-b border-[var(--border-color)]">
                     <div className="flex justify-between items-center mb-2">
-                        <span className="text-[10px] font-black opacity-50 uppercase tracking-widest">Ultimos logros</span>
+                        <span className="text-[10px] font-black opacity-50 uppercase tracking-widest">{copy.latestAchievements}</span>
                         <button onClick={() => onNavigate('achievements')} className="text-[10px] font-black opacity-60 hover:opacity-100 transition" style={{ color: 'var(--highlight)' }}>
-                            Ver todos -
+                            {copy.seeAll} -
                         </button>
                     </div>
                     <div className="flex gap-2">
@@ -91,9 +132,9 @@ const UserMenu = ({ userProfile, stats, achievements, books, onNavigate, onExpor
 
             <div className="px-4 py-3 grid grid-cols-3 gap-2 border-b border-[var(--border-color)]">
                 {[
-                    { value: books.filter((book) => book.isFinished).length, label: 'Terminados' },
-                    { value: books.filter((book) => book.lastReadDate > 0 && !book.isFinished).length, label: 'Leyendo' },
-                    { value: books.reduce((sum, book) => sum + (book.bookmarks?.length || 0), 0), label: 'Notas' },
+                    { value: books.filter((book) => book.isFinished).length, label: copy.finished },
+                    { value: books.filter((book) => book.lastReadDate > 0 && !book.isFinished).length, label: copy.reading },
+                    { value: books.reduce((sum, book) => sum + (book.bookmarks?.length || 0), 0), label: copy.notes },
                 ].map((item) => (
                     <div key={item.label} className="bg-black/5 dark:bg-white/5 rounded-xl p-2 text-center">
                         <div className="text-base font-black">{item.value}</div>
@@ -108,7 +149,7 @@ const UserMenu = ({ userProfile, stats, achievements, books, onNavigate, onExpor
                     className="py-2 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 hover:opacity-80 transition text-white"
                     style={{ background: 'linear-gradient(135deg, var(--topbar-bg), var(--highlight))' }}
                 >
-                    Analiticas
+                    {copy.analytics}
                 </button>
                 <button
                     onClick={onShowWorkshop}
@@ -117,16 +158,16 @@ const UserMenu = ({ userProfile, stats, achievements, books, onNavigate, onExpor
                     Workshop
                 </button>
                 <button onClick={onExport} className="py-2 bg-black/5 dark:bg-white/5 font-bold rounded-xl flex items-center justify-center gap-1.5 hover:opacity-80 transition text-xs">
-                    <Icons.Export /> Exportar
+                    <Icons.Export /> {copy.export}
                 </button>
                 <button onClick={() => importInputRef.current?.click()} className="py-2 bg-black/5 dark:bg-white/5 font-bold rounded-xl flex items-center justify-center gap-1.5 hover:opacity-80 transition text-xs">
-                    <Icons.Import /> Importar
+                    <Icons.Import /> {copy.import}
                 </button>
             </div>
 
             <div className="px-3 pb-3 flex flex-col gap-1.5">
                 <button onClick={onLogout} className="w-full py-2 text-orange-400 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-orange-500/10 transition text-sm">
-                    <Icons.Close /> Cerrar sesion
+                    <Icons.Close /> {copy.logout}
                 </button>
             </div>
         </div>

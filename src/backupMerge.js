@@ -28,6 +28,15 @@ const mergeProgressFields = (base = {}, next = {}) => {
     };
 };
 
+const mergeBookmarkArrays = (a = [], b = []) => {
+    const seen = new Map();
+    [...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])].forEach(bm => {
+        const key = `${bm.cfi}|${bm.note}`;
+        if (!seen.has(key)) seen.set(key, bm);
+    });
+    return Array.from(seen.values());
+};
+
 const mergeMetadataFields = (base = {}, next = {}) => {
     const baseTs = newerTimestamp(base.metadataUpdatedAt, base.updatedAt, base.dateAdded);
     const nextTs = newerTimestamp(next.metadataUpdatedAt, next.updatedAt, next.dateAdded);
@@ -48,7 +57,7 @@ const mergeMetadataFields = (base = {}, next = {}) => {
         rating: winner.rating ?? base.rating ?? 0,
         isFav: !!(base.isFav || next.isFav),
         notes: winner.notes ?? base.notes ?? '',
-        bookmarks: Array.isArray(winner.bookmarks) ? winner.bookmarks : (Array.isArray(base.bookmarks) ? base.bookmarks : []),
+        bookmarks: mergeBookmarkArrays(base.bookmarks, next.bookmarks),
         metadataUpdatedAt: Math.max(baseTs, nextTs, Date.now()),
     };
 };
@@ -77,8 +86,42 @@ const mergeStats = (localStats = {}, incomingStats = {}) => {
         merged[key] = Math.max(Number(localStats?.[key] || 0), Number(incomingStats?.[key] || 0));
     });
     merged.history = { ...(localStats.history || {}), ...(incomingStats.history || {}) };
-    merged.minutesByDay = { ...(localStats.minutesByDay || {}), ...(incomingStats.minutesByDay || {}) };
+    const allDays = new Set([...Object.keys(localStats.minutesByDay || {}), ...Object.keys(incomingStats.minutesByDay || {})]);
+    merged.minutesByDay = {};
+    allDays.forEach(day => {
+        merged.minutesByDay[day] = Math.max(
+            Number((localStats.minutesByDay || {})[day] || 0),
+            Number((incomingStats.minutesByDay || {})[day] || 0)
+        );
+    });
     return merged;
+};
+
+const mergeCollections = (localCollections = [], incomingCollections = []) => {
+    const merged = new Map();
+    const upsert = (collection = {}) => {
+        if (!collection) return;
+        const normalizedName = String(collection.name || '').trim();
+        const key = collection.id || normalizedName.toLowerCase();
+        if (!key) return;
+        const current = merged.get(key);
+        if (!current) {
+            merged.set(key, {
+                id: collection.id || key,
+                name: normalizedName || 'Colección',
+                bookIds: Array.from(new Set(collection.bookIds || [])).filter(Boolean),
+            });
+            return;
+        }
+        merged.set(key, {
+            id: current.id || collection.id || key,
+            name: current.name || normalizedName || 'Colección',
+            bookIds: Array.from(new Set([...(current.bookIds || []), ...(collection.bookIds || [])])).filter(Boolean),
+        });
+    };
+    localCollections.forEach(upsert);
+    incomingCollections.forEach(upsert);
+    return Array.from(merged.values()).sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
 };
 
 export const mergeBookSnapshots = (localBooks = [], incomingBooks = []) => {
@@ -112,17 +155,19 @@ export const mergeBackupData = (localBackup, incomingBackup) => ({
     exportedAt: new Date().toISOString(),
     books: mergeBookSnapshots(localBackup.books || [], incomingBackup.books || []),
     categories: Array.from(new Set([...(localBackup.categories || []), ...(incomingBackup.categories || [])])).filter(cat => String(cat).toLowerCase() !== 'favoritos'),
+    collections: mergeCollections(localBackup.collections || [], incomingBackup.collections || []),
     stats: mergeStats(localBackup.stats || {}, incomingBackup.stats || {}),
     user: Object.keys(incomingBackup.user || {}).length ? incomingBackup.user : (localBackup.user || {}),
     workshop: incomingBackup.workshop || localBackup.workshop,
 });
 
-export const buildPortableBackup = ({ books, categories, stats, user, workshop }) => ({
+export const buildPortableBackup = ({ books, categories, collections, stats, user, workshop }) => ({
     schemaVersion: 2,
     app: 'SharkReader',
     exportedAt: new Date().toISOString(),
     books,
     categories,
+    collections: collections || [],
     stats,
     user,
     workshop,

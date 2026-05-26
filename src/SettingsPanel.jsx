@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Icons } from './icons';
 import { translations, languageNames } from './translations';
+import { saveAppData } from './db';
 
 const ACCENT_PRESETS = [
     { name: 'Cielo',   value: '#0ea5e9', topbar: '#0284c7' },
@@ -27,12 +28,15 @@ const PAGE_TRANSITIONS = [
 const SettingsPanel = ({
     open, onClose,
     theme, setTheme, warmMode, setWarmMode,
+    autoDarkMode, setAutoDarkMode,
     readFlow, setReadFlow, readLayout, setReadLayout,
     pageTransition, setPageTransition,
     lang, setLang,
     aiProvider, setAiProvider, aiApiKey, setAiApiKey,
     syncFolder, setSyncFolder,
     accentColor, setAccentColor,
+    tutorialEnabled, setTutorialEnabled,
+    onRestartTutorial,
     onDeleteAccount,
     t
 }) => {
@@ -79,6 +83,17 @@ const SettingsPanel = ({
                             </label>
                         ))}
                     </div>
+                    <button
+                        onClick={() => setAutoDarkMode(prev => !prev)}
+                        className={`mt-3 w-full flex items-center justify-between rounded-2xl border px-4 py-3 text-left transition ${autoDarkMode ? 'border-[var(--highlight)] bg-[var(--highlight)]/10 text-[var(--highlight)]' : 'border-transparent bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10'}`}>
+                        <div>
+                            <p className="text-sm font-bold">Dark mode automatico</p>
+                            <p className="text-xs opacity-60">Cambia entre claro y oscuro segun la hora del dia.</p>
+                        </div>
+                        <div className={`w-10 h-6 rounded-full transition-all ${autoDarkMode ? 'bg-[var(--highlight)]' : 'bg-gray-400/30'} relative`}>
+                            <div className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-all ${autoDarkMode ? 'left-5' : 'left-1'}`} />
+                        </div>
+                    </button>
                 </div>
 
                 {/* ── ACENTO ── */}
@@ -198,14 +213,39 @@ const SettingsPanel = ({
                         value={aiApiKey} onChange={e => setAiApiKey(e.target.value)}
                         className="w-full bg-black/5 dark:bg-white/5 p-3 text-sm rounded-xl border border-transparent focus:border-[var(--highlight)] outline-none transition font-mono mb-2"
                         style={{ color: 'var(--text-color)' }} />
-                    <button onClick={() => showAssocStatus('saved', 2000)}
+                    <button onClick={() => {
+                        saveAppData('aiApiKey', aiApiKey);
+                        saveAppData('aiProvider', aiProvider);
+                        showAssocStatus('saved', 2000);
+                    }}
                         className="w-full py-2.5 rounded-xl text-sm font-bold text-white transition hover:opacity-90"
                         style={{ backgroundColor: 'var(--highlight)' }}>
                         {assocStatus === 'saved' ? '✅ Clave guardada' : '💾 Guardar clave'}
                     </button>
                 </div>
 
-                {/* ── SYNC CARPETA LOCAL ── */}
+                                <div className="mb-6 pt-5 border-t" style={{ borderColor: 'var(--border-color)' }}>
+                    <label className="block text-xs font-black mb-3 opacity-50 uppercase tracking-widest pl-1">Tutorial y ayuda</label>
+                    <button
+                        onClick={() => setTutorialEnabled(prev => !prev)}
+                        className={`w-full flex items-center justify-between rounded-2xl border px-4 py-3 text-left transition ${tutorialEnabled ? 'border-[var(--highlight)] bg-[var(--highlight)]/10 text-[var(--highlight)]' : 'border-transparent bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10'}`}>
+                        <div>
+                            <p className="text-sm font-bold">Tutorial interactivo</p>
+                            <p className="text-xs opacity-60">Muestra ayudas al abrir la app y al entrar a funciones nuevas.</p>
+                        </div>
+                        <div className={`w-10 h-6 rounded-full transition-all ${tutorialEnabled ? 'bg-[var(--highlight)]' : 'bg-gray-400/30'} relative`}>
+                            <div className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-all ${tutorialEnabled ? 'left-5' : 'left-1'}`} />
+                        </div>
+                    </button>
+                    <button
+                        onClick={onRestartTutorial}
+                        className="mt-3 w-full py-2.5 rounded-xl text-sm font-bold bg-black/5 dark:bg-white/5 hover:opacity-80 transition"
+                    >
+                        Ver tutorial de nuevo
+                    </button>
+                </div>
+
+{/* ── SYNC CARPETA LOCAL ── */}
                 {typeof window !== 'undefined' && window.electronAPI && (
                     <div className="mb-6 pt-5 border-t" style={{ borderColor: 'var(--border-color)' }}>
                         <label className="block text-xs font-black mb-1 opacity-50 uppercase tracking-widest pl-1">📁 Sync de progreso local</label>
@@ -282,6 +322,29 @@ const SettingsPanel = ({
                             </div>
                         </div>
                     )}
+                </div>
+
+                {/* ── ACERCA DE ── */}
+                <div className="mt-6 pt-5 border-t" style={{ borderColor: 'var(--border-color)' }}>
+                    <label className="block text-xs font-black mb-3 opacity-50 uppercase tracking-widest pl-1">Acerca de</label>
+                    <div className="rounded-2xl border border-white/5 bg-black/5 dark:bg-white/[0.03] p-4 space-y-2">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-black opacity-60">Versión</span>
+                            <span className="text-xs font-bold opacity-90">2.7.1</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-black opacity-60">Desarrollador</span>
+                            <span className="text-xs font-bold opacity-90">David Bonilla</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-black opacity-60">App</span>
+                            <span className="text-xs font-bold opacity-90">SharkReader</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-black opacity-60">Stack</span>
+                            <span className="text-xs font-bold opacity-60">Electron · React · Vite</span>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

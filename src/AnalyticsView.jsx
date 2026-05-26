@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ACHIEVEMENTS, RARITY } from './achievements';
+import { ACHIEVEMENTS, RARITY, isAchievementVisible } from './achievements';
 
 const MONTHS_SHORT = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 const DAYS_SHORT = ['D', 'L', 'M', 'X', 'J', 'V', 'S'];
@@ -42,7 +42,7 @@ const AchievementCard = ({ achievement, unlocked, unlockedAt }) => {
     );
 };
 
-const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, initialTab = 'stats', onBack }) => {
+const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, addons = {}, addonConfig = {}, initialTab = 'stats', onBack }) => {
     const [activeTab, setActiveTab] = useState(initialTab);
 
     // ── Heatmap ──────────────────────────────────────────────────────────────
@@ -132,7 +132,9 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, ini
         { id: 'achievements', label: '🏆 Logros' },
     ];
 
-    const unlockedCount = Object.keys(achievements).length;
+    const achievementContext = { stats, books, vocabulary, achievements, yearlyGoal, addons, addonConfig };
+    const visibleAchievements = ACHIEVEMENTS.filter(achievement => isAchievementVisible(achievement, achievementContext, achievements));
+    const visibleUnlockedCount = visibleAchievements.filter(achievement => achievements[achievement.id]).length;
 
     return (
         <div className="w-full h-full flex flex-col" style={{ backgroundColor: 'var(--bg-color)', color: 'var(--text-color)' }}>
@@ -156,6 +158,18 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, ini
                             {tab.label}
                         </button>
                     ))}
+                    <button title="Exportar estadísticas" onClick={() => {
+                        const payload = { stats, booksCount: books.length, booksFinished, daysRead, avgSession, totalBookmarks, vocabulary: vocabulary.length, top5: books.filter(b => b.readingMinutes > 0).sort((a,z) => z.readingMinutes - a.readingMinutes).slice(0,5).map(b => ({ name: b.name, author: b.author, mins: b.readingMinutes, progress: b.progress })) };
+                        const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
+                        const a = document.createElement('a'); a.href = url; a.download = 'SharkReader_Stats.json'; a.click(); URL.revokeObjectURL(url);
+                    }} className="px-2 py-1.5 rounded-xl text-xs font-bold opacity-60 hover:opacity-100 hover:bg-white/20 transition">.JSON</button>
+                    <button title="Exportar como CSV" onClick={() => {
+                        const top5 = books.filter(b => b.readingMinutes > 0).sort((a,z) => z.readingMinutes - a.readingMinutes).slice(0,5);
+                        const rows = [['Libro','Autor','Minutos','Progreso','Terminado'], ...top5.map(b => [b.name, b.author||'', b.readingMinutes||0, b.progress||0, b.isFinished?'Sí':'No'])];
+                        const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+                        const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+                        const a = document.createElement('a'); a.href = url; a.download = 'SharkReader_Top5.csv'; a.click(); URL.revokeObjectURL(url);
+                    }} className="px-2 py-1.5 rounded-xl text-xs font-bold opacity-60 hover:opacity-100 hover:bg-white/20 transition">.CSV</button>
                 </div>
             </div>
 
@@ -196,12 +210,12 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, ini
                                     </div>
                                     {/* Weeks */}
                                     {weeks.map((week, wi) => (
-                                        <div key={wi} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                        <div key={week[0]?.date || wi} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                                             <div style={{ height: 16, fontSize: 9, fontWeight: 'bold', opacity: 0.4, lineHeight: '16px', whiteSpace: 'nowrap' }}>
                                                 {monthLabels[wi] ? MONTHS_SHORT[monthLabels[wi].month] : ''}
                                             </div>
-                                            {week.map((day, di) => (
-                                                <div key={di}
+                                            {week.map((day) => (
+                                                <div key={day.date}
                                                     title={day.minutes >= 0 ? `${day.date}: ${day.minutes}min` : ''}
                                                     style={{
                                                         width: 11, height: 11, borderRadius: 2, flexShrink: 0,
@@ -216,8 +230,8 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, ini
                                 {/* Legend */}
                                 <div className="flex items-center gap-2 mt-3" style={{ opacity: 0.5 }}>
                                     <span style={{ fontSize: 9 }}>Menos</span>
-                                    {[0, 5, 20, 40, 70].map((v, i) => (
-                                        <div key={i} style={{ width: 11, height: 11, borderRadius: 2, backgroundColor: heatColor(v), border: '1px solid rgba(255,255,255,0.1)' }} />
+                                    {[0, 5, 20, 40, 70].map((v) => (
+                                        <div key={v} style={{ width: 11, height: 11, borderRadius: 2, backgroundColor: heatColor(v), border: '1px solid rgba(255,255,255,0.1)' }} />
                                     ))}
                                     <span style={{ fontSize: 9 }}>Más</span>
                                 </div>
@@ -257,6 +271,35 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, ini
                                 );
                             })()}
                         </div>
+
+                        {/* Top 5 libros por tiempo */}
+                        {(() => {
+                            const top = books.filter(b => (b.readingMinutes || 0) > 0).sort((a, z) => (z.readingMinutes || 0) - (a.readingMinutes || 0)).slice(0, 5);
+                            if (!top.length) return null;
+                            const maxMins = top[0].readingMinutes || 1;
+                            return (
+                                <div className="rounded-2xl p-5" style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}>
+                                    <h2 className="font-black text-sm mb-4 opacity-80">📚 Top 5 — Más tiempo leyendo</h2>
+                                    <div className="space-y-3">
+                                        {top.map((b, i) => (
+                                            <div key={b.id} className="flex items-center gap-3">
+                                                <span className="text-[10px] font-black opacity-30 w-4 text-right flex-shrink-0">{i + 1}</span>
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex justify-between items-baseline mb-1">
+                                                        <span className="text-xs font-bold truncate">{b.name}</span>
+                                                        <span className="text-[10px] font-black opacity-60 ml-2 flex-shrink-0">{fmtTime(b.readingMinutes)}</span>
+                                                    </div>
+                                                    <div className="w-full h-1.5 rounded-full" style={{ backgroundColor: 'var(--border-color)' }}>
+                                                        <div className="h-full rounded-full" style={{ width: `${Math.round((b.readingMinutes / maxMins) * 100)}%`, backgroundColor: 'var(--highlight)', opacity: 1 - i * 0.15 }} />
+                                                    </div>
+                                                </div>
+                                                {b.isFinished && <span className="text-[10px] flex-shrink-0">✅</span>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            );
+                        })()}
 
                         {/* Annual goal projection */}
                         {yearlyGoal > 0 && (() => {
@@ -313,14 +356,15 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, ini
                         <div className="flex items-center justify-between mb-5">
                             <h2 className="font-black text-lg">Mis Logros</h2>
                             <div className="flex items-center gap-2">
-                                <div className="text-sm font-black" style={{ color: 'var(--highlight)' }}>{unlockedCount} / {ACHIEVEMENTS.length}</div>
+                                <div className="text-sm font-black" style={{ color: 'var(--highlight)' }}>{visibleUnlockedCount} / {visibleAchievements.length}</div>
                                 <div className="w-24 h-2 rounded-full" style={{ backgroundColor: 'var(--border-color)' }}>
-                                    <div className="h-full rounded-full transition-all" style={{ width: `${(unlockedCount / ACHIEVEMENTS.length) * 100}%`, backgroundColor: 'var(--highlight)' }} />
+                                    <div className="h-full rounded-full transition-all" style={{ width: `${visibleAchievements.length ? (visibleUnlockedCount / visibleAchievements.length) * 100 : 0}%`, backgroundColor: 'var(--highlight)' }} />
                                 </div>
                             </div>
                         </div>
                         {['legendary', 'epic', 'rare', 'common'].map(rarity => {
-                            const group = ACHIEVEMENTS.filter(a => a.rarity === rarity);
+                            const group = visibleAchievements.filter(a => a.rarity === rarity);
+                            if (!group.length) return null;
                             const r = RARITY[rarity];
                             return (
                                 <div key={rarity} className="mb-6">

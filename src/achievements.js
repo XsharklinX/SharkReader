@@ -29,6 +29,11 @@ export const ACHIEVEMENTS = [
     { id: 'workshop_user',     emoji: '🔧', name: 'Personalizador',         desc: 'Activa tu primer addon en el Workshop',             rarity: 'common',    condition: ({ addons }) => Object.values(addons || {}).some(Boolean) },
     { id: 'all_themes',        emoji: '🎨', name: 'Disenador',              desc: 'Prueba los 3 temas disponibles',                    rarity: 'rare',      condition: ({ stats }) => (stats.themesUsed || []).length >= 3 },
     { id: 'favorites_10',      emoji: '⭐', name: 'Estanteria Dorada',      desc: 'Marca 10 libros como favoritos',                    rarity: 'epic',      condition: ({ books }) => books.filter((b) => b.isFav).length >= 10 },
+    { id: 'addon_dyslexia',    emoji: 'Aa', name: 'Lectura Comoda',          desc: 'Activa el modo dislexia',                           rarity: 'common',    addonAchievement: true, visibleWhen: ({ addons }) => !!addons?.dyslexiaMode, condition: ({ addons }) => !!addons?.dyslexiaMode },
+    { id: 'addon_sharky',      emoji: '🦈', name: 'Companero de Lectura',     desc: 'Activa la mascota Sharky',                          rarity: 'common',    addonAchievement: true, visibleWhen: ({ addons }) => !!addons?.sharkyMascot, condition: ({ addons }) => !!addons?.sharkyMascot },
+    { id: 'sharky_pet',        emoji: '♥', name: 'Caricia Marina',           desc: 'Acaricia a Sharky con click derecho',               rarity: 'rare',      addonAchievement: true, visibleWhen: ({ addons, stats }) => !!addons?.sharkyMascot || (stats?.sharkyPets || 0) > 0, condition: ({ addons, stats }) => !!addons?.sharkyMascot && (stats?.sharkyPets || 0) >= 1 },
+    { id: 'addon_roulette',    emoji: '🎲', name: 'Azar Controlado',          desc: 'Usa la ruleta de libros',                           rarity: 'rare',      addonAchievement: true, visibleWhen: ({ addons, stats }) => !!addons?.bookRoulette || (stats?.rouletteSpins || 0) > 0, condition: ({ addons, stats }) => !!addons?.bookRoulette && (stats?.rouletteSpins || 0) >= 1 },
+    { id: 'addons_5_active',   emoji: '🧩', name: 'Taller Activo',            desc: 'Ten 5 addons activos al mismo tiempo',              rarity: 'epic',      addonAchievement: true, visibleWhen: ({ addons }) => Object.values(addons || {}).filter(Boolean).length >= 1, condition: ({ addons }) => Object.values(addons || {}).filter(Boolean).length >= 5 },
 ];
 
 export const RARITY = {
@@ -37,6 +42,9 @@ export const RARITY = {
     epic: { label: 'Epico', color: '#a855f7', bg: 'rgba(168,85,247,0.15)', border: 'rgba(168,85,247,0.4)' },
     legendary: { label: 'Legendario', color: '#f59e0b', bg: 'rgba(245,158,11,0.15)', border: 'rgba(245,158,11,0.4)' },
 };
+
+export const isAchievementVisible = (achievement, context = {}, existing = {}) =>
+    !!existing[achievement.id] || !achievement.addonAchievement || !achievement.visibleWhen || achievement.visibleWhen(context);
 
 export const checkNewAchievements = (context, existing) =>
     ACHIEVEMENTS.filter((achievement) => !existing[achievement.id] && achievement.condition(context));

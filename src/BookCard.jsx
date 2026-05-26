@@ -43,6 +43,11 @@ const BookCard = React.memo(({ book, isOpen, onOpen, onContextMenu }) => {
                         )}
                     </div>
                 )}
+                {book.series && book.seriesIndex && (
+                    <div className="absolute top-1.5 left-1.5 bg-black/70 backdrop-blur-sm text-white font-black rounded-md px-1.5 py-0.5 leading-none" style={{ fontSize: '9px', letterSpacing: '0.02em' }}>
+                        #{book.seriesIndex}
+                    </div>
+                )}
                 {!book.loading && (book.progress > 0 || book.lastReadDate > 0) && (
                     <div className="cover-progress-wrapper">
                         <div className="cover-progress-fill" style={{ width: `${book.progress || 0}%` }}></div>

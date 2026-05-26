@@ -1,0 +1,14 @@
+{
+    "files.exclude": {
+        "dist/": true,
+        "dist-renderer/": true
+    },
+    "files.watcherExclude": {
+        "**/dist/**": true,
+        "**/dist-renderer/**": true
+    },
+    "search.exclude": {
+        "**/dist": true,
+        "**/dist-renderer": true
+    }
+}

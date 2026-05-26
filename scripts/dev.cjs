@@ -1,12 +1,41 @@
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const path = require('path');
 const http = require('http');
+
+// Clean up proxy env vars that might interfere with localhost/loopback requests
+delete process.env.http_proxy;
+delete process.env.https_proxy;
+delete process.env.HTTP_PROXY;
+delete process.env.HTTPS_PROXY;
+delete process.env.all_proxy;
+delete process.env.ALL_PROXY;
+delete process.env.no_proxy;
+delete process.env.NO_PROXY;
 
 delete process.env.ELECTRON_RUN_AS_NODE;
 
 const rootDir = path.join(__dirname, '..');
+// Use 127.0.0.1 explicitly — avoids IPv4/IPv6 mismatch where Vite binds ::1
+// but Node's http.get resolves 'localhost' to 127.0.0.1 (Node 17+ behaviour).
 const viteHost = '127.0.0.1';
 const vitePort = '5173';
+
+// Kill any lingering process on the Vite port before starting.
+// Prevents --strictPort from causing an immediate exit on second runs.
+try {
+    if (process.platform === 'win32') {
+        const out = execSync(`netstat -ano -p TCP 2>nul | findstr ":${vitePort} "`, { encoding: 'utf8' });
+        const pids = [...new Set(
+            out.split('\n')
+                .map(l => l.trim().split(/\s+/).pop())
+                .filter(p => p && /^\d+$/.test(p) && p !== '0')
+        )];
+        pids.forEach(pid => {
+            try { execSync(`taskkill /F /PID ${pid} 2>nul`); } catch (_) {}
+        });
+    }
+} catch (_) {}
+
 const vitePackagePath = require.resolve('vite/package.json');
 const vitePackage = require(vitePackagePath);
 const viteBin = path.join(path.dirname(vitePackagePath), vitePackage.bin.vite);
@@ -19,15 +48,23 @@ const rememberOutput = (chunk) => {
 };
 
 // Start Vite dev server
+console.log('⚡ [SharkReader] Starting Vite dev server...');
+
 const vite = spawn(process.execPath, [viteBin, '--host', viteHost, '--port', vitePort, '--strictPort'], {
     cwd: rootDir,
     stdio: ['ignore', 'pipe', 'pipe'],
+});
+
+vite.on('error', (err) => {
+    console.error('Vite spawn error:', err);
 });
 
 vite.stdout.pipe(process.stdout);
 vite.stderr.pipe(process.stderr);
 vite.stdout.on('data', rememberOutput);
 vite.stderr.on('data', rememberOutput);
+
+let lastError = null;
 
 // Poll until Vite is ready, then launch Electron
 function waitForVite(retries, cb) {
@@ -40,9 +77,11 @@ function waitForVite(retries, cb) {
     http.get(`http://${viteHost}:${vitePort}`, (res) => {
         res.resume();
         cb();
-    }).on('error', () => {
+    }).on('error', (err) => {
+        lastError = err;
         if (retries <= 0) {
             console.error(`Vite server did not start at http://${viteHost}:${vitePort}.`);
+            console.error('Last connection error:', lastError);
             if (viteLastOutput.trim()) console.error(viteLastOutput.trim());
             process.exit(1);
         }
@@ -50,7 +89,9 @@ function waitForVite(retries, cb) {
     });
 }
 
-waitForVite(100, () => {
+// Small initial delay so Vite has time to either bind or crash before the
+// first poll fires — prevents false "retries exhausted" when Vite exits fast.
+setTimeout(() => waitForVite(120, () => {
     const electronBin = require('electron');
     const electron = spawn(electronBin, [rootDir], {
         stdio: 'inherit',
@@ -60,7 +101,7 @@ waitForVite(100, () => {
         vite.kill();
         process.exit(code ?? 0);
     });
-});
+}), 600);
 
 vite.on('exit', (code) => {
     viteExited = true;

@@ -1,5 +1,9 @@
 @import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,700;1,400&display=swap');
 
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 @font-face {
     font-family: 'OpenDyslexic';
     src: url('https://cdn.jsdelivr.net/npm/opendyslexic@1.0.3/OpenDyslexic-Regular.otf');
@@ -614,6 +618,15 @@ body {
     to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes onboardingSlideRight {
+    from { opacity: 0; transform: translateX(50px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes onboardingSlideLeft {
+    from { opacity: 0; transform: translateX(-50px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
 .slide-in-left {
     animation: slideInLeft 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
 }
@@ -750,6 +763,831 @@ body {
     border: 3px solid var(--bg-color);
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--highlight); }
+
+.addon-dyslexia {
+    letter-spacing: 0.015em;
+    word-spacing: 0.08em;
+}
+
+.addon-dyslexia,
+.addon-dyslexia input,
+.addon-dyslexia textarea,
+.addon-dyslexia button,
+.addon-dyslexia select {
+    font-family: "OpenDyslexic", "Atkinson Hyperlegible", Verdana, Arial, sans-serif !important;
+}
+
+.addon-dyslexia .book-info-under .title,
+.addon-dyslexia .book-info-under .author {
+    line-height: 1.45;
+}
+
+.addon-dynamic-covers .book-container .book-cover {
+    transition: transform 260ms ease, box-shadow 260ms ease, filter 260ms ease;
+}
+
+.addon-dynamic-covers .book-container:hover .book-cover {
+    transform: translateY(-6px) rotateX(2deg);
+    box-shadow: 0 22px 45px rgba(14, 165, 233, 0.22);
+}
+
+.addon-dynamic-covers .favorite-badge + .book-cover,
+.addon-dynamic-covers .ring-2 .book-cover {
+    animation: coverPulse 3.8s ease-in-out infinite;
+}
+
+@keyframes coverPulse {
+    0%, 100% { filter: saturate(1); }
+    50% { filter: saturate(1.14) brightness(1.04); }
+}
+
+/* ── Sharky companion widget ────────────────────────────────── */
+.sharky-wrap {
+    position: fixed;
+    z-index: 120;
+    --sm-accent: #6366f1;
+    --sm-accent-soft: rgba(99,102,241,0.18);
+}
+
+/* ── Mascot button: card-shaped, accent strip on left ── */
+.sharky-mascot {
+    position: relative;
+    display: flex;
+    align-items: center;
+    padding: 7px 10px 7px 10px;
+    border-radius: 18px;
+    border: 1px solid rgba(255,255,255,0.09);
+    background: rgba(13,19,35,0.95);
+    box-shadow: 0 8px 28px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.05);
+    backdrop-filter: blur(18px);
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+    color: white;
+    transition: box-shadow 0.22s, transform 0.16s;
+    overflow: hidden;
+}
+
+/* Mood accent strip */
+.sharky-mascot::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 6px; bottom: 6px;
+    width: 3px;
+    background: var(--sm-accent);
+    border-radius: 0 3px 3px 0;
+    transition: background 0.5s ease;
+}
+
+.sharky-mascot:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 14px 36px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.07);
+}
+
+.sharky-mascot.is-dragging {
+    cursor: grabbing;
+    transform: scale(1.05);
+}
+
+.sharky-mascot.mood-celebrate {
+    animation: sharkyBounce 1.8s ease-in-out infinite;
+}
+.sharky-mascot.mood-focus {
+    box-shadow: 0 8px 28px rgba(0,0,0,0.45), 0 0 0 2px rgba(16,185,129,0.3);
+}
+.sharky-mascot.mood-sleepy {
+    filter: brightness(0.85);
+}
+.sharky-mascot.chat-open {
+    opacity: 0.8;
+}
+.sharky-mascot.is-speaking {
+    box-shadow: 0 12px 32px rgba(0,0,0,0.5), 0 0 0 2px color-mix(in srgb, var(--sm-accent) 42%, transparent);
+}
+.sharky-mascot.is-speaking .sharky-sprite {
+    animation: sharkyTalkBob 0.32s ease-in-out infinite alternate;
+}
+
+/* ── Mood toast ─────────────────────────────────────────────── */
+.sharky-toast {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 10px);
+    min-width: 160px;
+    max-width: 230px;
+    padding: 8px 12px 8px 14px;
+    border-radius: 10px;
+    border-left: 3px solid var(--sm-accent);
+    background: rgba(13,19,35,0.97);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+    backdrop-filter: blur(14px);
+    color: rgba(255,255,255,0.85);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.45;
+    pointer-events: none;
+    animation: sharkyToastIn 0.2s ease;
+}
+
+@keyframes sharkyToastIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Quick menu ─────────────────────────────────────────────── */
+.sharky-menu {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 12px);
+    width: 300px;
+    max-height: min(84vh, calc(100vh - 100px));
+    overflow-y: auto;
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 20px;
+    background: rgba(13,19,35,0.98);
+    box-shadow: 0 24px 60px rgba(0,0,0,0.6);
+    backdrop-filter: blur(22px);
+    color: white;
+    animation: sharkyMenuIn 0.2s ease;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.08) transparent;
+}
+
+@keyframes sharkyMenuIn {
+    from { opacity: 0; transform: translateY(8px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Menu header */
+.sharky-menu-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+
+.sharky-menu-head > span {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 14px;
+    background: var(--sm-accent-soft);
+    flex-shrink: 0;
+}
+
+.sharky-menu-head p {
+    font-size: 14px;
+    font-weight: 800;
+    line-height: 1.2;
+}
+
+.sharky-menu-head small {
+    font-size: 10px;
+    font-weight: 600;
+    opacity: 0.42;
+    letter-spacing: 0.05em;
+}
+
+/* Daily goal progress */
+.sharky-goal {
+    padding: 10px 16px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.sharky-goal-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 7px;
+}
+
+.sharky-goal-label span {
+    font-size: 9px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    opacity: 0.38;
+}
+
+.sharky-goal-label b {
+    font-size: 11px;
+    font-weight: 800;
+    color: var(--sm-accent);
+}
+
+.sharky-goal-track {
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.07);
+    overflow: hidden;
+}
+
+.sharky-goal-fill {
+    height: 100%;
+    border-radius: inherit;
+    background: var(--sm-accent);
+    transition: width 0.5s cubic-bezier(0.22,1,0.36,1);
+    max-width: 100%;
+}
+
+/* Celebration strip */
+.sharky-summary {
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    background: var(--sm-accent-soft);
+    border-left: 3px solid var(--sm-accent);
+}
+
+.sharky-summary b {
+    display: block;
+    font-size: 9px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--sm-accent);
+    opacity: 0.9;
+}
+
+.sharky-summary span {
+    display: block;
+    margin-top: 3px;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.sharky-summary small {
+    display: block;
+    margin-top: 2px;
+    font-size: 10px;
+    opacity: 0.5;
+    font-weight: 600;
+}
+
+.sharky-summary button {
+    margin-top: 8px;
+    padding: 4px 10px;
+    font-size: 10px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.75);
+    width: auto;
+}
+
+/* Quick action icon grid */
+.sharky-action-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    padding: 12px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.sharky-action-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    padding: 10px 4px;
+    border-radius: 13px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.07);
+    color: rgba(255,255,255,0.75);
+    cursor: pointer;
+    transition: background 0.14s, transform 0.14s, border-color 0.14s, color 0.14s;
+    width: 100%;
+    margin: 0;
+    text-align: center;
+}
+
+.sharky-action-btn:hover {
+    background: rgba(255,255,255,0.1);
+    border-color: rgba(255,255,255,0.13);
+    transform: translateY(-2px);
+    color: white;
+}
+
+.sharky-action-btn .sa-icon {
+    font-size: 20px;
+    line-height: 1;
+}
+
+.sharky-action-btn .sa-label {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    opacity: 0.7;
+    line-height: 1.2;
+}
+
+/* Config toggle row */
+.sharky-config-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 16px;
+    font-size: 10px;
+    font-weight: 700;
+    opacity: 0.4;
+    background: transparent;
+    border-radius: 0;
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    transition: opacity 0.14s, background 0.14s;
+    color: white;
+}
+
+.sharky-config-toggle:hover {
+    opacity: 0.7;
+    background: rgba(255,255,255,0.04);
+    transform: none;
+}
+
+.sharky-hidden-config { display: none !important; }
+
+/* Config sections */
+.sharky-menu-section {
+    padding: 10px 16px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+}
+
+.sharky-menu-section label {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 9px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    opacity: 0.38;
+}
+
+/* Inputs */
+.sharky-name-input {
+    width: 100%;
+    margin: 4px 0 8px;
+    padding: 8px 10px;
+    border: 1px solid rgba(255,255,255,0.11);
+    border-radius: 10px;
+    color: white;
+    background: rgba(255,255,255,0.06);
+    font-size: 12px;
+    font-weight: 700;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.sharky-name-input:focus {
+    border-color: var(--sm-accent);
+    box-shadow: 0 0 0 3px var(--sm-accent-soft);
+}
+
+/* Personality / visibility chips */
+.sharky-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.sharky-chip-row button {
+    width: auto;
+    margin: 0;
+    padding: 5px 10px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: rgba(255,255,255,0.65);
+    transition: background 0.12s, color 0.12s;
+}
+
+.sharky-chip-row button:hover {
+    background: rgba(255,255,255,0.13);
+    color: white;
+    transform: none;
+}
+
+.sharky-chip-row button.active,
+.sharky-cosmetics button.active {
+    background: var(--sm-accent);
+    border-color: transparent;
+    color: white;
+}
+
+/* Cosmetics */
+.sharky-cosmetics {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 5px;
+}
+
+.sharky-cosmetics button {
+    width: 100%;
+    margin: 0;
+    padding: 7px 4px;
+    text-align: center;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.07);
+}
+
+.sharky-cosmetics button:disabled {
+    cursor: not-allowed;
+    filter: grayscale(1);
+    opacity: 0.28;
+}
+
+.sharky-cosmetics span { display: grid; place-items: center; min-height: 26px; }
+.sharky-cosmetics small { display: block; margin-top: 2px; font-size: 8px; opacity: 0.55; }
+
+/* AI config */
+.sharky-ai-config { display: flex; flex-direction: column; gap: 4px; }
+.sharky-ai-toggle { font-size: 11px; padding: 3px 10px; border-radius: 999px; width: auto; margin: 0; border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.6); }
+.sharky-ai-toggle.active { background: var(--sm-accent); border-color: transparent; color: white; }
+
+/* Generic buttons inside config area (e.g. test connection) */
+.sharky-menu-section > button,
+.sharky-ai-config > button {
+    width: 100%;
+    padding: 7px 10px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 700;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.09);
+    color: rgba(255,255,255,0.75);
+    text-align: center;
+    transition: background 0.14s, color 0.14s;
+}
+
+.sharky-menu-section > button:hover,
+.sharky-ai-config > button:hover {
+    background: rgba(255,255,255,0.13);
+    color: white;
+    transform: none;
+}
+
+.sharky-menu-section > button:disabled,
+.sharky-ai-config > button:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+/* ── Chat panel ─────────────────────────────────────────────── */
+.sharky-chat {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 12px);
+    width: 320px;
+    height: min(480px, calc(100vh - 110px));
+    display: flex;
+    flex-direction: column;
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 20px;
+    background: rgba(13,19,35,0.98);
+    box-shadow: 0 24px 60px rgba(0,0,0,0.65);
+    backdrop-filter: blur(22px);
+    overflow: hidden;
+    animation: sharkyChatIn 0.22s ease;
+}
+
+@keyframes sharkyChatIn {
+    from { opacity: 0; transform: translateY(10px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Chat header */
+.sharky-chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    flex-shrink: 0;
+    background: rgba(255,255,255,0.02);
+}
+
+.sharky-chat-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.sharky-chat-title {
+    font-size: 13px;
+    font-weight: 800;
+    color: white;
+    line-height: 1;
+}
+
+.sharky-chat-ai-badge {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 5px;
+    padding: 1px 5px;
+    font-size: 8px;
+    font-weight: 800;
+    border-radius: 5px;
+    background: var(--sm-accent);
+    color: white;
+    vertical-align: middle;
+    letter-spacing: 0.06em;
+}
+
+.sharky-chat-header-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.sharky-chat-icon-btn {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    margin: 0;
+    border-radius: 8px;
+    font-size: 11px;
+    display: grid;
+    place-items: center;
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.45);
+    transition: background 0.12s;
+}
+
+.sharky-chat-icon-btn:hover {
+    background: rgba(255,255,255,0.12);
+    color: white;
+    transform: none;
+}
+
+/* Book action strip */
+.sharky-chat-book-strip {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 7px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.015);
+    flex-shrink: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.sharky-chat-book-strip::-webkit-scrollbar { display: none; }
+
+.sharky-chat-book-chip {
+    flex-shrink: 0;
+    padding: 4px 10px;
+    border-radius: 7px;
+    font-size: 10px;
+    font-weight: 700;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: rgba(255,255,255,0.65);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+    white-space: nowrap;
+    width: auto;
+    margin: 0;
+}
+
+.sharky-chat-book-chip:hover {
+    background: rgba(255,255,255,0.12);
+    color: white;
+    transform: none;
+}
+
+.sharky-chat-book-chip.ai-chip {
+    border-color: rgba(99,102,241,0.4);
+    color: rgba(148,151,255,0.9);
+}
+
+/* Messages */
+.sharky-chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.07) transparent;
+}
+
+/* Welcome screen */
+.sharky-chat-welcome {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 18px 8px;
+    text-align: center;
+}
+
+.sharky-chat-welcome p {
+    font-size: 12px;
+    color: rgba(255,255,255,0.6);
+    line-height: 1.5;
+}
+
+.sharky-chat-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+}
+
+.sharky-chat-suggestion {
+    padding: 5px 11px;
+    border-radius: 7px;
+    font-size: 10px;
+    font-weight: 700;
+    background: rgba(255,255,255,0.07);
+    color: rgba(255,255,255,0.65);
+    border: 1px solid rgba(255,255,255,0.09);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+    width: auto;
+    margin: 0;
+}
+
+.sharky-chat-suggestion:hover {
+    background: rgba(255,255,255,0.13);
+    color: white;
+    transform: none;
+}
+
+/* ── Messages: annotation style ─────────────────────────────── */
+.sharky-chat-msg {
+    display: flex;
+    flex-direction: column;
+    animation: sharkyChatMsgIn 0.18s ease;
+}
+
+@keyframes sharkyChatMsgIn {
+    from { opacity: 0; transform: translateY(5px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Sharky messages: left border accent, no bubble background */
+.sharky-chat-msg.is-sharky {
+    align-items: flex-start;
+    padding-left: 10px;
+    border-left: 2px solid var(--sm-accent);
+    margin-left: 2px;
+}
+
+/* User messages: right-aligned filled block */
+.sharky-chat-msg.is-user {
+    align-items: flex-end;
+}
+
+.sharky-chat-bubble {
+    max-width: 84%;
+    font-size: 12px;
+    line-height: 1.55;
+    word-break: break-word;
+}
+
+.is-sharky .sharky-chat-bubble {
+    color: rgba(255,255,255,0.85);
+    padding: 0;
+}
+
+.is-user .sharky-chat-bubble {
+    background: rgba(255,255,255,0.09);
+    color: rgba(255,255,255,0.9);
+    padding: 8px 12px;
+    border-radius: 12px 12px 4px 12px;
+}
+
+/* Typing dots */
+.sharky-typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 0;
+    min-width: 32px;
+}
+
+.sharky-typing-indicator span {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--sm-accent);
+    animation: sharkyTypingDot 1.2s infinite ease-in-out;
+    opacity: 0.7;
+}
+
+.sharky-typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+.sharky-typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes sharkyTypingDot {
+    0%, 80%, 100% { transform: scale(0.7); opacity: 0.4; }
+    40%            { transform: scale(1);   opacity: 1; }
+}
+
+/* Input row — underline style */
+.sharky-chat-input-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-top: 1px solid rgba(255,255,255,0.07);
+    flex-shrink: 0;
+}
+
+.sharky-chat-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid rgba(255,255,255,0.14);
+    border-radius: 0;
+    padding: 5px 2px;
+    font-size: 12px;
+    color: white;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.sharky-chat-input::placeholder { color: rgba(255,255,255,0.22); }
+
+.sharky-chat-input:focus { border-bottom-color: var(--sm-accent); }
+
+.sharky-chat-input:disabled { opacity: 0.4; }
+
+.sharky-chat-send {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    padding: 0;
+    margin: 0;
+    font-size: 12px;
+    display: grid;
+    place-items: center;
+    background: var(--sm-accent);
+    color: white;
+    flex-shrink: 0;
+    transition: opacity 0.15s;
+}
+
+.sharky-chat-send:hover:not(:disabled) { opacity: 0.82; transform: none; }
+
+.sharky-chat-send:disabled {
+    opacity: 0.25;
+    cursor: not-allowed;
+}
+
+@keyframes sharkyBounce {
+    0%, 100% { transform: translateY(0); }
+    50%       { transform: translateY(-5px); }
+}
+
+@keyframes sharkyTalkBob {
+    from { transform: translateY(0); }
+    to { transform: translateY(-1px); }
+}
+
+@keyframes sharkyHeartPop {
+    0%   { opacity: 0; transform: translateY(4px) scale(0.7); }
+    18%  { opacity: 1; transform: translateY(-2px) scale(1.12); }
+    100% { opacity: 0; transform: translateY(-22px) scale(1); }
+}
+
+/* ── Sharky heart ───────────────────────────────────────────── */
+.sharky-heart {
+    position: absolute;
+    right: -2px;
+    top: -6px;
+    z-index: 2;
+    color: #fb7185;
+    font-size: 18px;
+    text-shadow: 0 6px 14px rgba(244,63,94,0.35);
+    animation: sharkyHeartPop 1.1s ease-out forwards;
+    pointer-events: none;
+}
+
+.sharky-sprite {
+    display: block;
+    overflow: visible;
+    image-rendering: pixelated;
+}
+
+.book-roulette-modal {
+    width: min(520px, 100%);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 30px;
+    padding: 28px;
+    color: white;
+    background:
+        radial-gradient(circle at 20% 10%, rgba(14,165,233,0.24), transparent 34%),
+        linear-gradient(145deg, rgba(15,23,42,0.98), rgba(30,41,59,0.96));
+    box-shadow: 0 30px 90px rgba(2, 6, 23, 0.55);
+}
 
 /* Zonas de navegación del lector */
 .reader-nav-zone {

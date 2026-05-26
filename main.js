@@ -732,6 +732,43 @@ ipcMain.handle('start-folder-import', async () => {
     };
 });
 
+ipcMain.handle('start-folder-import-path', async (_e, rootPath) => {
+    if (!mainWindow || !rootPath) return null;
+    try {
+        const stats = fs.statSync(rootPath);
+        if (!stats.isDirectory()) return null;
+    } catch {
+        return null;
+    }
+
+    const sessionId = `folder-import-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    folderImportSessions.set(sessionId, {
+        sessionId,
+        rootPath,
+        cancelled: false,
+        discovered: 0,
+        imported: 0,
+        total: 0,
+    });
+
+    setTimeout(() => {
+        runFolderImportSession(sessionId, rootPath).catch((err) => {
+            notifyRenderer('folder-import-done', {
+                sessionId,
+                cancelled: false,
+                total: 0,
+                imported: 0,
+                error: err.message,
+            });
+        });
+    }, 0);
+
+    return {
+        sessionId,
+        folderName: path.basename(rootPath),
+    };
+});
+
 ipcMain.handle('cancel-folder-import', async (_e, sessionId) => {
     const session = folderImportSessions.get(sessionId);
     if (session) session.cancelled = true;
