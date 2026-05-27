@@ -197,6 +197,78 @@ const WorkshopPanel = ({
                                                     </label>
                                                 </div>
                                             )}
+
+                                            {addon.id === 'dyslexiaMode' && enabled && (
+                                                <div className="mt-3 space-y-2 text-[10px] font-bold opacity-75" onClick={e => e.stopPropagation()}>
+                                                    <div className="flex items-center gap-2">
+                                                        <span>{lang === 'es' ? 'Tamaño de texto:' : 'Text size:'}</span>
+                                                        <select
+                                                            value={config.fontScale || '1.1'}
+                                                            onChange={e => onUpdateAddonConfig(addon.id, { fontScale: e.target.value })}
+                                                            className="rounded-lg bg-black/10 px-2 py-1 outline-none dark:bg-white/10">
+                                                            <option value="1.0">{lang === 'es' ? 'Normal' : 'Normal'}</option>
+                                                            <option value="1.1">{lang === 'es' ? 'Grande' : 'Large'}</option>
+                                                            <option value="1.2">{lang === 'es' ? 'Más grande' : 'Larger'}</option>
+                                                        </select>
+                                                    </div>
+                                                    <label className="flex items-center gap-2 cursor-pointer">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={config.strongerContrast !== false}
+                                                            onChange={e => onUpdateAddonConfig(addon.id, { strongerContrast: e.target.checked })}
+                                                        />
+                                                        {lang === 'es' ? 'Mayor contraste' : 'Stronger contrast'}
+                                                    </label>
+                                                </div>
+                                            )}
+
+                                            {addon.id === 'bookRoulette' && enabled && (
+                                                <div className="mt-3 space-y-1.5 text-[10px] font-bold opacity-75" onClick={e => e.stopPropagation()}>
+                                                    <label className="flex items-center gap-2 cursor-pointer">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={config.onlyUnread !== false}
+                                                            onChange={e => onUpdateAddonConfig(addon.id, { onlyUnread: e.target.checked })}
+                                                        />
+                                                        {lang === 'es' ? 'Solo no leídos' : 'Unread only'}
+                                                    </label>
+                                                    <label className="flex items-center gap-2 cursor-pointer">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={!!config.onlyFavorites}
+                                                            onChange={e => onUpdateAddonConfig(addon.id, { onlyFavorites: e.target.checked })}
+                                                        />
+                                                        {lang === 'es' ? 'Solo favoritos' : 'Favorites only'}
+                                                    </label>
+                                                </div>
+                                            )}
+
+                                            {addon.id === 'levelSystem' && enabled && (
+                                                <div className="mt-3 space-y-2 text-[10px] font-bold opacity-75" onClick={e => e.stopPropagation()}>
+                                                    <label className="flex items-center gap-2">
+                                                        {lang === 'es' ? 'XP por nivel:' : 'XP per level:'}
+                                                        <input
+                                                            type="number"
+                                                            min="50"
+                                                            max="1000"
+                                                            step="50"
+                                                            value={config.xpPerLevel || 100}
+                                                            onChange={e => onUpdateAddonConfig(addon.id, { xpPerLevel: Math.max(50, Number(e.target.value) || 100) })}
+                                                            className="w-16 rounded-lg bg-black/10 px-2 py-1 outline-none dark:bg-white/10"
+                                                        />
+                                                    </label>
+                                                    <div className="flex items-center gap-2">
+                                                        <span>{lang === 'es' ? 'Mostrar como:' : 'Display as:'}</span>
+                                                        <select
+                                                            value={config.displayStyle || 'full'}
+                                                            onChange={e => onUpdateAddonConfig(addon.id, { displayStyle: e.target.value })}
+                                                            className="rounded-lg bg-black/10 px-2 py-1 outline-none dark:bg-white/10">
+                                                            <option value="full">{lang === 'es' ? 'Nivel + XP' : 'Level + XP'}</option>
+                                                            <option value="minimal">{lang === 'es' ? 'Solo nivel' : 'Level only'}</option>
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                            )}
                                         </div>
                                         {!isSoon && (
                                             <div className="relative mt-0.5 flex-shrink-0" style={{ width: 38, height: 22, borderRadius: 11, backgroundColor: enabled ? 'var(--highlight)' : 'rgba(128,128,128,0.25)', transition: 'background-color 0.2s' }}>

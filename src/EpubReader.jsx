@@ -58,7 +58,6 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const saveCfiThrottleRef = useRef(0);         // timestamp of last CFI+stats save in scroll mode
         const autoScrollRafRef = useRef(null);         // rAF id for auto-scroll
         const autoScrollLastTsRef = useRef(0);
-        const navDirectionRef = useRef('next');        // 'next' | 'prev' | 'jump'
         const currentPercentRef = useRef(bookData.progress || 0);
 
         const _bookFontKey = `sr_font_${bookData.id}`;
@@ -278,14 +277,12 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
         const prevPage = useCallback(() => {
             if (renditionRef.current && readFlow === 'paginated') {
-                navDirectionRef.current = 'prev';
                 doTransition('prev', () => renditionRef.current.prev());
             }
         }, [readFlow, doTransition]);
 
         const nextPage = useCallback(() => {
             if (renditionRef.current && readFlow === 'paginated') {
-                navDirectionRef.current = 'next';
                 doTransition('next', () => renditionRef.current.next());
             }
         }, [readFlow, doTransition]);
@@ -787,7 +784,6 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
         const jumpToToc = (href) => {
             if (renditionRef.current) {
-                navDirectionRef.current = 'jump';
                 renditionRef.current.display(href);
                 setShowToc(false);
             }

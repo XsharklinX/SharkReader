@@ -155,6 +155,7 @@ export function useBookActions({
                     bookmarks: (b.bookmarks || []).filter(bookmark => {
                         if (bookmark.cfi !== cfi) return true;
                         if (note) return bookmark.note !== note;
+                        if (options.kind) return bookmark.kind !== options.kind;
                         const kind = normalizeAnnotationKind(bookmark);
                         return kind !== 'bookmark';
                     }),

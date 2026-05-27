@@ -5,6 +5,36 @@ import { Icons } from './icons';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
 
+const HIGHLIGHT_COLORS = {
+    yellow: 'rgba(250,204,21,0.5)',
+    green:  'rgba(74,222,128,0.5)',
+    blue:   'rgba(96,165,250,0.5)',
+    pink:   'rgba(251,113,133,0.5)',
+};
+
+const HighlightLayer = ({ pageNum, bookmarks }) => {
+    const highlights = (bookmarks || [])
+        .filter(b => b.kind === 'highlight')
+        .map(b => { try { return JSON.parse(b.note); } catch { return null; } })
+        .filter(h => h?.pageNum === pageNum);
+    if (!highlights.length) return null;
+    return (
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+            {highlights.flatMap(h =>
+                h.rects.map((r, i) => (
+                    <div key={`${h.id}-${i}`} style={{
+                        position: 'absolute',
+                        left: `${r.xp * 100}%`, top: `${r.yp * 100}%`,
+                        width: `${r.wp * 100}%`, height: `${r.hp * 100}%`,
+                        background: HIGHLIGHT_COLORS[h.color] || HIGHLIGHT_COLORS.yellow,
+                        borderRadius: '2px',
+                    }} />
+                ))
+            )}
+        </div>
+    );
+};
+
 function formatRemainingText(minutes, lang = 'es') {
     if (!minutes || minutes < 1) return '';
     const hours = Math.floor(minutes / 60);
@@ -29,6 +59,8 @@ const PdfReader = ({
     const textLayerRef2 = useRef(null);
     const containerRef = useRef(null);
     const pageWrapRef = useRef(null);
+    const pageWrap1Ref = useRef(null);
+    const pageWrap2Ref = useRef(null);
     const pdfRef = useRef(null);
     const renderTaskRef = useRef(null);
     const renderTaskRef2 = useRef(null);
@@ -54,6 +86,10 @@ const PdfReader = ({
     const [isSearching, setIsSearching] = useState(false);
     const searchInputRef = useRef(null);
 
+    // Highlights & annotations
+    const [highlightPopup, setHighlightPopup] = useState(null); // { x, y, text, rects, pageNum }
+    const [showAnnotationsPanel, setShowAnnotationsPanel] = useState(false);
+
 
     useEffect(() => {
         if (!focusMode) { setFocusToolbarVisible(true); return; }
@@ -68,7 +104,7 @@ const PdfReader = ({
     }, [focusMode]);
 
     useEffect(() => {
-        setIsBookmarked(bookData.bookmarks?.some(b => b.cfi === String(currentPage) && !b.note?.includes('[Subrayado]') && b.kind !== 'note') || false);
+        setIsBookmarked(bookData.bookmarks?.some(b => b.cfi === String(currentPage) && !b.note?.includes('[Subrayado]') && b.kind !== 'note' && b.kind !== 'highlight') || false);
     }, [currentPage, bookData.bookmarks]);
 
     useEffect(() => {
@@ -257,6 +293,41 @@ const PdfReader = ({
         setPendingNote('');
     };
 
+    const handleTextMouseUp = useCallback((e, pageNum, pageWrapEl) => {
+        setTimeout(() => {
+            const sel = window.getSelection();
+            if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+            const selText = sel.toString().trim();
+            if (selText.length < 2) return;
+            const range = sel.getRangeAt(0);
+            const pageRect = pageWrapEl?.getBoundingClientRect();
+            if (!pageRect || pageRect.width === 0) return;
+            const clientRects = Array.from(range.getClientRects());
+            const rects = clientRects.map(r => ({
+                xp: (r.left - pageRect.left) / pageRect.width,
+                yp: (r.top - pageRect.top) / pageRect.height,
+                wp: r.width / pageRect.width,
+                hp: r.height / pageRect.height,
+            })).filter(r => r.wp > 0.001 && r.hp > 0.001);
+            if (!rects.length) return;
+            const last = clientRects[clientRects.length - 1];
+            setHighlightPopup({ x: last.left + last.width / 2, y: last.bottom, text: selText, rects, pageNum });
+        }, 10);
+    }, []);
+
+    const saveHighlight = useCallback((color) => {
+        if (!highlightPopup) return;
+        const id = `hl-${Date.now()}`;
+        const data = { id, pageNum: highlightPopup.pageNum, rects: highlightPopup.rects, color, text: highlightPopup.text };
+        toggleBookmark(bookData.id, id, JSON.stringify(data), false, { kind: 'highlight' });
+        window.getSelection()?.removeAllRanges();
+        setHighlightPopup(null);
+    }, [highlightPopup, bookData.id, toggleBookmark]);
+
+    const deleteHighlight = useCallback((hlId) => {
+        toggleBookmark(bookData.id, hlId, null, true, { kind: 'highlight' });
+    }, [bookData.id, toggleBookmark]);
+
     const pct = totalPages > 0 ? Math.round((currentPage / totalPages) * 100) : 0;
     const estimatedRemainingText = (() => {
         const readingMinutes = Number(bookData.readingMinutes || 0);
@@ -359,6 +430,11 @@ const PdfReader = ({
                             <button onClick={handleAddPageNote} className="p-1.5 hover:bg-white/15 rounded-xl transition" title="Nota de página">
                                 <Icons.Notes />
                             </button>
+                            <button onClick={() => { setShowAnnotationsPanel(p => !p); setShowSearch(false); }}
+                                className={`p-1.5 rounded-xl transition ${showAnnotationsPanel ? 'bg-white/25' : 'hover:bg-white/15'}`}
+                                title="Anotaciones">
+                                <Icons.AnnotationPanel />
+                            </button>
                             <button onClick={() => setDualPage(p => !p)}
                                 className={`p-1.5 rounded-xl transition hidden sm:flex items-center gap-1 text-xs font-black ${dualPage ? 'bg-white/25' : 'hover:bg-white/15'}`}
                                 title="Doble página">
@@ -382,25 +458,30 @@ const PdfReader = ({
                     <div className="flex items-center justify-center h-full w-full"><div className="loader" /></div>
                 ) : dualPage ? (
                     <div ref={pageWrapRef} className="flex gap-3 items-start">
-                        <div style={{ position: 'relative', display: 'inline-block', lineHeight: 0 }}>
+                        <div ref={pageWrap1Ref} style={{ position: 'relative', display: 'inline-block', lineHeight: 0 }}>
                             <canvas ref={canvasRef} className="shadow-2xl" style={{ maxWidth: '100%', display: 'block', borderRadius: '2px' }} />
+                            <HighlightLayer pageNum={currentPage} bookmarks={bookData.bookmarks} />
                             <div ref={textLayerRef} className="pdf-text-layer"
-                                style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'auto', overflow: 'hidden', opacity: 1, lineHeight: 1 }} />
+                                style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'auto', overflow: 'hidden', opacity: 1, lineHeight: 1 }}
+                                onMouseUp={(e) => handleTextMouseUp(e, currentPage, pageWrap1Ref.current)} />
                         </div>
                         {currentPage + 1 <= totalPages && (
-                            <div style={{ position: 'relative', display: 'inline-block', lineHeight: 0 }}>
+                            <div ref={pageWrap2Ref} style={{ position: 'relative', display: 'inline-block', lineHeight: 0 }}>
                                 <canvas ref={canvasRef2} className="shadow-2xl" style={{ maxWidth: '100%', display: 'block', borderRadius: '2px' }} />
+                                <HighlightLayer pageNum={currentPage + 1} bookmarks={bookData.bookmarks} />
                                 <div ref={textLayerRef2} className="pdf-text-layer"
-                                    style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'auto', overflow: 'hidden', opacity: 1, lineHeight: 1 }} />
+                                    style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'auto', overflow: 'hidden', opacity: 1, lineHeight: 1 }}
+                                    onMouseUp={(e) => handleTextMouseUp(e, currentPage + 1, pageWrap2Ref.current)} />
                             </div>
                         )}
                     </div>
                 ) : (
                     <div ref={pageWrapRef} style={{ position: 'relative', display: 'inline-block', lineHeight: 0 }}>
                         <canvas ref={canvasRef} className="shadow-2xl" style={{ maxWidth: '100%', display: 'block', borderRadius: '2px' }} />
-                        {/* Text layer for selection */}
+                        <HighlightLayer pageNum={currentPage} bookmarks={bookData.bookmarks} />
                         <div ref={textLayerRef} className="pdf-text-layer"
-                            style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'auto', overflow: 'hidden', opacity: 1, lineHeight: 1 }} />
+                            style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'auto', overflow: 'hidden', opacity: 1, lineHeight: 1 }}
+                            onMouseUp={(e) => handleTextMouseUp(e, currentPage, pageWrapRef.current)} />
                     </div>
                 )}
 
@@ -493,6 +574,82 @@ const PdfReader = ({
                                 ))}
                             </div>
                         )}
+                    </div>
+                </div>
+            )}
+
+            {/* ── HIGHLIGHT COLOR PICKER ── */}
+            {highlightPopup && (
+                <div className="fixed z-[600] flex items-center gap-1 p-1.5 rounded-2xl shadow-2xl border"
+                    style={{
+                        left: highlightPopup.x, top: highlightPopup.y + 10,
+                        transform: 'translateX(-50%)',
+                        backgroundColor: 'var(--surface-bg)',
+                        borderColor: 'var(--border-color)',
+                    }}
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={e => e.stopPropagation()}>
+                    {Object.entries(HIGHLIGHT_COLORS).map(([color, bg]) => (
+                        <button key={color} onClick={() => saveHighlight(color)}
+                            className="w-6 h-6 rounded-full transition hover:scale-125 active:scale-110 flex-shrink-0"
+                            style={{ background: bg, border: '2px solid rgba(0,0,0,0.15)' }} />
+                    ))}
+                    <div className="w-px h-5 mx-0.5" style={{ backgroundColor: 'var(--border-color)' }} />
+                    <button onClick={() => { window.getSelection()?.removeAllRanges(); setHighlightPopup(null); }}
+                        className="p-1 opacity-40 hover:opacity-100 transition"><Icons.Close /></button>
+                </div>
+            )}
+
+            {/* ── ANNOTATIONS PANEL ── */}
+            {showAnnotationsPanel && (
+                <div className="absolute right-0 bottom-7 w-80 z-50 flex flex-col shadow-2xl border-l fade-in"
+                    style={{ top: tabs ? '88px' : '64px', backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)' }}
+                    onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center justify-between px-4 py-3 border-b flex-shrink-0"
+                        style={{ borderColor: 'var(--border-color)' }}>
+                        <span className="font-black text-sm" style={{ color: 'var(--text-color)' }}>Anotaciones</span>
+                        <button onClick={() => setShowAnnotationsPanel(false)} className="p-1 opacity-50 hover:opacity-100 transition"><Icons.Close /></button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-2" style={{ maxHeight: '420px' }}>
+                        {(() => {
+                            const items = (bookData.bookmarks || [])
+                                .map(b => {
+                                    if (b.kind === 'highlight') {
+                                        try { const d = JSON.parse(b.note); return { ...b, _page: d.pageNum, _data: d }; } catch { return null; }
+                                    }
+                                    return { ...b, _page: parseInt(b.cfi) || 0 };
+                                })
+                                .filter(Boolean)
+                                .sort((a, z) => a._page - z._page);
+                            if (!items.length) return (
+                                <p className="p-6 text-sm opacity-40 text-center font-medium">Sin anotaciones todavía.</p>
+                            );
+                            return items.map((b, i) => (
+                                <div key={i} className="rounded-xl px-3 py-2.5 mb-1 group hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
+                                    onClick={() => goTo(b._page)}>
+                                    <div className="flex items-start gap-2">
+                                        {b.kind === 'highlight' && (
+                                            <span className="mt-0.5 w-3 h-3 rounded-sm flex-shrink-0"
+                                                style={{ background: HIGHLIGHT_COLORS[b._data.color] || HIGHLIGHT_COLORS.yellow }} />
+                                        )}
+                                        {b.kind === 'note' && <span className="text-sm flex-shrink-0">📝</span>}
+                                        {!b.kind && <span className="text-sm flex-shrink-0">🔖</span>}
+                                        <div className="flex-1 min-w-0">
+                                            <span className="text-[10px] font-black opacity-40 block mb-0.5">Pág. {b._page}</span>
+                                            <p className="text-xs font-medium opacity-80 line-clamp-2">
+                                                {b.kind === 'highlight' ? b._data.text : (b.note || `Página ${b._page}`)}
+                                            </p>
+                                        </div>
+                                        {b.kind === 'highlight' && (
+                                            <button onClick={(e) => { e.stopPropagation(); deleteHighlight(b._data.id); }}
+                                                className="opacity-0 group-hover:opacity-40 hover:!opacity-100 p-1 transition flex-shrink-0">
+                                                <Icons.Close />
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            ));
+                        })()}
                     </div>
                 </div>
             )}
