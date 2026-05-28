@@ -42,8 +42,11 @@ const AchievementCard = ({ achievement, unlocked, unlockedAt }) => {
     );
 };
 
-const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, addons = {}, addonConfig = {}, initialTab = 'stats', onBack }) => {
+const LEVEL_NAMES = ['Aprendiz', 'Curioso', 'Lector', 'Devorador', 'Bibliófilo', 'Sabio', 'Leyenda'];
+
+const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, addons = {}, addonConfig = {}, initialTab = 'stats', onBack, dailyGoalMins = 30, weeklyGoalMins = 120, currentWeekMins = 0, readerLevel, journalEntries = [] }) => {
     const [activeTab, setActiveTab] = useState(initialTab);
+    const [chartPeriod, setChartPeriod] = useState('week');
 
     // ── Heatmap ──────────────────────────────────────────────────────────────
     const weeks = useMemo(() => {
@@ -91,6 +94,44 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, add
     }, [stats.minutesByDay]);
     const maxWeekly = Math.max(...weeklyData.map(w => w.minutes), 1);
 
+    // ── Daily data (last 30 days) ─────────────────────────────────────────
+    const dayData = useMemo(() => {
+        return Array.from({ length: 30 }, (_, i) => {
+            const d = new Date();
+            d.setDate(d.getDate() - (29 - i));
+            return {
+                label: (i === 0 || i === 29 || i % 7 === 0) ? `${d.getDate()}/${d.getMonth() + 1}` : '',
+                minutes: (stats.minutesByDay || {})[d.toDateString()] || 0,
+            };
+        });
+    }, [stats.minutesByDay]);
+    const maxDay = Math.max(...dayData.map(d => d.minutes), 1);
+
+    // ── Monthly data (last 12 months) ─────────────────────────────────────
+    const monthData = useMemo(() => {
+        return Array.from({ length: 12 }, (_, i) => {
+            const d = new Date();
+            d.setDate(1);
+            d.setMonth(d.getMonth() - (11 - i));
+            const y = d.getFullYear(); const m = d.getMonth();
+            const total = Object.entries(stats.minutesByDay || {}).reduce((sum, [dateStr, mins]) => {
+                const dt = new Date(dateStr);
+                return (dt.getFullYear() === y && dt.getMonth() === m) ? sum + mins : sum;
+            }, 0);
+            return { label: MONTHS_SHORT[m], minutes: total };
+        });
+    }, [stats.minutesByDay]);
+    const maxMonth = Math.max(...monthData.map(d => d.minutes), 1);
+
+    // ── Current month minutes ─────────────────────────────────────────────
+    const currentMonthMins = useMemo(() => {
+        const now = new Date(); const y = now.getFullYear(); const m = now.getMonth();
+        return Object.entries(stats.minutesByDay || {}).reduce((sum, [dateStr, mins]) => {
+            const d = new Date(dateStr);
+            return (d.getFullYear() === y && d.getMonth() === m) ? sum + mins : sum;
+        }, 0);
+    }, [stats.minutesByDay]);
+
     // ── Summary stats ─────────────────────────────────────────────────────
     const totalMins = stats.timeRead || 0;
     const daysRead = Object.keys(stats.minutesByDay || {}).filter(k => (stats.minutesByDay[k] || 0) >= 5).length;
@@ -130,6 +171,7 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, add
     const tabs = [
         { id: 'stats', label: '📊 Estadísticas' },
         { id: 'achievements', label: '🏆 Logros' },
+        ...(addons.readingJournal && journalEntries.length > 0 ? [{ id: 'journal', label: '📓 Diario' }] : []),
     ];
 
     const achievementContext = { stats, books, vocabulary, achievements, yearlyGoal, addons, addonConfig };
@@ -179,17 +221,18 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, add
                         {/* Summary cards */}
                         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                             {[
-                                { label: 'Tiempo Total', value: fmtTime(totalMins), icon: '⏱️', color: 'var(--highlight)' },
-                                { label: 'Terminados', value: booksFinished, icon: '✅', color: '#22c55e' },
-                                { label: 'Racha', value: `${stats.streak || 0}d`, icon: '🔥', color: '#f97316' },
-                                { label: 'Sesión Media', value: fmtTime(avgSession), icon: '📈', color: '#3b82f6' },
-                                { label: 'Anotaciones', value: totalBookmarks, icon: '🔖', color: '#f59e0b' },
+                                { label: 'Tiempo Total', value: fmtTime(totalMins), sub: null, icon: '⏱️', color: 'var(--highlight)' },
+                                { label: 'Terminados', value: booksFinished, sub: null, icon: '✅', color: '#22c55e' },
+                                { label: 'Racha', value: `${stats.streak || 0}d`, sub: `Máx: ${stats.maxStreak || 0}d`, icon: '🔥', color: '#f97316' },
+                                { label: 'Sesión Media', value: fmtTime(avgSession), sub: `${daysRead}d activos`, icon: '📈', color: '#3b82f6' },
+                                { label: 'Anotaciones', value: totalBookmarks, sub: null, icon: '🔖', color: '#f59e0b' },
                             ].map(s => (
                                 <div key={s.label} className="rounded-2xl p-3 text-center flex flex-col items-center"
                                     style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}>
                                     <div className="text-xl mb-1">{s.icon}</div>
                                     <div className="text-lg font-black leading-none" style={{ color: s.color }}>{s.value}</div>
-                                    <div className="text-[9px] font-bold uppercase tracking-wider opacity-50 mt-1">{s.label}</div>
+                                    <div className="text-[9px] font-bold uppercase tracking-wider opacity-50 mt-0.5">{s.label}</div>
+                                    {s.sub && <div className="text-[8px] opacity-30 mt-0.5">{s.sub}</div>}
                                 </div>
                             ))}
                         </div>
@@ -238,38 +281,113 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, add
                             </div>
                         </div>
 
-                        {/* Weekly line chart */}
+                        {/* Multi-period chart */}
                         <div className="rounded-2xl p-5" style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}>
-                            <h2 className="font-black text-sm mb-4 opacity-80">📈 Minutos por Semana — Últimas 12</h2>
-                            {maxWeekly <= 1 ? (
-                                <p className="text-sm opacity-40 italic text-center py-6">Comienza a leer para ver la gráfica.</p>
-                            ) : (() => {
-                                const W = 600; const H = 100; const PAD = 10;
-                                const pts = weeklyData.map((d, i) => {
-                                    const x = PAD + (i / (weeklyData.length - 1)) * (W - PAD * 2);
-                                    const y = H - PAD - ((d.minutes / maxWeekly) * (H - PAD * 2));
-                                    return `${x},${y}`;
-                                });
+                            <div className="flex items-center justify-between mb-4">
+                                <h2 className="font-black text-sm opacity-80">📈 Actividad de lectura</h2>
+                                <div className="flex gap-1">
+                                    {[['day', 'Días'], ['week', 'Semanas'], ['month', 'Meses']].map(([p, lbl]) => (
+                                        <button key={p} onClick={() => setChartPeriod(p)}
+                                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition ${chartPeriod === p ? 'text-white' : 'opacity-40 hover:opacity-70'}`}
+                                            style={chartPeriod === p ? { backgroundColor: 'var(--highlight)' } : {}}>
+                                            {lbl}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            {(() => {
+                                const W = 600; const H = 90; const PAD = 10;
+                                if (chartPeriod === 'week') {
+                                    if (maxWeekly <= 1) return <p className="text-sm opacity-40 italic text-center py-6">Comienza a leer para ver la gráfica.</p>;
+                                    const pts = weeklyData.map((d, i) => {
+                                        const x = PAD + (i / (weeklyData.length - 1)) * (W - PAD * 2);
+                                        const y = H - PAD - ((d.minutes / maxWeekly) * (H - PAD * 2));
+                                        return `${x},${y}`;
+                                    });
+                                    return (
+                                        <svg width="100%" viewBox={`0 0 ${W} ${H + 16}`} preserveAspectRatio="none">
+                                            <defs><linearGradient id="wkGrad" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stopColor="var(--highlight)" stopOpacity="0.35" /><stop offset="100%" stopColor="var(--highlight)" stopOpacity="0.03" /></linearGradient></defs>
+                                            <path d={`M ${pts[0]} L ${pts.slice(1).join(' L ')} L ${pts[pts.length - 1].split(',')[0]},${H - PAD} L ${PAD},${H - PAD} Z`} fill="url(#wkGrad)" />
+                                            <polyline points={pts.join(' ')} fill="none" stroke="var(--highlight)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+                                            {weeklyData.map((d, i) => {
+                                                const x = PAD + (i / (weeklyData.length - 1)) * (W - PAD * 2);
+                                                const y = H - PAD - ((d.minutes / maxWeekly) * (H - PAD * 2));
+                                                return <circle key={i} cx={x} cy={y} r="3.5" fill="var(--highlight)" stroke="var(--surface-bg)" strokeWidth="2" />;
+                                            })}
+                                            <text x={PAD} y={H + 14} fontSize="9" fill="currentColor" opacity="0.3">hace 12 sem</text>
+                                            <text x={W - PAD} y={H + 14} fontSize="9" fill="currentColor" opacity="0.3" textAnchor="end">esta sem</text>
+                                        </svg>
+                                    );
+                                }
+                                if (chartPeriod === 'day') {
+                                    if (maxDay <= 1) return <p className="text-sm opacity-40 italic text-center py-6">Comienza a leer para ver la gráfica.</p>;
+                                    const slots = dayData.length;
+                                    const slotW = (W - PAD * 2) / slots;
+                                    const barW = Math.max(1, slotW - 2);
+                                    return (
+                                        <svg width="100%" viewBox={`0 0 ${W} ${H + 16}`} preserveAspectRatio="none">
+                                            {dayData.map((d, i) => {
+                                                const bh = d.minutes > 0 ? Math.max(2, Math.round((d.minutes / maxDay) * (H - PAD))) : 0;
+                                                const x = PAD + i * slotW;
+                                                return (
+                                                    <g key={i}>
+                                                        {bh > 0 && <rect x={x} y={H - bh} width={barW} height={bh} rx="1.5" fill="var(--highlight)" opacity={0.5 + 0.5 * (d.minutes / maxDay)} />}
+                                                        {d.label && <text x={x + barW / 2} y={H + 14} fontSize="8" fill="currentColor" opacity="0.35" textAnchor="middle">{d.label}</text>}
+                                                    </g>
+                                                );
+                                            })}
+                                        </svg>
+                                    );
+                                }
+                                // month
+                                if (maxMonth <= 1) return <p className="text-sm opacity-40 italic text-center py-6">Comienza a leer para ver la gráfica.</p>;
+                                const slots = monthData.length;
+                                const slotW = (W - PAD * 2) / slots;
+                                const barW = Math.max(1, slotW - 4);
                                 return (
                                     <svg width="100%" viewBox={`0 0 ${W} ${H + 16}`} preserveAspectRatio="none">
-                                        <defs>
-                                            <linearGradient id="wkGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-                                                <stop offset="0%" stopColor="var(--highlight)" stopOpacity="0.35" />
-                                                <stop offset="100%" stopColor="var(--highlight)" stopOpacity="0.03" />
-                                            </linearGradient>
-                                        </defs>
-                                        <path d={`M ${pts[0]} L ${pts.slice(1).join(' L ')} L ${pts[pts.length - 1].split(',')[0]},${H - PAD} L ${PAD},${H - PAD} Z`} fill="url(#wkGrad)" />
-                                        <polyline points={pts.join(' ')} fill="none" stroke="var(--highlight)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-                                        {weeklyData.map((d, i) => {
-                                            const x = PAD + (i / (weeklyData.length - 1)) * (W - PAD * 2);
-                                            const y = H - PAD - ((d.minutes / maxWeekly) * (H - PAD * 2));
-                                            return <circle key={i} cx={x} cy={y} r="3.5" fill="var(--highlight)" stroke="var(--surface-bg)" strokeWidth="2" />;
+                                        {monthData.map((d, i) => {
+                                            const bh = d.minutes > 0 ? Math.max(2, Math.round((d.minutes / maxMonth) * (H - PAD))) : 0;
+                                            const x = PAD + i * slotW;
+                                            return (
+                                                <g key={i}>
+                                                    {bh > 0 && <rect x={x} y={H - bh} width={barW} height={bh} rx="2" fill="var(--highlight)" opacity={0.5 + 0.5 * (d.minutes / maxMonth)} />}
+                                                    <text x={x + barW / 2} y={H + 14} fontSize="9" fill="currentColor" opacity="0.4" textAnchor="middle">{d.label}</text>
+                                                </g>
+                                            );
                                         })}
-                                        <text x={PAD} y={H + 14} fontSize="9" fill="currentColor" opacity="0.3">hace 12 sem</text>
-                                        <text x={W - PAD} y={H + 14} fontSize="9" fill="currentColor" opacity="0.3" textAnchor="end">esta sem</text>
                                     </svg>
                                 );
                             })()}
+                        </div>
+
+                        {/* Reading goals */}
+                        <div className="rounded-2xl p-5" style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}>
+                            <h2 className="font-black text-sm mb-4 opacity-80">🎯 Metas de lectura</h2>
+                            <div className="grid grid-cols-3 gap-3">
+                                {[
+                                    { label: 'Hoy', current: stats.currentDailyMins || 0, goal: dailyGoalMins, color: '#3b82f6' },
+                                    { label: 'Esta semana', current: currentWeekMins, goal: weeklyGoalMins, color: '#22c55e' },
+                                    { label: 'Este mes', current: currentMonthMins, goal: weeklyGoalMins * 4, color: '#a855f7' },
+                                ].map(({ label, current, goal, color }) => {
+                                    const pct = Math.min(100, goal > 0 ? Math.round((current / goal) * 100) : 0);
+                                    const done = pct >= 100;
+                                    return (
+                                        <div key={label} className="rounded-xl p-3 flex flex-col gap-1.5"
+                                            style={{ background: 'var(--bg-color)', border: '1px solid var(--border-color)' }}>
+                                            <div className="flex justify-between items-baseline">
+                                                <span className="text-[9px] font-bold uppercase tracking-wider opacity-50">{label}</span>
+                                                <span className="text-[10px] font-black" style={{ color: done ? '#22c55e' : color }}>{done ? '✓' : `${pct}%`}</span>
+                                            </div>
+                                            <div className="text-base font-black leading-none" style={{ color }}>{fmtTime(current)}</div>
+                                            <div className="text-[9px] opacity-35">meta: {fmtTime(goal)}</div>
+                                            <div className="w-full h-1.5 rounded-full mt-0.5" style={{ background: 'var(--border-color)' }}>
+                                                <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: done ? '#22c55e' : color }} />
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
                         </div>
 
                         {/* Top 5 libros por tiempo */}
@@ -348,6 +466,33 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, add
                             );
                         })()}
 
+                        {/* Level system */}
+                        {addons.levelSystem && readerLevel && (
+                            <div className="rounded-2xl p-5" style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}>
+                                <h2 className="font-black text-sm mb-4 opacity-80">⭐ Sistema de Niveles</h2>
+                                <div className="flex items-center gap-4">
+                                    <div className="w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 text-2xl font-black"
+                                        style={{ background: 'linear-gradient(135deg, var(--highlight), #a855f7)', color: 'white' }}>
+                                        {readerLevel.level}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex items-baseline gap-2 mb-0.5">
+                                            <span className="font-black text-sm">{LEVEL_NAMES[Math.min((readerLevel.level || 1) - 1, LEVEL_NAMES.length - 1)]}</span>
+                                            <span className="text-[10px] opacity-40">Niv. {readerLevel.level}</span>
+                                        </div>
+                                        <div className="text-[10px] opacity-45 mb-2">{readerLevel.current} / {readerLevel.xpPerLevel} XP para siguiente nivel</div>
+                                        <div className="w-full h-2 rounded-full" style={{ background: 'var(--border-color)' }}>
+                                            <div className="h-full rounded-full transition-all" style={{ width: `${readerLevel.progress}%`, background: 'linear-gradient(90deg, var(--highlight), #a855f7)' }} />
+                                        </div>
+                                    </div>
+                                    <div className="text-right flex-shrink-0">
+                                        <div className="text-xl font-black" style={{ color: 'var(--highlight)' }}>{readerLevel.xp}</div>
+                                        <div className="text-[9px] opacity-35 uppercase tracking-wider">XP total</div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
                     </div>
                 )}
 
@@ -383,6 +528,47 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, add
                         })}
                     </div>
                 )}
+                {activeTab === 'journal' && (
+                    <div className="p-5 max-w-3xl mx-auto w-full">
+                        <div className="flex items-center justify-between mb-5">
+                            <h2 className="font-black text-lg">Diario de Lectura</h2>
+                            <button onClick={() => {
+                                const lines = ['# Diario de Lectura SharkReader', '', ...journalEntries.map(e => `- **${e.date}** — ${e.bookName} — ${fmtTime(e.minutes)}${e.progress != null ? ` (${Math.round(e.progress * 100)}%)` : ''}`)];
+                                const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' }));
+                                const a = document.createElement('a'); a.href = url; a.download = 'diario_lectura.md'; a.click(); URL.revokeObjectURL(url);
+                            }} className="px-3 py-1.5 rounded-xl text-xs font-bold opacity-60 hover:opacity-100 transition"
+                                style={{ background: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}>
+                                ↓ MD
+                            </button>
+                        </div>
+                        {journalEntries.length === 0 ? (
+                            <p className="text-sm opacity-40 italic text-center py-10">No hay entradas aún. Lee durante al menos un minuto para empezar el diario.</p>
+                        ) : (
+                            <div className="space-y-2">
+                                {journalEntries.map(entry => (
+                                    <div key={entry.id} className="rounded-xl p-3 flex items-center gap-3"
+                                        style={{ background: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}>
+                                        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 text-base"
+                                            style={{ background: 'rgba(var(--highlight-rgb, 59,130,246),0.15)' }}>
+                                            📖
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="text-sm font-bold truncate">{entry.bookName}</div>
+                                            <div className="text-[10px] opacity-50">{entry.date}</div>
+                                        </div>
+                                        <div className="text-right flex-shrink-0">
+                                            <div className="text-sm font-black" style={{ color: 'var(--highlight)' }}>{fmtTime(entry.minutes)}</div>
+                                            {entry.progress != null && (
+                                                <div className="text-[9px] opacity-40">{Math.round(entry.progress * 100)}%</div>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+
             </div>
         </div>
     );

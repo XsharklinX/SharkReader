@@ -15,9 +15,9 @@ delete process.env.NO_PROXY;
 delete process.env.ELECTRON_RUN_AS_NODE;
 
 const rootDir = path.join(__dirname, '..');
-// Use 127.0.0.1 explicitly — avoids IPv4/IPv6 mismatch where Vite binds ::1
-// but Node's http.get resolves 'localhost' to 127.0.0.1 (Node 17+ behaviour).
-const viteHost = '127.0.0.1';
+// Use 'localhost' so polling resolves to the same interface Vite binds to.
+// Node 25 resolves 'localhost' to ::1 (IPv6) — same as Vite's default, avoiding mismatch.
+const viteHost = 'localhost';
 const vitePort = '5173';
 
 // Kill any lingering process on the Vite port before starting.
@@ -50,7 +50,7 @@ const rememberOutput = (chunk) => {
 // Start Vite dev server
 console.log('⚡ [SharkReader] Starting Vite dev server...');
 
-const vite = spawn(process.execPath, [viteBin, '--host', viteHost, '--port', vitePort, '--strictPort'], {
+const vite = spawn(process.execPath, [viteBin, '--port', vitePort, '--strictPort'], {
     cwd: rootDir,
     stdio: ['ignore', 'pipe', 'pipe'],
 });

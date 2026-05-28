@@ -626,6 +626,16 @@ export const SharkyProvider = ({
         setTimeout(() => setSharkyMoodEvent(null), 5000);
     }, [addons.sharkyMascot, lang]);
 
+    const notifyStreakLost = useCallback((streak) => {
+        if (!addons.sharkyMascot) return;
+        const l = lang === 'en' ? 'en' : 'es';
+        const msg = l === 'es'
+            ? `Racha de ${streak} días perdida... ¡No te rindas, puedes volver a empezar!`
+            : `${streak}-day streak lost... Don't give up, start again!`;
+        setSharkyMoodEvent(msg);
+        setTimeout(() => setSharkyMoodEvent(null), 5000);
+    }, [addons.sharkyMascot, lang]);
+
     const notifyNextInSeries = useCallback(({ seriesName, nextBookName }) => {
         if (!addons.sharkyMascot) return;
         const l = lang === 'en' ? 'en' : 'es';
@@ -670,8 +680,8 @@ export const SharkyProvider = ({
 
     useEffect(() => {
         if (!actionsRef) return;
-        actionsRef.current = { notifyMilestone, notifyBookFinished, notifySessionEnd, notifyBookOpened, notifyReadingSpeed, notifyStreakMilestone, notifyBookAnniversary, notifyNextInSeries };
-    }, [actionsRef, notifyMilestone, notifyBookFinished, notifySessionEnd, notifyBookOpened, notifyReadingSpeed, notifyStreakMilestone, notifyBookAnniversary, notifyNextInSeries]);
+        actionsRef.current = { notifyMilestone, notifyBookFinished, notifySessionEnd, notifyBookOpened, notifyReadingSpeed, notifyStreakMilestone, notifyBookAnniversary, notifyNextInSeries, notifyStreakLost };
+    }, [actionsRef, notifyMilestone, notifyBookFinished, notifySessionEnd, notifyBookOpened, notifyReadingSpeed, notifyStreakMilestone, notifyBookAnniversary, notifyNextInSeries, notifyStreakLost]);
 
     const value = {
         sharkyOpen, setSharkyOpen,

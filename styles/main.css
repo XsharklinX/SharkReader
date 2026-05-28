@@ -934,6 +934,7 @@ body {
     width: 300px;
     max-height: min(84vh, calc(100vh - 100px));
     overflow-y: auto;
+    overscroll-behavior: contain;
     border: 1px solid rgba(255,255,255,0.09);
     border-radius: 20px;
     background: rgba(13,19,35,0.98);
@@ -1402,6 +1403,7 @@ body {
 .sharky-chat-messages {
     flex: 1;
     overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 14px;
     display: flex;
     flex-direction: column;

@@ -1548,7 +1548,14 @@ const ANNOTATION_COLOR_META = {
         };
 
         const spinBookRoulette = useCallback(() => {
-            const pool = books.filter(book => !book.loading && book.type !== 'mobi' && (!addonConfig.bookRoulette?.onlyUnread || !book.isFinished));
+            const cfg = addonConfig.bookRoulette || {};
+            let pool = books.filter(book => !book.loading && book.type !== 'mobi');
+            if (cfg.onlyUnread !== false) pool = pool.filter(b => !b.isFinished);
+            if (cfg.onlyFavorites) pool = pool.filter(b => b.isFavorite);
+            if (cfg.filterTag) {
+                const tag = cfg.filterTag.toLowerCase();
+                pool = pool.filter(b => (b.tags || []).some(t => t.toLowerCase().includes(tag)));
+            }
             if (!pool.length) {
                 showNoticeToast('No hay libros disponibles para la ruleta.', 'warning');
                 return;
@@ -1556,7 +1563,7 @@ const ANNOTATION_COLOR_META = {
             const selected = pool[Math.floor(Math.random() * pool.length)];
             setRouletteBook(selected);
             setStats(prev => ({ ...prev, rouletteSpins: (prev.rouletteSpins || 0) + 1 }));
-        }, [addonConfig.bookRoulette?.onlyUnread, books, showNoticeToast]);
+        }, [addonConfig.bookRoulette, books, showNoticeToast]);
 
         const exportAllData = () => {
             if (!userProfile) { alert("Inicia sesión para exportar."); return; }
@@ -2441,18 +2448,17 @@ const ANNOTATION_COLOR_META = {
                                 <div className="space-y-1">
                                     {[
                                         { filter: 'all', icon: <Icons.Library />, label: t.library, count: libraryDerived.counts.all },
-                                        { filter: 'unfinished', icon: <span>🧩</span>, label: 'Sin terminar', count: libraryDerived.counts.unfinished },
                                         { filter: 'reading', icon: <span>📖</span>, label: 'Leyendo', count: libraryDerived.counts.reading },
-                                        { filter: 'unstarted', icon: <span>📚</span>, label: 'Sin empezar', count: libraryDerived.counts.unstarted },
-                                        { filter: 'finished', icon: <span>🏁</span>, label: 'Terminados', count: libraryDerived.counts.finished },
-                                        { filter: 'wishlist', icon: <span>💜</span>, label: 'Wishlist', count: libraryDerived.counts.wishlist },
+                                        { filter: 'unstarted', icon: <span>📚</span>, label: 'Por leer', count: libraryDerived.counts.unstarted },
+                                        { filter: 'finished', icon: <span>✅</span>, label: 'Terminados', count: libraryDerived.counts.finished },
                                         { filter: 'favorites', icon: <Icons.Heart className="text-red-500" />, label: t.favorites, count: libraryDerived.counts.favorites },
+                                        { filter: 'wishlist', icon: <span>💜</span>, label: 'Wishlist', count: libraryDerived.counts.wishlist },
                                         { filter: 'recents', icon: <span>🕐</span>, label: 'Recientes', count: libraryDerived.counts.recents },
                                     ].map(item => (
                                         <button key={item.filter} onClick={() => { setCurrentFilter(item.filter); setView('library'); setSidebarOpen(false); }}
-                                            className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition text-left font-semibold ${currentFilter === item.filter ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
-                                            <span className="opacity-80">{item.icon}</span> {item.label}
-                                            <span className="ml-auto text-xs font-bold px-2 py-1 bg-black/5 dark:bg-white/10 rounded-lg">{item.count}</span>
+                                            className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left font-semibold text-sm ${currentFilter === item.filter ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
+                                            <span className="opacity-70 text-base">{item.icon}</span> {item.label}
+                                            <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md">{item.count}</span>
                                         </button>
                                     ))}
 
@@ -2462,10 +2468,10 @@ const ANNOTATION_COLOR_META = {
                                         return (
                                             <div>
                                                 <button onClick={() => setShowAuthorSection(p => !p)}
-                                                    className="w-full flex items-center gap-4 px-4 py-3 rounded-xl transition text-left font-semibold hover:bg-black/5 dark:hover:bg-white/5">
-                                                    <span className="opacity-80">👤</span> Por Autor
-                                                    <span className="ml-auto text-xs font-bold px-2 py-1 bg-black/5 dark:bg-white/10 rounded-lg">{authors.length}</span>
-                                                    <span className="text-xs opacity-40">{showAuthorSection ? '▲' : '▼'}</span>
+                                                    className="w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left font-semibold text-sm hover:bg-black/5 dark:hover:bg-white/5">
+                                                    <span className="opacity-70 text-base">👤</span> Por Autor
+                                                    <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md">{authors.length}</span>
+                                                    <span className="text-[10px] opacity-40">{showAuthorSection ? '▲' : '▼'}</span>
                                                 </button>
                                                 {showAuthorSection && (
                                                     <div className="ml-4 space-y-0.5 max-h-48 overflow-y-auto">
@@ -2489,10 +2495,10 @@ const ANNOTATION_COLOR_META = {
                                     {libraryDerived.tags.length > 0 && (
                                         <div>
                                             <button onClick={() => setShowTagSection(prev => !prev)}
-                                                className="w-full flex items-center gap-4 px-4 py-3 rounded-xl transition text-left font-semibold hover:bg-black/5 dark:hover:bg-white/5">
-                                                <span className="opacity-80">🏷️</span> Tags
-                                                <span className="ml-auto text-xs font-bold px-2 py-1 bg-black/5 dark:bg-white/10 rounded-lg">{libraryDerived.tags.length}</span>
-                                                <span className="text-xs opacity-40">{showTagSection ? '▲' : '▼'}</span>
+                                                className="w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left font-semibold text-sm hover:bg-black/5 dark:hover:bg-white/5">
+                                                <span className="opacity-70 text-base">🏷️</span> Tags
+                                                <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md">{libraryDerived.tags.length}</span>
+                                                <span className="text-[10px] opacity-40">{showTagSection ? '▲' : '▼'}</span>
                                             </button>
                                             {showTagSection && (
                                                 <div className="ml-4 space-y-0.5 max-h-48 overflow-y-auto">
@@ -2514,12 +2520,12 @@ const ANNOTATION_COLOR_META = {
 
                                     <div>
                                         <button onClick={() => setShowRatingSection(prev => !prev)}
-                                            className="w-full flex items-center gap-4 px-4 py-3 rounded-xl transition text-left font-semibold hover:bg-black/5 dark:hover:bg-white/5">
-                                            <span className="opacity-80">⭐</span> Valoración
-                                            <span className="ml-auto text-xs font-bold px-2 py-1 bg-black/5 dark:bg-white/10 rounded-lg">
+                                            className="w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left font-semibold text-sm hover:bg-black/5 dark:hover:bg-white/5">
+                                            <span className="opacity-70 text-base">⭐</span> Valoración
+                                            <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md">
                                                 {[1, 2, 3, 4, 5].filter(rating => (libraryDerived.ratingCounts.get(rating) || 0) > 0).length}
                                             </span>
-                                            <span className="text-xs opacity-40">{showRatingSection ? '▲' : '▼'}</span>
+                                            <span className="text-[10px] opacity-40">{showRatingSection ? '▲' : '▼'}</span>
                                         </button>
                                         {showRatingSection && (
                                             <div className="ml-4 space-y-0.5">
@@ -2564,10 +2570,10 @@ const ANNOTATION_COLOR_META = {
                                                     onClick={e => e.stopPropagation()}
                                                 />
                                             ) : (
-                                                <button onClick={() => { setCurrentFilter(`collection:${collection.id}`); setView('library'); setSidebarOpen(false); }} className="flex-1 flex items-center gap-2 px-4 py-3 text-left font-semibold min-w-0">
+                                                <button onClick={() => { setCurrentFilter(`collection:${collection.id}`); setView('library'); setSidebarOpen(false); }} className="flex-1 flex items-center gap-2 px-3 py-2 text-left text-sm font-semibold min-w-0">
                                                     <span className="text-base flex-shrink-0">{collection.emoji || '🗂️'}</span>
                                                     <span className="flex-1 truncate">{collection.name}</span>
-                                                    <span className="text-xs font-bold px-2 py-1 bg-black/5 dark:bg-white/10 rounded-lg flex-shrink-0">{libraryDerived.collectionCounts.get(collection.id) || 0}</span>
+                                                    <span className="text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md flex-shrink-0">{libraryDerived.collectionCounts.get(collection.id) || 0}</span>
                                                 </button>
                                             )}
                                             <div className="flex items-center opacity-0 group-hover:opacity-100 transition flex-shrink-0 pr-1 gap-0.5">
@@ -2579,8 +2585,8 @@ const ANNOTATION_COLOR_META = {
                                         </div>
                                     ))}
                                     {manualCollections.length === 0 && (
-                                        <button onClick={() => createManualCollection()} className="w-full flex items-center gap-4 px-4 py-3 rounded-xl transition text-left font-semibold hover:bg-black/5 dark:hover:bg-white/5 opacity-60 hover:opacity-100 border border-dashed border-fuchsia-500/20 mt-2">
-                                            <span className="opacity-80">🗂️</span> Crear Colección
+                                        <button onClick={() => createManualCollection()} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left text-sm font-semibold hover:bg-black/5 dark:hover:bg-white/5 opacity-60 hover:opacity-100 border border-dashed border-fuchsia-500/20 mt-1">
+                                            <span className="opacity-70 text-base">🗂️</span> Crear Colección
                                         </button>
                                     )}
 
@@ -2593,10 +2599,10 @@ const ANNOTATION_COLOR_META = {
                                         const catColor = categoryColors[cat];
                                         return (
                                         <div key={cat} className={`flex items-center rounded-xl transition group ${currentFilter === cat ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
-                                            <button onClick={() => { setCurrentFilter(cat); setView('library'); setSidebarOpen(false); }} className="flex-1 flex items-center gap-3 px-4 py-3 text-left font-semibold">
-                                                <span className="w-3 h-3 rounded-full flex-shrink-0 border border-white/20" style={{ backgroundColor: catColor || 'var(--highlight)' }}></span>
+                                            <button onClick={() => { setCurrentFilter(cat); setView('library'); setSidebarOpen(false); }} className="flex-1 flex items-center gap-3 px-3 py-2 text-left text-sm font-semibold">
+                                                <span className="w-2.5 h-2.5 rounded-full flex-shrink-0 border border-white/20" style={{ backgroundColor: catColor || 'var(--highlight)' }}></span>
                                                 {cat}
-                                                <span className="ml-auto text-xs font-bold px-2 py-1 bg-black/5 dark:bg-white/10 rounded-lg">{libraryDerived.categoryCounts.get(cat) || 0}</span>
+                                                <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md">{libraryDerived.categoryCounts.get(cat) || 0}</span>
                                             </button>
                                             <input type="color" value={catColor || '#6366f1'} title="Color de categoría"
                                                 onChange={e => setCategoryColors(prev => ({ ...prev, [cat]: e.target.value }))}
@@ -2605,8 +2611,8 @@ const ANNOTATION_COLOR_META = {
                                         </div>
                                         );
                                     })}
-                                    <button onClick={addNewCategory} className="w-full flex items-center gap-4 px-4 py-3 rounded-xl transition text-left font-semibold hover:bg-black/5 dark:hover:bg-white/5 opacity-60 hover:opacity-100 border border-dashed border-gray-500/30 mt-2">
-                                        <span className="opacity-80"><Icons.Plus /></span> Añadir Categoría
+                                    <button onClick={addNewCategory} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left text-sm font-semibold hover:bg-black/5 dark:hover:bg-white/5 opacity-60 hover:opacity-100 border border-dashed border-gray-500/30 mt-1">
+                                        <span className="opacity-70"><Icons.Plus /></span> Añadir Categoría
                                     </button>
                                 </div>
                                 <div className="my-5 border-t mx-3" style={{ borderColor: 'var(--border-color)' }}></div>
@@ -3225,6 +3231,11 @@ const ANNOTATION_COLOR_META = {
                                 addons={addons}
                                 addonConfig={addonConfig}
                                 yearlyGoal={yearlyGoal}
+                                dailyGoalMins={dailyGoalMins}
+                                weeklyGoalMins={weeklyGoalMins}
+                                currentWeekMins={currentWeekMins}
+                                readerLevel={readerLevel}
+                                journalEntries={journalEntries}
                                 initialTab={view === 'achievements' ? 'achievements' : 'stats'}
                                 onBack={() => setView('library')}
                             />

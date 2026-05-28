@@ -37,8 +37,9 @@ export function useReadingSession({
                 const todayStr = today.toDateString();
                 const hour = today.getHours();
                 let newStreak = null;
+                let lostStreak = null;
                 setStats(prev => {
-                    let { timeRead = 0, pagesTurned = 0, streak = 0, currentDailyMins = 0, lastActiveDate = '', streakSavers = 0, history = {}, minutesByDay = {}, hourlyLog = {} } = prev;
+                    let { timeRead = 0, pagesTurned = 0, streak = 0, currentDailyMins = 0, lastActiveDate = '', streakSavers = 0, history = {}, minutesByDay = {}, hourlyLog = {}, maxStreak = 0 } = prev;
                     timeRead++;
                     minutesByDay = { ...minutesByDay, [todayStr]: (minutesByDay[todayStr] || 0) + 1 };
                     hourlyLog = { ...hourlyLog, [hour]: (hourlyLog[hour] || 0) + 1 };
@@ -60,14 +61,14 @@ export function useReadingSession({
                                         const d = new Date(lastDateStr); d.setDate(d.getDate() + i);
                                         history[d.toDateString()] = 'saved';
                                     }
-                                } else { streak = 1; streakSavers = 0; }
+                                } else { if (streak > 3) lostStreak = streak; streak = 1; streakSavers = 0; }
                             }
                         } else { streak = 1; }
                         history[todayStr] = 'read';
                         if (streak > 0 && streak % 5 === 0) streakSavers = Math.min(2, streakSavers + 1);
                         newStreak = streak;
                     }
-                    return { timeRead, pagesTurned, streak, currentDailyMins, lastActiveDate, streakSavers, history, minutesByDay, hourlyLog };
+                    return { timeRead, pagesTurned, streak, currentDailyMins, lastActiveDate, streakSavers, history, minutesByDay, hourlyLog, maxStreak: Math.max(maxStreak, streak) };
                 });
                 if (activeBookIdRef.current) {
                     startTransition(() => {
@@ -83,6 +84,9 @@ export function useReadingSession({
                 }
                 if (newStreak !== null) {
                     setTimeout(() => sharkyActionsRef?.current?.notifyStreakMilestone(newStreak), 200);
+                }
+                if (lostStreak !== null) {
+                    setTimeout(() => sharkyActionsRef?.current?.notifyStreakLost?.(lostStreak), 300);
                 }
             }, 60000);
         }

@@ -60,7 +60,7 @@ const SettingsPanel = ({
     return (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center backdrop-blur-sm fade-in" onClick={onClose} onWheel={e => e.stopPropagation()}>
             <div className="rounded-3xl shadow-2xl p-8 w-[540px] max-w-[95%] relative max-h-[90vh] overflow-y-auto"
-                style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}
+                style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)', overscrollBehavior: 'contain' }}
                 onClick={e => e.stopPropagation()} onWheel={e => e.stopPropagation()}>
 
                 <div className="flex justify-between items-center mb-6 border-b pb-4" style={{ borderColor: 'var(--border-color)' }}>

@@ -58,11 +58,11 @@ const WorkshopPanel = ({
     const activeAddonsList = WORKSHOP_ADDONS.filter(addon => addons?.[addon.id] && addon.status === 'active');
 
     return (
-        <div className="fixed inset-0 z-[300] flex items-end justify-center bg-black/60 backdrop-blur-sm fade-in sm:items-center" onClick={onClose}>
+        <div className="fixed inset-0 z-[300] flex items-end justify-center bg-black/60 backdrop-blur-sm fade-in sm:items-center" onClick={onClose} onWheel={e => e.stopPropagation()}>
             <div
                 className="flex w-full flex-col rounded-t-3xl border border-[var(--border-color)] bg-[var(--surface-bg)] shadow-2xl sm:max-w-3xl sm:rounded-3xl"
                 style={{ maxHeight: '90vh' }}
-                onClick={e => e.stopPropagation()}>
+                onClick={e => e.stopPropagation()} onWheel={e => e.stopPropagation()}>
                 <div className="flex flex-shrink-0 items-center justify-between border-b px-6 py-4" style={{ borderColor: 'var(--border-color)' }}>
                     <div className="flex items-center gap-3">
                         <div className="flex h-10 w-10 items-center justify-center rounded-2xl text-xl shadow-md" style={{ background: 'linear-gradient(135deg, var(--topbar-bg), var(--highlight))' }}>🔧</div>
@@ -104,7 +104,7 @@ const WorkshopPanel = ({
                     ))}
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-4">
+                <div className="flex-1 overflow-y-auto p-4" style={{ overscrollBehavior: 'contain' }}>
                     <div className="grid gap-2.5 sm:grid-cols-2">
                         {filtered.map(addon => {
                             const enabled = !!addons?.[addon.id];
@@ -240,6 +240,17 @@ const WorkshopPanel = ({
                                                         />
                                                         {lang === 'es' ? 'Solo favoritos' : 'Favorites only'}
                                                     </label>
+                                                    <div className="pt-0.5">
+                                                        <div className="opacity-60 mb-1">{lang === 'es' ? 'Filtrar por etiqueta' : 'Filter by tag'}</div>
+                                                        <input
+                                                            type="text"
+                                                            value={config.filterTag || ''}
+                                                            onChange={e => onUpdateAddonConfig(addon.id, { filterTag: e.target.value })}
+                                                            placeholder={lang === 'es' ? 'ej: fantasía' : 'e.g. fantasy'}
+                                                            className="w-full px-2 py-1 rounded-lg text-[10px]"
+                                                            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', color: 'inherit', outline: 'none' }}
+                                                        />
+                                                    </div>
                                                 </div>
                                             )}
 

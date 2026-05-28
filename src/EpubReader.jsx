@@ -5,7 +5,7 @@ import { Icons } from './icons';
 import { getCachedLocations, setCachedLocations } from './locationsCache';
 import EpubReaderSettings from './EpubReaderSettings';
 
-function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing }) {
+function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme }) {
     const fontStack =
         fontFamily === 'Georgia' ? 'Georgia,"Times New Roman",serif' :
         fontFamily === 'Lora' ? '"Lora",Georgia,serif' :
@@ -22,12 +22,26 @@ function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg
     if (letterSpacing !== 0) pExtras.push(`letter-spacing:${letterSpacing}em !important`);
     if (hyphenation) pExtras.push('hyphens:auto !important;-webkit-hyphens:auto !important');
     if (paragraphSpacing > 0) pExtras.push(`margin-bottom:${paragraphSpacing}em !important`);
-    return [
+    const lines = [
         `html { font-size:${fontSize}% !important; }`,
         `body { font-size:1rem !important; padding-left:${marginPx}px !important; padding-right:${marginPx}px !important; ${bgRule} }`,
         `html,body,p,span,div,li,blockquote,td,th,a,em,strong,h1,h2,h3,h4,h5,h6,cite,q,small { font-family:${fontStack} !important; }`,
         `p,li,blockquote,div { line-height:${lineHeight} !important; font-kerning:normal !important; font-feature-settings:"kern" 1,"liga" 1,"calt" 1 !important; ${pExtras.join(' ')} }`,
-    ].join('\n');
+    ];
+    // Override hardcoded EPUB backgrounds/colors that break dark and sepia themes
+    if (theme === 'dark') {
+        lines.push(
+            `div,section,aside,article,blockquote,figure,table,thead,tbody,tr,td,th,header,footer,nav,main,dl,dt,dd,form,fieldset,caption,label { background-color:transparent !important; border-color:rgba(255,255,255,0.1) !important; }`,
+            `p,span,li,cite,q,figcaption,small,h1,h2,h3,h4,h5,h6,strong,b,em,i,u,s,sub,sup { color:#cbd5e1 !important; }`,
+            `a { color:#93c5fd !important; }`,
+        );
+    } else if (theme === 'sepia') {
+        lines.push(
+            `div,section,aside,article,blockquote,figure,table,thead,tbody,tr,td,th,header,footer,nav,main,dl,dt,dd { background-color:transparent !important; border-color:rgba(69,26,3,0.2) !important; }`,
+            `p,span,li,cite,q,figcaption,small,h1,h2,h3,h4,h5,h6,strong,b,em,i { color:#451a03 !important; }`,
+        );
+    }
+    return lines.join('\n');
 }
 
 const HIGHLIGHT_PRESETS = {
@@ -84,7 +98,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const [brightness, setBrightness] = useState(100);
         const [dictionaryPopup, setDictionaryPopup] = useState(null);
         const dictCacheRef = useRef({});
-        const stylesRef = useRef({ fontFamily: 'Inter', fontSize: 110, lineHeight: 1.6, pageMargins: 20, customBg: '', textJustify: false, firstLineIndent: false, letterSpacing: 0, hyphenation: false, paragraphSpacing: 0 });
+        const stylesRef = useRef({ fontFamily: 'Inter', fontSize: 110, lineHeight: 1.6, pageMargins: 20, customBg: '', textJustify: false, firstLineIndent: false, letterSpacing: 0, hyphenation: false, paragraphSpacing: 0, theme: 'dark' });
 
         const [showSearch, setShowSearch] = useState(false);
         const [searchQuery, setSearchQuery] = useState('');
@@ -643,9 +657,23 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             };
         }, [bookData.file, readFlow, readLayout]);
 
-        useEffect(() => { if (isReady && renditionRef.current) renditionRef.current.themes.select(theme); }, [theme, isReady]);
         useEffect(() => {
-            const opts = { fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing };
+            if (!isReady || !renditionRef.current) return;
+            renditionRef.current.themes.select(theme);
+            // Re-inject CSS immediately so dark/sepia overrides take effect on current page
+            stylesRef.current = { ...stylesRef.current, theme };
+            const css = buildSharkCss(stylesRef.current);
+            try {
+                renditionRef.current.getContents().forEach(c => {
+                    if (!c?.document?.head) return;
+                    let el = c.document.head.querySelector('#shark-styles');
+                    if (!el) { el = c.document.createElement('style'); el.id = 'shark-styles'; c.document.head.appendChild(el); }
+                    el.textContent = css;
+                });
+            } catch (_) {}
+        }, [theme, isReady]);
+        useEffect(() => {
+            const opts = { fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme };
             stylesRef.current = opts;
             if (!renditionRef.current || !isReady) return;
 
@@ -706,7 +734,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     console.warn('[SharkReader] force re-display fallback failed:', e);
                 }
             }
-        }, [fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, isReady, readFlow]);
+        }, [fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme, isReady, readFlow]);
 
         useEffect(() => {
             try { localStorage.setItem(_bookFontKey, JSON.stringify({ fontSize, fontFamily, lineHeight, pageMargins, paragraphSpacing, textJustify, firstLineIndent, letterSpacing, hyphenation })); } catch (_) {}
@@ -974,9 +1002,9 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             return (
                 <button
                     onClick={onToggleDyslexiaMode}
-                    className={`p-1.5 rounded-xl transition ${dyslexiaModeActive ? 'bg-cyan-400 text-slate-950' : 'hover:bg-white/15'}`}
+                    className={`p-1.5 rounded-xl transition text-xs font-black ${dyslexiaModeActive ? 'bg-cyan-400 text-slate-950' : 'hover:bg-white/15'}`}
                     title={lang === 'en' ? 'Toggle dyslexia mode' : 'Activar/desactivar modo dislexia'}>
-                    ðŸ”¤
+                    <span style={{ fontFamily: 'serif', letterSpacing: '-0.03em' }}>Aa</span>
                 </button>
             );
         };

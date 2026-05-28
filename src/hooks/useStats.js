@@ -4,7 +4,7 @@ import { saveAppData } from '../db';
 export function useStats({ isDbLoaded, isStateHydrated, isResettingRef }) {
     const [stats, setStats] = useState({
         timeRead: 0, pagesTurned: 0, streak: 0, lastStreakDate: '',
-        currentDailyMins: 0, lastActiveDate: '', streakSavers: 0, history: {}, minutesByDay: {}
+        currentDailyMins: 0, lastActiveDate: '', streakSavers: 0, history: {}, minutesByDay: {}, maxStreak: 0
     });
     const persistStatsRef = useRef(null);
 
