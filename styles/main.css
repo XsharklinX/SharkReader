@@ -531,6 +531,7 @@ body {
     margin-top: 12px;
     text-align: left;
     padding: 0 4px;
+    position: relative;
 }
 
 .book-info-under .title {
@@ -799,6 +800,37 @@ body {
 @keyframes coverPulse {
     0%, 100% { filter: saturate(1); }
     50% { filter: saturate(1.14) brightness(1.04); }
+}
+
+/* Enhanced per-state dynamic cover effects */
+.addon-dynamic-covers .book-dynamic-fav .book-cover {
+    animation: favGlow 3.2s ease-in-out infinite alternate;
+}
+@keyframes favGlow {
+    from { box-shadow: 0 0 0 2px rgba(250,204,21,0.25), 0 6px 16px rgba(0,0,0,0.3); filter: saturate(1.05); }
+    to   { box-shadow: 0 0 0 2px rgba(250,204,21,0.55), 0 10px 28px rgba(250,204,21,0.18); filter: saturate(1.18) brightness(1.04); }
+}
+
+.addon-dynamic-covers .book-dynamic-reading .book-cover {
+    animation: readingPulse 2.6s ease-in-out infinite;
+}
+@keyframes readingPulse {
+    0%, 100% { box-shadow: 0 0 0 2px rgba(59,130,246,0.3), 0 6px 16px rgba(0,0,0,0.3); }
+    50%       { box-shadow: 0 0 0 3px rgba(59,130,246,0.65), 0 12px 28px rgba(59,130,246,0.22); }
+}
+
+.addon-dynamic-covers .book-dynamic-done .book-cover {
+    filter: saturate(0.65) brightness(0.88);
+    transition: filter 300ms ease;
+}
+.addon-dynamic-covers .book-dynamic-done:hover .book-cover {
+    filter: saturate(1) brightness(1);
+}
+
+/* Multi-select checkbox overlay */
+.book-select-ring {
+    outline: 3px solid var(--highlight);
+    outline-offset: 2px;
 }
 
 /* ── Sharky companion widget ────────────────────────────────── */

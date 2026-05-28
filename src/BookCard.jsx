@@ -1,7 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { Icons } from './icons';
 
-const BookCard = React.memo(({ book, isOpen, onOpen, onContextMenu }) => {
+const BookCard = React.memo(({
+    book, isOpen, onOpen, onContextMenu,
+    isSelecting = false, isSelected = false, onSelect,
+    onQuickEdit,
+    isDynamic = false,
+}) => {
     const [imageFailed, setImageFailed] = useState(false);
 
     useEffect(() => {
@@ -9,10 +14,36 @@ const BookCard = React.memo(({ book, isOpen, onOpen, onContextMenu }) => {
     }, [book.coverUrl]);
 
     const showCover = Boolean(book.coverUrl && !imageFailed);
+
+    const handleClick = (e) => {
+        if (isSelecting) { onSelect?.(book.id); return; }
+        onOpen(book.id);
+    };
+
+    const dynamicClass = isDynamic ? [
+        book.isFav ? 'book-dynamic-fav' : '',
+        book.lastReadDate > 0 && !book.isFinished ? 'book-dynamic-reading' : '',
+        book.isFinished ? 'book-dynamic-done' : '',
+    ].filter(Boolean).join(' ') : '';
+
     return (
-        <div className={`book-container ${isOpen ? 'ring-2 ring-[var(--highlight)] ring-offset-2 ring-offset-[var(--bg-color)] rounded-lg' : ''}`}
-            onClick={() => onOpen(book.id)} onContextMenu={(e) => onContextMenu(e, book)}>
-            {book.isFav && <div className="favorite-badge"><Icons.Heart fill="white" className="w-3 h-3" /></div>}
+        <div
+            className={`book-container ${isOpen && !isSelecting ? 'ring-2 ring-[var(--highlight)] ring-offset-2 ring-offset-[var(--bg-color)] rounded-lg' : ''} ${isSelected ? 'book-select-ring' : ''} ${dynamicClass}`}
+            onClick={handleClick}
+            onContextMenu={(e) => !isSelecting && onContextMenu(e, book)}>
+
+            {/* Selection checkbox */}
+            {isSelecting && (
+                <div className="absolute top-1.5 right-1.5 z-10 w-5 h-5 rounded-full flex items-center justify-center pointer-events-none"
+                    style={{ background: isSelected ? 'var(--highlight)' : 'rgba(0,0,0,0.5)', border: '2px solid rgba(255,255,255,0.8)' }}>
+                    {isSelected && <span className="text-white font-black leading-none" style={{ fontSize: 10 }}>✓</span>}
+                </div>
+            )}
+
+            {book.isFav && !isSelecting && (
+                <div className="favorite-badge"><Icons.Heart fill="white" className="w-3 h-3" /></div>
+            )}
+
             <div className={`book-cover ${showCover ? 'has-image' : ''} ${book.loading ? 'skeleton-loader' : ''}`}
                 style={{ backgroundColor: showCover ? 'transparent' : book.color }}>
                 {showCover && (
@@ -55,11 +86,20 @@ const BookCard = React.memo(({ book, isOpen, onOpen, onContextMenu }) => {
                     </div>
                 )}
             </div>
-            <div className="book-info-under">
+
+            <div className="book-info-under group/info">
                 <div className="title" title={book.name}>{book.name}</div>
                 <div className="author" title={book.author}>{book.author}</div>
                 {book.series && <div className="text-[10px] opacity-45 mt-0.5 truncate italic">{book.series}{book.seriesIndex ? ` #${book.seriesIndex}` : ''}</div>}
                 {book.rating > 0 && <div className="text-xs mt-1" style={{ color: '#f59e0b', letterSpacing: '-1px' }}>{'★'.repeat(book.rating)}{'☆'.repeat(5 - book.rating)}</div>}
+                {!isSelecting && onQuickEdit && (
+                    <button
+                        className="absolute bottom-1 right-1 opacity-0 group-hover/info:opacity-60 hover:!opacity-100 p-1 rounded-lg transition bg-black/10 dark:bg-white/10 text-[10px] leading-none"
+                        onClick={e => { e.stopPropagation(); onQuickEdit(book.id); }}
+                        title="Edición rápida">
+                        ✏️
+                    </button>
+                )}
             </div>
         </div>
     );

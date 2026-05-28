@@ -18,6 +18,7 @@ import {
 } from './bookModel';
 import { buildPortableBackup, mergeBackupData } from './backupMerge';
 import BookCard from './BookCard';
+import QuickEditCard from './QuickEditCard';
 import SettingsPanel from './SettingsPanel';
 import TabBar from './TabBar';
 import LoginModal from './LoginModal';
@@ -114,6 +115,15 @@ const ANNOTATION_COLOR_META = {
         const [categoryColors, setCategoryColors] = useState(() => safeParse('sharkreader_cat_colors', {}));
         const [contentIndexMap, setContentIndexMap] = useState({});
         const [activeBookModal, setActiveBookModal] = useState(null);
+
+        // ── v2.9: MULTI-SELECT / BULK / COMBINED FILTERS / QUICK EDIT ──
+        const [selectedBookIds, setSelectedBookIds] = useState(() => new Set());
+        const [isSelecting, setIsSelecting] = useState(false);
+        const [filterTags, setFilterTags] = useState([]);
+        const [filterAuthors, setFilterAuthors] = useState([]);
+        const [quickEditBookId, setQuickEditBookId] = useState(null);
+        const [renamingCollectionId, setRenamingCollectionId] = useState(null);
+        const [renamingCollectionValue, setRenamingCollectionValue] = useState('');
 
         // ── USUARIO / STATS ──
         const [userProfile, setUserProfile] = useState(null);
@@ -967,6 +977,10 @@ const ANNOTATION_COLOR_META = {
             if (document.fullscreenElement) document.exitFullscreen();
         }, [activeTabId, closeTab]);
 
+        const toggleSpreadLayout = useCallback(() => {
+            setReadLayout(prev => prev === 'auto' ? 'none' : 'auto');
+        }, []);
+
         const activeTab = tabs.find(t => t.id === activeTabId);
         const currentBookData = useMemo(() => activeTab ? booksById.get(activeTab.bookId) || null : null, [activeTab, booksById]);
         const currentTargetCfi = tabTargetCfi[activeTabId] || null;
@@ -1259,6 +1273,103 @@ const ANNOTATION_COLOR_META = {
             }));
         }, []);
 
+        // ── v2.9 CALLBACKS ──
+
+        const clearSelection = useCallback(() => {
+            setSelectedBookIds(new Set());
+            setIsSelecting(false);
+        }, []);
+
+        const toggleSelectBook = useCallback((bookId) => {
+            setSelectedBookIds(prev => {
+                const next = new Set(prev);
+                if (next.has(bookId)) next.delete(bookId); else next.add(bookId);
+                return next;
+            });
+        }, []);
+
+        const bulkAssignCategory = useCallback((category) => {
+            const now = Date.now();
+            setBooks(prev => prev.map(b => selectedBookIds.has(b.id) ? { ...b, category, updatedAt: now, metadataUpdatedAt: now } : b));
+        }, [selectedBookIds]);
+
+        const bulkAssignTag = useCallback((tag) => {
+            if (!tag) return;
+            const now = Date.now();
+            setBooks(prev => prev.map(b => {
+                if (!selectedBookIds.has(b.id)) return b;
+                const tagList = splitBookTags(b.tags);
+                if (tagList.map(t => t.toLowerCase()).includes(tag.toLowerCase())) return b;
+                return { ...b, tags: [...tagList, tag].join(', '), updatedAt: now, metadataUpdatedAt: now };
+            }));
+        }, [selectedBookIds]);
+
+        const bulkMarkFinished = useCallback((isFinished) => {
+            const now = Date.now();
+            setBooks(prev => prev.map(b => !selectedBookIds.has(b.id) ? b : { ...b, isFinished, dateFinished: isFinished ? Date.now() : null, updatedAt: now }));
+            clearSelection();
+        }, [selectedBookIds, clearSelection]);
+
+        const bulkToggleFav = useCallback(() => {
+            const now = Date.now();
+            const allFav = [...selectedBookIds].every(id => books.find(b => b.id === id)?.isFav);
+            setBooks(prev => prev.map(b => !selectedBookIds.has(b.id) ? b : { ...b, isFav: !allFav, updatedAt: now }));
+        }, [selectedBookIds, books]);
+
+        const bulkAddToCollection = useCallback((collectionId) => {
+            setManualCollections(prev => prev.map(col => {
+                if (col.id !== collectionId) return col;
+                const existing = new Set(col.bookIds || []);
+                [...selectedBookIds].forEach(id => existing.add(id));
+                return { ...col, bookIds: [...existing] };
+            }));
+        }, [selectedBookIds]);
+
+        const bulkDeleteBooks = useCallback(() => {
+            if (!selectedBookIds.size) return;
+            if (!window.confirm(`¿Eliminar ${selectedBookIds.size} libro(s) seleccionado(s)? Esta acción no se puede deshacer.`)) return;
+            const idsToDelete = new Set(selectedBookIds);
+            setBooks(prev => prev.filter(b => !idsToDelete.has(b.id)));
+            clearSelection();
+        }, [selectedBookIds, clearSelection]);
+
+        const toggleFilterTag = useCallback((tag) => {
+            setFilterTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
+        }, []);
+
+        const toggleFilterAuthor = useCallback((author) => {
+            setFilterAuthors(prev => prev.includes(author) ? prev.filter(a => a !== author) : [...prev, author]);
+        }, []);
+
+        const renameManualCollection = useCallback((id, name) => {
+            if (!name.trim()) return;
+            setManualCollections(prev => prev.map(c => c.id === id ? { ...c, name: name.trim() } : c));
+            setRenamingCollectionId(null);
+            setRenamingCollectionValue('');
+        }, []);
+
+        const moveManualCollection = useCallback((id, direction) => {
+            setManualCollections(prev => {
+                const idx = prev.findIndex(c => c.id === id);
+                if (idx === -1) return prev;
+                const next = [...prev];
+                const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+                if (targetIdx < 0 || targetIdx >= next.length) return prev;
+                [next[idx], next[targetIdx]] = [next[targetIdx], next[idx]];
+                return next;
+            });
+        }, []);
+
+        const setCollectionEmoji = useCallback((id, emoji) => {
+            setManualCollections(prev => prev.map(c => c.id === id ? { ...c, emoji: emoji || '🗂️' } : c));
+        }, []);
+
+        const saveQuickEdit = useCallback((bookId, patch) => {
+            const now = Date.now();
+            setBooks(prev => prev.map(b => b.id === bookId ? { ...b, ...patch, updatedAt: now, metadataUpdatedAt: now } : b));
+            setQuickEditBookId(null);
+        }, []);
+
         const toggleAddon = (id) => {
             setAddons(prev => {
                 const validation = validateAddonToggle(id, !prev[id], { userProfile, lang });
@@ -1545,6 +1656,14 @@ const ANNOTATION_COLOR_META = {
                     return Number(b.rating || 0) === requiredRating;
                 }
                 if (currentFilter !== 'all' && currentFilter !== 'favorites' && b.category !== currentFilter) return false;
+                // Combined multi-filters (AND logic across tag list and author list)
+                if (filterTags.length > 0) {
+                    const bookTagNorms = splitBookTags(b.tags).map(normalizeTagKey);
+                    if (!filterTags.some(tag => bookTagNorms.includes(normalizeTagKey(tag)))) return false;
+                }
+                if (filterAuthors.length > 0) {
+                    if (!filterAuthors.some(a => b.author?.toLowerCase() === a.toLowerCase())) return false;
+                }
                 if (searchNeedle) {
                     return getBookSearchIndex(b).includes(searchNeedle) || contentIndex.includes(searchNeedle);
                 }
@@ -1565,7 +1684,11 @@ const ANNOTATION_COLOR_META = {
                 }
                 return 0;
             });
-        }, [books, contentIndexMap, currentFilter, deferredSearchTerm, manualCollections, sortBy]);
+        }, [books, contentIndexMap, currentFilter, deferredSearchTerm, manualCollections, sortBy, filterTags, filterAuthors]);
+
+        const selectAll = useCallback(() => {
+            setSelectedBookIds(new Set(displayedBooks.map(b => b.id)));
+        }, [displayedBooks]);
 
         const searchResultsWithMatches = useMemo(() => {
             if (!searchTerm) return null;
@@ -2148,6 +2271,8 @@ const ANNOTATION_COLOR_META = {
                                         className={`px-2 py-1 rounded-lg text-xs font-bold transition ${libraryView === 'list' ? 'bg-white/20' : 'opacity-50 hover:opacity-80'}`}>☰</button>
                                     <button onClick={() => setLibraryView('series')} title="Vista series"
                                         className={`px-2 py-1 rounded-lg text-xs font-bold transition ${libraryView === 'series' ? 'bg-white/20' : 'opacity-50 hover:opacity-80'}`}>📚</button>
+                                    <button onClick={() => { setIsSelecting(p => { if (p) clearSelection(); return !p; }); }} title="Selección múltiple"
+                                        className={`px-2 py-1 rounded-lg text-xs font-bold transition ${isSelecting ? 'bg-white/25' : 'opacity-50 hover:opacity-80'}`}>☑</button>
                                 </div>
                                 <div className="w-px h-6 bg-white/20 mx-1"></div>
                                 <button onClick={openFilePicker} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap"><Icons.Plus /> <span className="hidden xl:inline">{t.addBook}</span></button>
@@ -2215,6 +2340,27 @@ const ANNOTATION_COLOR_META = {
                                 </button>
                             ))}
                         </div>
+                        {(filterTags.length > 0 || filterAuthors.length > 0) && (
+                            <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                                <span className="text-[9px] font-black uppercase tracking-widest text-white/50">Filtros activos:</span>
+                                {filterTags.map(tag => (
+                                    <button key={tag} onClick={() => toggleFilterTag(tag)}
+                                        className="flex items-center gap-1 bg-purple-500/80 text-white rounded-full px-2.5 py-1 text-xs font-bold hover:bg-purple-600 transition">
+                                        🏷️ {tag} ×
+                                    </button>
+                                ))}
+                                {filterAuthors.map(author => (
+                                    <button key={author} onClick={() => toggleFilterAuthor(author)}
+                                        className="flex items-center gap-1 bg-sky-500/80 text-white rounded-full px-2.5 py-1 text-xs font-bold hover:bg-sky-600 transition">
+                                        👤 {author} ×
+                                    </button>
+                                ))}
+                                <button onClick={() => { setFilterTags([]); setFilterAuthors([]); }}
+                                    className="text-xs font-bold text-white/50 hover:text-white/80 transition px-1">
+                                    Limpiar ×
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )}
 
@@ -2323,13 +2469,17 @@ const ANNOTATION_COLOR_META = {
                                                 </button>
                                                 {showAuthorSection && (
                                                     <div className="ml-4 space-y-0.5 max-h-48 overflow-y-auto">
-                                                        {authors.map(author => (
-                                                            <button key={author} onClick={() => { setCurrentFilter(`author:${author}`); setView('library'); setSidebarOpen(false); }}
-                                                                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left text-sm ${currentFilter === `author:${author}` ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
-                                                                <span className="truncate flex-1 opacity-80">{author}</span>
-                                                                <span className="text-[10px] font-bold opacity-40 flex-shrink-0">{libraryDerived.authorCounts.get(author) || 0}</span>
-                                                            </button>
-                                                        ))}
+                                                        {authors.map(author => {
+                                                            const active = filterAuthors.includes(author);
+                                                            return (
+                                                                <button key={author} onClick={() => { toggleFilterAuthor(author); setView('library'); }}
+                                                                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left text-sm ${active ? 'bg-sky-500/15 text-sky-600 dark:text-sky-300' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
+                                                                    {active && <span className="text-sky-500 font-black text-xs">✓</span>}
+                                                                    <span className="truncate flex-1 opacity-80">{author}</span>
+                                                                    <span className="text-[10px] font-bold opacity-40 flex-shrink-0">{libraryDerived.authorCounts.get(author) || 0}</span>
+                                                                </button>
+                                                            );
+                                                        })}
                                                     </div>
                                                 )}
                                             </div>
@@ -2346,13 +2496,17 @@ const ANNOTATION_COLOR_META = {
                                             </button>
                                             {showTagSection && (
                                                 <div className="ml-4 space-y-0.5 max-h-48 overflow-y-auto">
-                                                    {libraryDerived.tags.map(([tag, count]) => (
-                                                        <button key={tag} onClick={() => { setCurrentFilter(`tag:${tag}`); setView('library'); setSidebarOpen(false); }}
-                                                            className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left text-sm ${currentFilter === `tag:${tag}` ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
-                                                            <span className="truncate flex-1 opacity-80">{tag}</span>
-                                                            <span className="text-[10px] font-bold opacity-40 flex-shrink-0">{count}</span>
-                                                        </button>
-                                                    ))}
+                                                    {libraryDerived.tags.map(([tag, count]) => {
+                                                        const active = filterTags.includes(tag);
+                                                        return (
+                                                            <button key={tag} onClick={() => { toggleFilterTag(tag); setView('library'); }}
+                                                                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left text-sm ${active ? 'bg-purple-500/15 text-purple-600 dark:text-purple-300' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
+                                                                {active && <span className="text-purple-500 font-black text-xs">✓</span>}
+                                                                <span className="truncate flex-1 opacity-80">{tag}</span>
+                                                                <span className="text-[10px] font-bold opacity-40 flex-shrink-0">{count}</span>
+                                                            </button>
+                                                        );
+                                                    })}
                                                 </div>
                                             )}
                                         </div>
@@ -2393,14 +2547,35 @@ const ANNOTATION_COLOR_META = {
                                             </div>
                                         </div>
                                     )}
-                                    {manualCollections.map(collection => (
+                                    {manualCollections.map((collection, colIdx) => (
                                         <div key={collection.id} className={`flex items-center rounded-xl transition group ${currentFilter === `collection:${collection.id}` ? 'bg-fuchsia-500/10 text-fuchsia-600 dark:text-fuchsia-300' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
-                                            <button onClick={() => { setCurrentFilter(`collection:${collection.id}`); setView('library'); setSidebarOpen(false); }} className="flex-1 flex items-center gap-3 px-4 py-3 text-left font-semibold">
-                                                <span className="w-3 h-3 rounded-full flex-shrink-0 bg-fuchsia-500/80"></span>
-                                                {collection.name}
-                                                <span className="ml-auto text-xs font-bold px-2 py-1 bg-black/5 dark:bg-white/10 rounded-lg">{libraryDerived.collectionCounts.get(collection.id) || 0}</span>
-                                            </button>
-                                            <button onClick={(e) => { e.stopPropagation(); removeManualCollection(collection.id); }} className="opacity-0 group-hover:opacity-100 p-3 text-red-500 hover:text-red-600 transition"><Icons.Trash className="w-4 h-4" /></button>
+                                            {renamingCollectionId === collection.id ? (
+                                                <input
+                                                    value={renamingCollectionValue}
+                                                    onChange={e => setRenamingCollectionValue(e.target.value)}
+                                                    onKeyDown={e => {
+                                                        if (e.key === 'Enter') renameManualCollection(collection.id, renamingCollectionValue);
+                                                        if (e.key === 'Escape') { setRenamingCollectionId(null); setRenamingCollectionValue(''); }
+                                                    }}
+                                                    onBlur={() => renameManualCollection(collection.id, renamingCollectionValue || collection.name)}
+                                                    className="flex-1 mx-3 my-1 text-sm font-bold rounded-lg px-2 py-1 outline-none border border-[var(--highlight)]"
+                                                    style={{ backgroundColor: 'var(--bg-color)', color: 'var(--text-color)' }}
+                                                    autoFocus
+                                                    onClick={e => e.stopPropagation()}
+                                                />
+                                            ) : (
+                                                <button onClick={() => { setCurrentFilter(`collection:${collection.id}`); setView('library'); setSidebarOpen(false); }} className="flex-1 flex items-center gap-2 px-4 py-3 text-left font-semibold min-w-0">
+                                                    <span className="text-base flex-shrink-0">{collection.emoji || '🗂️'}</span>
+                                                    <span className="flex-1 truncate">{collection.name}</span>
+                                                    <span className="text-xs font-bold px-2 py-1 bg-black/5 dark:bg-white/10 rounded-lg flex-shrink-0">{libraryDerived.collectionCounts.get(collection.id) || 0}</span>
+                                                </button>
+                                            )}
+                                            <div className="flex items-center opacity-0 group-hover:opacity-100 transition flex-shrink-0 pr-1 gap-0.5">
+                                                <button onClick={e => { e.stopPropagation(); moveManualCollection(collection.id, 'up'); }} disabled={colIdx === 0} className="p-1 text-xs disabled:opacity-20 hover:opacity-70 transition" title="Subir">↑</button>
+                                                <button onClick={e => { e.stopPropagation(); moveManualCollection(collection.id, 'down'); }} disabled={colIdx === manualCollections.length - 1} className="p-1 text-xs disabled:opacity-20 hover:opacity-70 transition" title="Bajar">↓</button>
+                                                <button onClick={e => { e.stopPropagation(); setRenamingCollectionId(collection.id); setRenamingCollectionValue(collection.name); }} className="p-1 text-xs hover:opacity-70 transition" title="Renombrar">✏️</button>
+                                                <button onClick={(e) => { e.stopPropagation(); removeManualCollection(collection.id); }} className="p-1 text-red-500 hover:text-red-600 transition"><Icons.Trash className="w-3.5 h-3.5" /></button>
+                                            </div>
                                         </div>
                                     ))}
                                     {manualCollections.length === 0 && (
@@ -2783,10 +2958,16 @@ const ANNOTATION_COLOR_META = {
                                                     gridTemplateColumns: `repeat(${virtualLibrary.columns}, minmax(0, 1fr))`,
                                                 }}>
                                                 {virtualLibrary.items.map(book => (
-                                                    <div key={book.id} draggable
+                                                    <div key={book.id} draggable={!isSelecting && quickEditBookId !== book.id}
                                                         onDragStart={e => { e.dataTransfer.setData('bookId', book.id); setDraggedBookId(book.id); }}
                                                         onDragEnd={() => { setDraggedBookId(null); setDropTargetCat(null); }}>
-                                                        <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={openBook} onContextMenu={handleContextMenu} />
+                                                        {quickEditBookId === book.id ? (
+                                                            <QuickEditCard book={book} onSave={saveQuickEdit} onCancel={() => setQuickEditBookId(null)} />
+                                                        ) : (
+                                                            <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={isSelecting ? toggleSelectBook : openBook} onContextMenu={handleContextMenu}
+                                                                isSelecting={isSelecting} isSelected={selectedBookIds.has(book.id)} onSelect={toggleSelectBook}
+                                                                onQuickEdit={setQuickEditBookId} isDynamic={!!addons.dynamicCovers} />
+                                                        )}
                                                     </div>
                                                 ))}
                                             </div>
@@ -2794,10 +2975,16 @@ const ANNOTATION_COLOR_META = {
                                     ) : (
                                         <div className={`books-grid fade-in ${addons.netflixView ? 'netflix-grid' : ''}`}>
                                             {displayedBooks.map(book => (
-                                                <div key={book.id} draggable
+                                                <div key={book.id} draggable={!isSelecting && quickEditBookId !== book.id}
                                                     onDragStart={e => { e.dataTransfer.setData('bookId', book.id); setDraggedBookId(book.id); }}
                                                     onDragEnd={() => { setDraggedBookId(null); setDropTargetCat(null); }}>
-                                                    <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={openBook} onContextMenu={handleContextMenu} />
+                                                    {quickEditBookId === book.id ? (
+                                                        <QuickEditCard book={book} onSave={saveQuickEdit} onCancel={() => setQuickEditBookId(null)} />
+                                                    ) : (
+                                                        <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={isSelecting ? toggleSelectBook : openBook} onContextMenu={handleContextMenu}
+                                                            isSelecting={isSelecting} isSelected={selectedBookIds.has(book.id)} onSelect={toggleSelectBook}
+                                                            onQuickEdit={setQuickEditBookId} isDynamic={!!addons.dynamicCovers} />
+                                                    )}
                                                 </div>
                                             ))}
                                         </div>
@@ -2818,9 +3005,13 @@ const ANNOTATION_COLOR_META = {
                                             {seriesGroups.map(({ name, books: grpBooks }) => {
                                                 const finished = grpBooks.filter(b => b.isFinished).length;
                                                 const pct = grpBooks.length > 0 ? Math.round((finished / grpBooks.length) * 100) : 0;
+                                                const nextToRead = name ? grpBooks.filter(b => !b.isFinished && b.seriesIndex > 0).sort((a, b) => a.seriesIndex - b.seriesIndex)[0] : null;
+                                                const seriesIdxSet = new Set(grpBooks.map(b => b.seriesIndex).filter(Boolean));
+                                                const maxIdx = seriesIdxSet.size > 0 ? Math.max(...seriesIdxSet) : 0;
+                                                const gaps = name && maxIdx > 1 ? Array.from({ length: maxIdx - 1 }, (_, i) => i + 1).filter(n => !seriesIdxSet.has(n)) : [];
                                                 return (
                                                     <div key={name || '__noseries__'}>
-                                                        <div className="flex items-center gap-3 mb-3">
+                                                        <div className="flex items-center gap-3 mb-3 flex-wrap">
                                                             {name ? (
                                                                 <>
                                                                     <h3 className="font-black text-base" style={{ color: 'var(--text-color)' }}>{name}</h3>
@@ -2828,17 +3019,42 @@ const ANNOTATION_COLOR_META = {
                                                                     <div className="flex-1 h-1.5 rounded-full max-w-32" style={{ backgroundColor: 'var(--border-color)' }}>
                                                                         <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: pct === 100 ? '#22c55e' : 'var(--highlight)' }} />
                                                                     </div>
+                                                                    {pct === 100 && <span className="text-xs font-black text-green-500">✓ Completa</span>}
+                                                                    {nextToRead && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: 'var(--highlight)' }}>📖 Siguiente: #{nextToRead.seriesIndex}</span>}
+                                                                    {gaps.length > 0 && <span className="text-[10px] font-bold text-amber-500 opacity-80">⚠ Sin #{gaps.join(', #')}</span>}
                                                                 </>
                                                             ) : (
                                                                 <h3 className="font-black text-xs uppercase tracking-widest opacity-30">Sin serie</h3>
                                                             )}
                                                         </div>
                                                         <div className="books-grid">
-                                                            {grpBooks.map(book => (
-                                                                <div key={book.id} draggable
-                                                                    onDragStart={e => { e.dataTransfer.setData('bookId', book.id); setDraggedBookId(book.id); }}
-                                                                    onDragEnd={() => { setDraggedBookId(null); setDropTargetCat(null); }}>
-                                                                    <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={openBook} onContextMenu={handleContextMenu} />
+                                                            {grpBooks.map(book => {
+                                                                const isNext = nextToRead?.id === book.id;
+                                                                return (
+                                                                    <div key={book.id} draggable={!isSelecting}
+                                                                        onDragStart={e => { e.dataTransfer.setData('bookId', book.id); setDraggedBookId(book.id); }}
+                                                                        onDragEnd={() => { setDraggedBookId(null); setDropTargetCat(null); }}
+                                                                        style={isNext ? { filter: 'drop-shadow(0 0 6px var(--highlight))' } : undefined}>
+                                                                        {quickEditBookId === book.id ? (
+                                                                            <QuickEditCard book={book} onSave={saveQuickEdit} onCancel={() => setQuickEditBookId(null)} />
+                                                                        ) : (
+                                                                            <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={isSelecting ? toggleSelectBook : openBook} onContextMenu={handleContextMenu}
+                                                                                isSelecting={isSelecting} isSelected={selectedBookIds.has(book.id)} onSelect={toggleSelectBook}
+                                                                                onQuickEdit={setQuickEditBookId} isDynamic={!!addons.dynamicCovers} />
+                                                                        )}
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                            {gaps.length > 0 && gaps.map(gapNum => (
+                                                                <div key={`gap-${gapNum}`} className="book-container opacity-30 pointer-events-none" style={{ border: '2px dashed var(--border-color)', borderRadius: '8px' }}>
+                                                                    <div className="book-cover flex items-center justify-center" style={{ backgroundColor: 'var(--surface-bg)' }}>
+                                                                        <div className="text-center p-2">
+                                                                            <div className="text-2xl mb-1">?</div>
+                                                                            <div className="text-xs font-black opacity-60">#{gapNum}</div>
+                                                                            <div className="text-[9px] opacity-40 mt-0.5">No importado</div>
+                                                                        </div>
+                                                                    </div>
+                                                                    <div className="book-info-under"><div className="title opacity-40">Tomo #{gapNum}</div></div>
                                                                 </div>
                                                             ))}
                                                         </div>
@@ -2857,12 +3073,13 @@ const ANNOTATION_COLOR_META = {
                                             style={virtualLibrary.enabled ? { transform: `translateY(${virtualLibrary.top}px)` } : undefined}>
                                         {(virtualLibrary.enabled ? virtualLibrary.items : displayedBooks).map(book => {
                                             const statusIcon = book.isFinished ? '✅' : book.lastReadDate > 0 ? '📖' : '📚';
+                                            const listSelected = isSelecting && selectedBookIds.has(book.id);
                                             return (
                                                 <div key={book.id}
-                                                    className="flex items-center gap-4 p-3 rounded-2xl cursor-pointer border border-transparent hover:border-[var(--border-color)] transition group"
-                                                    style={{ backgroundColor: 'var(--surface-bg)' }}
-                                                    onClick={() => openBook(book.id)}
-                                                    onContextMenu={e => handleContextMenu(e, book)}>
+                                                    className="flex items-center gap-4 p-3 rounded-2xl cursor-pointer border transition group"
+                                                    style={{ backgroundColor: listSelected ? 'color-mix(in srgb, var(--highlight) 12%, var(--surface-bg))' : 'var(--surface-bg)', borderColor: listSelected ? 'var(--highlight)' : 'transparent' }}
+                                                    onClick={() => isSelecting ? toggleSelectBook(book.id) : openBook(book.id)}
+                                                    onContextMenu={e => !isSelecting && handleContextMenu(e, book)}>
                                                     <div className="w-10 h-14 rounded-lg flex-shrink-0 bg-cover bg-center shadow-md flex items-center justify-center text-white text-xs font-bold overflow-hidden"
                                                         style={{ backgroundImage: book.coverUrl ? `url(${book.coverUrl})` : 'none', backgroundColor: book.color }}>
                                                         {!book.coverUrl && book.name.charAt(0)}
@@ -2892,6 +3109,54 @@ const ANNOTATION_COLOR_META = {
                                     </div>
                                 )}
                             </>
+                        )}
+
+                        {/* ── BULK ACTION BAR ── */}
+                        {isSelecting && (
+                            <div className="fixed bottom-0 left-0 right-0 z-[200] shadow-2xl border-t" style={{ backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)' }}>
+                                <div className="max-w-4xl mx-auto px-4 py-3 flex items-center gap-2 flex-wrap">
+                                    <span className="font-black text-sm flex-shrink-0" style={{ color: 'var(--text-color)' }}>
+                                        {selectedBookIds.size} seleccionado{selectedBookIds.size !== 1 ? 's' : ''}
+                                    </span>
+                                    <button onClick={selectAll} className="text-xs font-bold px-3 py-1.5 rounded-lg transition hover:opacity-80" style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)', color: 'var(--text-color)' }}>
+                                        Todos ({displayedBooks.length})
+                                    </button>
+                                    <div className="flex-1 hidden sm:block" />
+                                    <button onClick={bulkToggleFav} disabled={!selectedBookIds.size}
+                                        className="text-xs font-bold px-3 py-1.5 rounded-xl bg-yellow-500/15 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/25 transition disabled:opacity-40">
+                                        ❤️ Favorito
+                                    </button>
+                                    <button onClick={() => bulkMarkFinished(true)} disabled={!selectedBookIds.size}
+                                        className="text-xs font-bold px-3 py-1.5 rounded-xl bg-green-500/15 text-green-700 dark:text-green-400 hover:bg-green-500/25 transition disabled:opacity-40">
+                                        ✅ Terminado
+                                    </button>
+                                    {customCategories.length > 0 && (
+                                        <select onChange={e => { if (e.target.value) { bulkAssignCategory(e.target.value); e.target.value = ''; } }}
+                                            disabled={!selectedBookIds.size}
+                                            className="text-xs font-bold px-3 py-1.5 rounded-xl outline-none cursor-pointer disabled:opacity-40"
+                                            style={{ backgroundColor: 'var(--bg-color)', color: 'var(--text-color)', border: '1px solid var(--border-color)' }}>
+                                            <option value="">📁 Categoría…</option>
+                                            {customCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                                        </select>
+                                    )}
+                                    {manualCollections.length > 0 && (
+                                        <select onChange={e => { if (e.target.value) { bulkAddToCollection(e.target.value); e.target.value = ''; } }}
+                                            disabled={!selectedBookIds.size}
+                                            className="text-xs font-bold px-3 py-1.5 rounded-xl outline-none cursor-pointer disabled:opacity-40"
+                                            style={{ backgroundColor: 'var(--bg-color)', color: 'var(--text-color)', border: '1px solid var(--border-color)' }}>
+                                            <option value="">🗂️ Colección…</option>
+                                            {manualCollections.map(col => <option key={col.id} value={col.id}>{col.emoji || '🗂️'} {col.name}</option>)}
+                                        </select>
+                                    )}
+                                    <button onClick={bulkDeleteBooks} disabled={!selectedBookIds.size}
+                                        className="text-xs font-bold px-3 py-1.5 rounded-xl bg-red-500/15 text-red-700 dark:text-red-400 hover:bg-red-500/25 transition disabled:opacity-40">
+                                        🗑️ Eliminar
+                                    </button>
+                                    <button onClick={clearSelection} className="p-1.5 rounded-xl opacity-50 hover:opacity-100 transition" style={{ color: 'var(--text-color)' }}>
+                                        <Icons.Close />
+                                    </button>
+                                </div>
+                            </div>
                         )}
 
                         <div className="md:hidden fixed bottom-6 right-6 flex flex-col gap-4 z-30">
@@ -3002,6 +3267,7 @@ const ANNOTATION_COLOR_META = {
                                             onSwitchTab={(id) => setActiveTabId(id)}
                                             onCloseTab={closeTab}
                                             onGoToLibrary={() => setView('library')}
+                                            onToggleSpread={toggleSpreadLayout}
                                         />
                                     </Suspense>
                                 </EpubReaderBoundary>
@@ -3067,6 +3333,7 @@ const ANNOTATION_COLOR_META = {
                                             onSaveWord={saveWordToVocab}
                                             aiProvider={aiProvider}
                                             aiApiKey={aiApiKey}
+                                            onToggleSpread={toggleSpreadLayout}
                                         />
                                     </Suspense>
                                 ) : (

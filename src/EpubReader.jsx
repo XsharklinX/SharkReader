@@ -49,7 +49,7 @@ function formatRemainingText(minutes, lang) {
     return `${mins}min para terminar`;
 }
 
-const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout, updateLocationAndProgress, toggleBookmark, isFullscreen, focusMode, pageTransition, smartTocAddon, dyslexiaAddon, dyslexiaModeActive, onToggleDyslexiaMode, onClose, onOpenSettings, onStatsUpdate, onOpenBookInfo, onSaveWord, aiProvider, aiApiKey, tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary }) => {
+const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout, updateLocationAndProgress, toggleBookmark, isFullscreen, focusMode, pageTransition, smartTocAddon, dyslexiaAddon, dyslexiaModeActive, onToggleDyslexiaMode, onClose, onOpenSettings, onStatsUpdate, onOpenBookInfo, onSaveWord, aiProvider, aiApiKey, tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary, onToggleSpread }) => {
         const viewerRef = useRef(null);
         const renditionRef = useRef(null);
         const bookRef = useRef(null);
@@ -120,13 +120,14 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const prevChapterRef = useRef(null);
         const chapterHintTimerRef = useRef(null);
         const [tocCollapsed, setTocCollapsed] = useState(false);
+        const [tocSearch, setTocSearch] = useState('');
 
         // Typography â€” defaults are all "off" so we never override the book's own CSS
-        const [textJustify, setTextJustify] = useState(false);
-        const [firstLineIndent, setFirstLineIndent] = useState(false);
-        const [letterSpacing, setLetterSpacing] = useState(0);
-        const [hyphenation, setHyphenation] = useState(false);
-        const [paragraphSpacing, setParagraphSpacing] = useState(0);
+        const [textJustify, setTextJustify] = useState(_savedFont?.textJustify ?? false);
+        const [firstLineIndent, setFirstLineIndent] = useState(_savedFont?.firstLineIndent ?? false);
+        const [letterSpacing, setLetterSpacing] = useState(_savedFont?.letterSpacing ?? 0);
+        const [hyphenation, setHyphenation] = useState(_savedFont?.hyphenation ?? false);
+        const [paragraphSpacing, setParagraphSpacing] = useState(_savedFont?.paragraphSpacing ?? 0);
         const [columnWidth, setColumnWidth] = useState(() => readFlow === 'scrolled-doc' ? 'narrow' : 'normal');
         const dyslexiaPreviousRef = useRef(null);
         const estimatedRemainingText = useMemo(() => {
@@ -708,8 +709,8 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         }, [fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, isReady, readFlow]);
 
         useEffect(() => {
-            try { localStorage.setItem(_bookFontKey, JSON.stringify({ fontSize, fontFamily, lineHeight, pageMargins })); } catch (_) {}
-        }, [_bookFontKey, fontSize, fontFamily, lineHeight, pageMargins]);
+            try { localStorage.setItem(_bookFontKey, JSON.stringify({ fontSize, fontFamily, lineHeight, pageMargins, paragraphSpacing, textJustify, firstLineIndent, letterSpacing, hyphenation })); } catch (_) {}
+        }, [_bookFontKey, fontSize, fontFamily, lineHeight, pageMargins, paragraphSpacing, textJustify, firstLineIndent, letterSpacing, hyphenation]);
 
         // When columnWidth changes, the #viewer div gets a new maxWidth â€” force epub.js to re-layout.
         useEffect(() => {
@@ -834,6 +835,32 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 try { renditionRef.current?.annotations?.remove(entry.cfi, 'highlight'); } catch (_) {}
             }
             toggleBookmark(bookData.id, entry.cfi, entry.note || null, true);
+        };
+
+        const exportAnnotations = () => {
+            if (currentAnnotations.length === 0) return;
+            const lines = [
+                `# ${bookData.name || 'Libro'}`,
+                bookData.author ? `*${bookData.author}*` : '',
+                `*Exportado: ${new Date().toLocaleDateString()}*`,
+                '---',
+                '',
+            ].filter(l => l !== '');
+            currentAnnotations.forEach(a => {
+                const tag = a.kind === 'highlight'
+                    ? `**[${HIGHLIGHT_PRESETS[a.color]?.label || 'Subrayado'}]**`
+                    : a.kind === 'note' ? '**[Nota]**' : '**[Marcador]**';
+                lines.push(`${tag} ${a.preview}`);
+                if (a.date) lines.push(`> *${a.date}*`);
+                lines.push('');
+            });
+            const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${(bookData.name || 'libro').replace(/[^a-z0-9]/gi, '_')}_anotaciones.md`;
+            link.click();
+            URL.revokeObjectURL(url);
         };
 
         const openAnnotationComposer = (type) => {
@@ -1161,6 +1188,11 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                 <button onClick={onOpenSettings} className="p-1.5 hover:bg-white/15 rounded-xl transition hidden sm:block" title={t.settings}>
                                     <Icons.Settings />
                                 </button>
+                                {onToggleSpread && (
+                                    <button onClick={onToggleSpread} className={`p-1.5 rounded-xl transition text-sm leading-none hidden sm:block ${readLayout === 'auto' ? 'bg-white/25' : 'hover:bg-white/15'}`} title={readLayout === 'auto' ? 'Vista simple' : 'Doble página'}>
+                                        ⊞
+                                    </button>
+                                )}
                                 <button onClick={toggleFullscreen} className="p-1.5 hover:bg-white/15 rounded-xl transition" title={t.fullscreen}>
                                     <Icons.Fullscreen />
                                 </button>
@@ -1234,6 +1266,11 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
                             <div className="w-px h-5 bg-white/10 mx-1"></div>
 
+                            {onToggleSpread && (
+                                <button onClick={onToggleSpread} className={`p-2.5 rounded-full transition text-sm leading-none ${readLayout === 'auto' ? 'bg-white/25' : 'hover:bg-white/15'}`} title={readLayout === 'auto' ? 'Vista simple' : 'Doble página'}>
+                                    ⊞
+                                </button>
+                            )}
                             <button onClick={onOpenSettings} className="p-2.5 hover:bg-white/15 rounded-full transition" title={t.settings}>
                                 <Icons.Settings />
                             </button>
@@ -1245,7 +1282,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 )}
 
                 {/* Zonas de navegación laterales */}
-                {readFlow === 'paginated' && (
+                {readFlow === 'paginated' && (!focusMode || focusToolbarVisible) && (
                     <>
                         <div onClick={prevPage} className="reader-nav-zone" style={{ left: 0 }}>
                             <div className="reader-nav-btn"><Icons.ChevronLeft /></div>
@@ -1333,9 +1370,16 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                 <p className="text-[10px] font-black uppercase tracking-[0.22em] opacity-45">Anotaciones</p>
                                 <p className="text-sm font-black">{currentAnnotations.length} en este libro</p>
                             </div>
-                            <button onClick={() => setShowAnnotationsPanel(false)} className="p-2 opacity-50 hover:opacity-100 transition">
-                                <Icons.Close />
-                            </button>
+                            <div className="flex items-center gap-1">
+                                {currentAnnotations.length > 0 && (
+                                    <button onClick={exportAnnotations} className="px-2 py-1 rounded-lg text-[10px] font-black hover:bg-black/5 dark:hover:bg-white/5 transition opacity-50 hover:opacity-100" title="Exportar como Markdown">
+                                        ↓ MD
+                                    </button>
+                                )}
+                                <button onClick={() => setShowAnnotationsPanel(false)} className="p-2 opacity-50 hover:opacity-100 transition">
+                                    <Icons.Close />
+                                </button>
+                            </div>
                         </div>
                         <div className="flex-1 overflow-y-auto p-3 space-y-2">
                             {currentAnnotations.length === 0 ? (
@@ -1489,28 +1533,55 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             </button>
                         ) : (
                             <div className="absolute left-0 z-40 flex flex-col shadow-xl border-r"
-                                style={{ top: tabs ? '88px' : '64px', bottom: '28px', width: '200px', backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)', opacity: 0.96 }}
+                                style={{ top: tabs ? '88px' : '64px', bottom: '28px', width: '210px', backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)', opacity: 0.96 }}
                                 onWheel={e => e.stopPropagation()}>
-                                <div className="px-3 py-2 border-b flex-shrink-0 flex items-center justify-between" style={{ borderColor: 'var(--border-color)' }}>
-                                    <span className="text-[10px] font-black uppercase tracking-widest opacity-50">Índice</span>
-                                    <div className="flex items-center gap-1">
-                                        {currentChapterTitle && (
-                                            <span className="text-[9px] font-bold opacity-40 truncate max-w-[80px]">{currentChapterTitle}</span>
-                                        )}
+                                <div className="px-2 py-2 border-b flex-shrink-0 space-y-1.5" style={{ borderColor: 'var(--border-color)' }}>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-[10px] font-black uppercase tracking-widest opacity-50">Índice</span>
                                         <button onClick={() => setTocCollapsed(true)} className="p-0.5 opacity-40 hover:opacity-100 transition text-base leading-none" title="Colapsar">‹</button>
+                                    </div>
+                                    <div className="flex items-center gap-1.5 bg-black/5 dark:bg-white/5 rounded-lg px-2 py-1">
+                                        <Icons.Search className="w-3 h-3 opacity-40 flex-shrink-0" />
+                                        <input
+                                            type="text"
+                                            value={tocSearch}
+                                            onChange={e => setTocSearch(e.target.value)}
+                                            placeholder="Buscar capítulo..."
+                                            className="flex-1 bg-transparent outline-none text-[11px] font-medium"
+                                            style={{ color: 'var(--text-color)' }}
+                                        />
+                                        {tocSearch && <button onClick={() => setTocSearch('')} className="opacity-40 hover:opacity-100 text-xs leading-none">×</button>}
                                     </div>
                                 </div>
                                 <div className="flex-1 overflow-y-auto py-1 px-1">
-                                    {toc.map((item, i) => {
-                                        const isActive = currentChapterTitle && item.label === currentChapterTitle;
-                                        return (
-                                            <button key={i} onClick={() => { if (renditionRef.current) renditionRef.current.display(item.href); }}
-                                                className={`w-full text-left text-[11px] px-2 py-1.5 rounded-lg transition font-medium mb-0.5 truncate ${isActive ? 'text-white font-black' : 'opacity-60 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5'}`}
-                                                style={isActive ? { backgroundColor: 'var(--highlight)' } : {}}>
+                                    {(() => {
+                                        const q = tocSearch.trim().toLowerCase();
+                                        if (!q) {
+                                            return toc.map((item, i) => {
+                                                const isActive = currentChapterTitle && item.label === currentChapterTitle;
+                                                return (
+                                                    <button key={i} onClick={() => { if (renditionRef.current) renditionRef.current.display(item.href); }}
+                                                        className={`w-full text-left text-[11px] px-2 py-1.5 rounded-lg transition font-medium mb-0.5 truncate ${isActive ? 'text-white font-black' : 'opacity-60 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5'}`}
+                                                        style={isActive ? { backgroundColor: 'var(--highlight)' } : {}}>
+                                                        {item.label}
+                                                    </button>
+                                                );
+                                            });
+                                        }
+                                        const results = [];
+                                        const walk = (items) => items.forEach(item => {
+                                            if (item.label?.toLowerCase().includes(q)) results.push(item);
+                                            if (item.subitems?.length) walk(item.subitems);
+                                        });
+                                        walk(toc);
+                                        if (results.length === 0) return <p className="text-[10px] opacity-40 px-2 py-3 text-center">Sin resultados</p>;
+                                        return results.map((item, i) => (
+                                            <button key={i} onClick={() => { if (renditionRef.current) { renditionRef.current.display(item.href); setTocSearch(''); } }}
+                                                className="w-full text-left text-[11px] px-2 py-1.5 rounded-lg transition font-medium mb-0.5 truncate opacity-80 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5">
                                                 {item.label}
                                             </button>
-                                        );
-                                    })}
+                                        ));
+                                    })()}
                                 </div>
                             </div>
                         )}
@@ -1518,7 +1589,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 )}
 
                 {/* Barra de progreso */}
-                <div className="flex-shrink-0 relative" style={{ height: '28px', backgroundColor: 'var(--surface-bg)', borderTop: '1px solid var(--border-color)' }}>
+                <div className={`flex-shrink-0 relative ${focusMode && !focusToolbarVisible ? 'hidden' : ''}`} style={{ height: '28px', backgroundColor: 'var(--surface-bg)', borderTop: '1px solid var(--border-color)' }}>
                     <div className="h-1.5 absolute top-0 left-0 right-0" style={{ backgroundColor: 'var(--border-color)' }}>
                         <div
                             className="h-full transition-all duration-700 ease-out"
