@@ -142,7 +142,6 @@ const countStore = async (db, storeName) => {
 const inferBookType = (record) => {
     const fileName = record?.file?.name || '';
     if (/\.pdf$/i.test(fileName)) return 'pdf';
-    if (/\.mobi$/i.test(fileName)) return 'mobi';
     return 'epub';
 };
 
@@ -175,7 +174,6 @@ const buildBookRecordFromLegacy = (fileRecord, metaRecord = {}) => ({
     isFinished: !!metaRecord.isFinished,
     dateStarted: metaRecord.dateStarted || null,
     dateFinished: metaRecord.dateFinished || null,
-    isWishlist: !!metaRecord.isWishlist,
     updatedAt: metaRecord.updatedAt || metaRecord.lastReadDate || fileRecord.dateAdded || Date.now(),
     progressUpdatedAt: metaRecord.progressUpdatedAt || metaRecord.lastReadDate || metaRecord.updatedAt || fileRecord.dateAdded || Date.now(),
     metadataUpdatedAt: metaRecord.metadataUpdatedAt || metaRecord.updatedAt || fileRecord.dateAdded || Date.now(),

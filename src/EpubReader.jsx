@@ -91,6 +91,8 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const [totalSections, setTotalSections] = useState(0);
 
         const [toc, setToc] = useState([]);
+        const [copiedAnnotations, setCopiedAnnotations] = useState(false);
+        const [annotationSearch, setAnnotationSearch] = useState('');
         const [showToolbar, setShowToolbar] = useState(true);
         const [showToc, setShowToc] = useState(false);
         const [showFontMenu, setShowFontMenu] = useState(false);
@@ -136,7 +138,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const [tocCollapsed, setTocCollapsed] = useState(false);
         const [tocSearch, setTocSearch] = useState('');
 
-        // Typography â€” defaults are all "off" so we never override the book's own CSS
+        // Typography — defaults are all "off" so we never override the book's own CSS
         const [textJustify, setTextJustify] = useState(_savedFont?.textJustify ?? false);
         const [firstLineIndent, setFirstLineIndent] = useState(_savedFont?.firstLineIndent ?? false);
         const [letterSpacing, setLetterSpacing] = useState(_savedFont?.letterSpacing ?? 0);
@@ -196,7 +198,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         useEffect(() => {
             if (!focusMode) { setFocusToolbarVisible(true); return; }
             const onMove = (e) => {
-                // Avoid setState on every pixel â€” only act on state transitions
+                // Avoid setState on every pixel — only act on state transitions
                 setFocusToolbarVisible(prev => {
                     if (!prev) return true;
                     return prev;
@@ -498,6 +500,23 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                 if (bm.note && bm.note.includes('[Subrayado]')) {
                                     const highlightStyle = { fill: HIGHLIGHT_PRESETS[bm.color || 'yellow']?.fill || HIGHLIGHT_PRESETS.yellow.fill };
                                     try { rendition.annotations.highlight(bm.cfi, {}, () => { }, undefined, highlightStyle); } catch (_) {}
+                                } else if (bm.kind === 'note' && bm.cfi) {
+                                    // Marca de nota visible en el texto + tooltip con el contenido.
+                                    const noteText = (bm.note || 'Nota').slice(0, 280);
+                                    try {
+                                        rendition.annotations.underline(bm.cfi, {}, () => {}, 'shark-note-mark', {
+                                            'border-bottom': '2px dotted var(--highlight, #6366f1)',
+                                            'cursor': 'help',
+                                        });
+                                        // Tooltip nativo en el elemento de anotación creado por epub.js
+                                        setTimeout(() => {
+                                            try {
+                                                rendition.getContents().forEach(c => {
+                                                    c.document?.querySelectorAll('.shark-note-mark')?.forEach(el => { if (!el.getAttribute('title')) el.setAttribute('title', noteText); });
+                                                });
+                                            } catch (_) {}
+                                        }, 300);
+                                    } catch (_) {}
                                 }
                             });
                         }
@@ -549,7 +568,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     getCachedLocations(bookData.id).then(cached => {
                         if (!isMounted) return;
                         if (cached && cached.length > 0) {
-                            // Restore from cache â€” zero CPU cost
+                            // Restore from cache — zero CPU cost
                             book.locations.load(cached);
                             finishLocations();
                         } else {
@@ -562,7 +581,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             }).catch(() => { if (isMounted) setLocationsGenerating(false); });
                         }
                     }).catch(() => {
-                        // Cache unavailable â€” fall back to generate
+                        // Cache unavailable — fall back to generate
                         book.locations.generate(1024)
                             .then(finishLocations)
                             .catch(() => { if (isMounted) setLocationsGenerating(false); });
@@ -574,7 +593,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                         const saveCfi = (location.end && location.end.cfi) ? location.end.cfi : displayCfi;
                         setCurrentCfi(displayCfi);
 
-                        // Cheap UI updates â€” always run
+                        // Cheap UI updates — always run
                         try {
                             const spineItem = bookRef.current.spine.get(displayCfi);
                             if (spineItem && spineItem.index !== undefined) {
@@ -596,7 +615,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             console.warn('[SharkReader] chapter hint update failed:', e);
                         }
 
-                        // Expensive saves â€” throttle to once per 2s in scroll mode to avoid
+                        // Expensive saves — throttle to once per 2s in scroll mode to avoid
                         // flooding setBooks+setStats ←’ persist effect on every section boundary
                         const now = Date.now();
                         const isPaginated = readFlow !== 'scrolled-doc';
@@ -708,7 +727,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 });
             }
 
-            // Last resort: force a re-display â€” hooks.content.register will pick up the new stylesRef
+            // Last resort: force a re-display — hooks.content.register will pick up the new stylesRef
             if (!injected) {
                 try {
                     const scrollState = readFlow === 'scrolled-doc' && viewerRef.current
@@ -740,7 +759,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             try { localStorage.setItem(_bookFontKey, JSON.stringify({ fontSize, fontFamily, lineHeight, pageMargins, paragraphSpacing, textJustify, firstLineIndent, letterSpacing, hyphenation })); } catch (_) {}
         }, [_bookFontKey, fontSize, fontFamily, lineHeight, pageMargins, paragraphSpacing, textJustify, firstLineIndent, letterSpacing, hyphenation]);
 
-        // When columnWidth changes, the #viewer div gets a new maxWidth â€” force epub.js to re-layout.
+        // When columnWidth changes, the #viewer div gets a new maxWidth — force epub.js to re-layout.
         useEffect(() => {
             if (readFlow !== 'paginated' || !renditionRef.current || !isReady) return;
             requestAnimationFrame(() => {
@@ -792,7 +811,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             };
         }, [readFlow, prevPage, nextPage]);
 
-        // Auto-scroll â€” requestAnimationFrame (smooth 60fps, replaces jittery setInterval)
+        // Auto-scroll — requestAnimationFrame (smooth 60fps, replaces jittery setInterval)
         useEffect(() => {
             if (autoScrollRafRef.current) cancelAnimationFrame(autoScrollRafRef.current);
             autoScrollLastTsRef.current = 0;
@@ -865,8 +884,33 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             toggleBookmark(bookData.id, entry.cfi, entry.note || null, true);
         };
 
-        const exportAnnotations = () => {
-            if (currentAnnotations.length === 0) return;
+        // Resuelve el capítulo de una anotación (best-effort) vía spine + TOC.
+        const resolveChapter = (cfi) => {
+            try {
+                const sec = bookRef.current?.spine?.get?.(cfi);
+                const href = sec?.href;
+                if (href) return tocMapRef.current.get(href.split('#')[0]) || null;
+            } catch (_) {}
+            return null;
+        };
+
+        const labelFor = (a) => a.kind === 'highlight'
+            ? (HIGHLIGHT_PRESETS[a.color]?.label || 'Subrayado')
+            : a.kind === 'note' ? 'Nota' : 'Marcador';
+
+        const slugName = () => (bookData.name || 'libro').replace(/[^a-z0-9]/gi, '_');
+
+        const downloadText = (content, filename, mime = 'text/markdown;charset=utf-8') => {
+            const url = URL.createObjectURL(new Blob([content], { type: mime }));
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            link.click();
+            URL.revokeObjectURL(url);
+        };
+
+        // Construye el cuerpo Markdown plano (sin frontmatter).
+        const buildPlainMarkdown = () => {
             const lines = [
                 `# ${bookData.name || 'Libro'}`,
                 bookData.author ? `*${bookData.author}*` : '',
@@ -875,20 +919,69 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 '',
             ].filter(l => l !== '');
             currentAnnotations.forEach(a => {
-                const tag = a.kind === 'highlight'
-                    ? `**[${HIGHLIGHT_PRESETS[a.color]?.label || 'Subrayado'}]**`
-                    : a.kind === 'note' ? '**[Nota]**' : '**[Marcador]**';
-                lines.push(`${tag} ${a.preview}`);
+                lines.push(`**[${labelFor(a)}]** ${a.preview}`);
                 if (a.date) lines.push(`> *${a.date}*`);
                 lines.push('');
             });
-            const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `${(bookData.name || 'libro').replace(/[^a-z0-9]/gi, '_')}_anotaciones.md`;
-            link.click();
-            URL.revokeObjectURL(url);
+            return lines.join('\n');
+        };
+
+        const exportAnnotations = () => {
+            if (currentAnnotations.length === 0) return;
+            downloadText(buildPlainMarkdown(), `${slugName()}_anotaciones.md`);
+        };
+
+        // Export pensado para pegar en Obsidian: frontmatter YAML + agrupado por capítulo.
+        const buildObsidianMarkdown = () => {
+            const today = new Date().toISOString().slice(0, 10);
+            const esc = (s) => String(s).replace(/"/g, "'");
+            const tags = (bookData.tags && bookData.tags.length)
+                ? bookData.tags.map(t => `"${esc(t)}"`).join(', ')
+                : '"lectura"';
+            const out = [
+                '---',
+                `title: "${esc(bookData.name || 'Libro')}"`,
+                bookData.author ? `author: "${esc(bookData.author)}"` : null,
+                `date: ${today}`,
+                'source: SharkReader',
+                `tags: [${tags}]`,
+                '---',
+                '',
+                `# ${bookData.name || 'Libro'}`,
+                bookData.author ? `> por ${bookData.author}` : null,
+                '',
+            ].filter(l => l !== null);
+
+            // Agrupar por capítulo preservando el orden de aparición.
+            const groups = new Map();
+            currentAnnotations.forEach(a => {
+                const ch = resolveChapter(a.cfi) || 'Sin capítulo';
+                if (!groups.has(ch)) groups.set(ch, []);
+                groups.get(ch).push(a);
+            });
+            groups.forEach((items, chapter) => {
+                out.push(`## ${chapter}`, '');
+                items.forEach(a => {
+                    out.push(`> ${a.preview}`);
+                    out.push(`> — **${labelFor(a)}**${a.date ? ` · ${a.date}` : ''}`);
+                    out.push('');
+                });
+            });
+            return out.join('\n');
+        };
+
+        const exportToObsidian = () => {
+            if (currentAnnotations.length === 0) return;
+            downloadText(buildObsidianMarkdown(), `${slugName()}.md`);
+        };
+
+        const copyAnnotations = async () => {
+            if (currentAnnotations.length === 0) return;
+            try {
+                await navigator.clipboard.writeText(buildObsidianMarkdown());
+                setCopiedAnnotations(true);
+                setTimeout(() => setCopiedAnnotations(false), 1500);
+            } catch (_) {}
         };
 
         const openAnnotationComposer = (type) => {
@@ -983,13 +1076,13 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     <div className={dock ? "dock-popup active" : "topbar-popup active"} style={{ minWidth: '200px' }} onWheel={e => e.stopPropagation()}>
                         <p className="text-[10px] font-black uppercase opacity-50 tracking-widest mb-3">Brillo de pantalla</p>
                         <div className="flex items-center gap-2">
-                            <span className="text-xs opacity-50">ðŸŒ‘</span>
+                            <span className="text-xs opacity-50">🌑</span>
                             <input
                                 type="range" min="10" max="100" value={brightness}
                                 onChange={e => setBrightness(Number(e.target.value))}
                                 className="w-full accent-[var(--highlight)]"
                             />
-                            <span className="text-xs opacity-50">â˜€ï¸</span>
+                            <span className="text-xs opacity-50">☀️</span>
                         </div>
                         <p className="text-center text-xs font-black opacity-60 mt-2">{brightness}%</p>
                     </div>
@@ -1037,23 +1130,23 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     onClick={() => { setShowAutoScrollPanel(p => !p); setShowToc(false); setShowFontMenu(false); setShowBrightness(false); }}
                     className={`p-2 rounded-xl transition text-base leading-none ${showAutoScrollPanel ? 'bg-white/25' : autoScroll ? 'text-green-400 hover:bg-white/15' : 'hover:bg-white/15'}`}
                     title="Auto-scroll">
-                    {autoScroll ? 'â¸' : 'â–¶'}
+                    {autoScroll ? 'â¸' : '▶'}
                 </button>
                 {showAutoScrollPanel && (
                     <div className={dock ? "dock-popup active" : "topbar-popup active"} style={{ minWidth: '200px' }} onWheel={e => e.stopPropagation()}>
                         <p className="text-[10px] font-black uppercase opacity-50 tracking-widest mb-3">Auto-scroll</p>
                         <div className="flex items-center gap-2 mb-3">
-                            <span className="text-xs opacity-50">ðŸ¢</span>
+                            <span className="text-xs opacity-50">🐢</span>
                             <input type="range" min="1" max="10" value={autoScrollSpeed}
                                 onChange={e => setAutoScrollSpeed(Number(e.target.value))}
                                 className="flex-1 accent-[var(--highlight)]" />
-                            <span className="text-xs opacity-50">ðŸ‡</span>
+                            <span className="text-xs opacity-50">🐇</span>
                             <span className="text-xs font-black opacity-70 min-w-[16px]">{autoScrollSpeed}</span>
                         </div>
                         <button onClick={() => setAutoScroll(p => !p)}
                             className="w-full py-2 rounded-xl font-bold text-sm text-white transition"
                             style={{ backgroundColor: autoScroll ? '#ef4444' : 'var(--highlight)' }}>
-                            {autoScroll ? 'â¸ Pausar' : 'â–¶ Iniciar auto-scroll'}
+                            {autoScroll ? 'â¸ Pausar' : '▶ Iniciar auto-scroll'}
                         </button>
                     </div>
                 )}
@@ -1091,7 +1184,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 {epubError && (
                     <div className="absolute inset-0 flex flex-col items-center justify-center z-50 gap-5 p-8 text-center"
                         style={{ backgroundColor: 'var(--bg-color)' }}>
-                        <span className="text-6xl">ðŸ“•</span>
+                        <span className="text-6xl">📕</span>
                         <h2 className="text-xl font-black" style={{ color: 'var(--text-color)' }}>Error al cargar el libro</h2>
                         <p className="text-sm opacity-60 max-w-sm font-medium" style={{ color: 'var(--text-color)' }}>
                             {epubError}
@@ -1113,7 +1206,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     </div>
                 )}
 
-                {/* â”€â”€ BARRA SUPERIOR â€” Modo Normal â”€â”€ */}
+                {/* ── BARRA SUPERIOR — Modo Normal ── */}
                 {!isFullscreen && (
                     <div className={`flex-shrink-0 flex flex-col text-white shadow-md z-40 focus-mode-toolbar ${focusMode && !focusToolbarVisible ? 'hidden' : ''}`} style={{ background: 'linear-gradient(to right, var(--topbar-bg), var(--highlight))' }}>
 
@@ -1229,7 +1322,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     </div>
                 )}
 
-                {/* â”€â”€ DOCK FLOTANTE â€” Modo Fullscreen â”€â”€ */}
+                {/* ── DOCK FLOTANTE — Modo Fullscreen ── */}
                 {isFullscreen && (
                     <>
                         <div className={`absolute top-4 left-4 right-4 flex items-center justify-between text-white z-40 pointer-events-none transition-all duration-500 ${showToolbar ? 'translate-y-0 opacity-100' : '-translate-y-16 opacity-0'}`}>
@@ -1321,7 +1414,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     </>
                 )}
 
-                {/* Ãrea del libro */}
+                {/* Área del libro */}
                 <div ref={viewerWrapRef} className="flex-1 relative flex items-center justify-center overflow-hidden w-full pt-2">
                     <div
                         id="viewer"
@@ -1350,14 +1443,14 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                     onClick={() => { onSaveWord(dictionaryPopup.word, dictionaryPopup.def, bookData.id, bookData.name); setDictionaryPopup(null); }}
                                     className="w-full py-2 rounded-xl text-xs font-black text-white transition hover:opacity-80"
                                     style={{ backgroundColor: 'var(--highlight)' }}>
-                                    ðŸ’¾ Guardar en vocabulario
+                                    💾 Guardar en vocabulario
                                 </button>
                             )}
                         </div>
                     )}
                 </div>
 
-                {/* â”€â”€ POPUP NOTA DE BOOKMARK â”€â”€ */}
+                {/* ── POPUP NOTA DE BOOKMARK ── */}
                 {showToc && (
                     <div
                         className="absolute right-0 bottom-7 w-[340px] z-50 flex flex-col shadow-2xl border-l fade-in"
@@ -1400,21 +1493,53 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             </div>
                             <div className="flex items-center gap-1">
                                 {currentAnnotations.length > 0 && (
-                                    <button onClick={exportAnnotations} className="px-2 py-1 rounded-lg text-[10px] font-black hover:bg-black/5 dark:hover:bg-white/5 transition opacity-50 hover:opacity-100" title="Exportar como Markdown">
-                                        ↓ MD
-                                    </button>
+                                    <>
+                                        <button onClick={copyAnnotations} className="px-2 py-1 rounded-lg text-[10px] font-black hover:bg-black/5 dark:hover:bg-white/5 transition opacity-50 hover:opacity-100" title="Copiar (formato Obsidian)">
+                                            {copiedAnnotations ? '✓' : '⧉'}
+                                        </button>
+                                        <button onClick={exportToObsidian} className="px-2 py-1 rounded-lg text-[10px] font-black hover:bg-black/5 dark:hover:bg-white/5 transition opacity-50 hover:opacity-100" title="Exportar a Obsidian (frontmatter + por capítulo)">
+                                            Obsidian
+                                        </button>
+                                        <button onClick={exportAnnotations} className="px-2 py-1 rounded-lg text-[10px] font-black hover:bg-black/5 dark:hover:bg-white/5 transition opacity-50 hover:opacity-100" title="Exportar como Markdown">
+                                            ↓ MD
+                                        </button>
+                                    </>
                                 )}
                                 <button onClick={() => setShowAnnotationsPanel(false)} className="p-2 opacity-50 hover:opacity-100 transition">
                                     <Icons.Close />
                                 </button>
                             </div>
                         </div>
-                        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                        {currentAnnotations.length > 0 && (
+                            <div className="px-3 pt-2.5 pb-1">
+                                <div className="flex items-center gap-1.5 bg-black/5 dark:bg-white/5 rounded-lg px-2 py-1.5">
+                                    <Icons.Search className="w-3 h-3 opacity-40 flex-shrink-0" />
+                                    <input
+                                        type="text"
+                                        value={annotationSearch}
+                                        onChange={e => setAnnotationSearch(e.target.value)}
+                                        placeholder="Buscar en anotaciones..."
+                                        className="bg-transparent outline-none text-xs flex-1 min-w-0"
+                                        style={{ color: 'var(--text-color)' }}
+                                    />
+                                    {annotationSearch && <button onClick={() => setAnnotationSearch('')} className="opacity-40 hover:opacity-100 text-xs leading-none">×</button>}
+                                </div>
+                            </div>
+                        )}
+                        <div className="flex-1 overflow-y-auto p-3 space-y-2" style={{ overscrollBehavior: 'contain' }}>
                             {currentAnnotations.length === 0 ? (
                                 <div className="rounded-2xl border border-dashed border-black/10 dark:border-white/10 p-4 text-sm opacity-60">
                                     Todavía no hay anotaciones en este libro.
                                 </div>
-                            ) : currentAnnotations.map(entry => (
+                            ) : (() => {
+                                const q = annotationSearch.trim().toLowerCase();
+                                const filtered = q
+                                    ? currentAnnotations.filter(e => (e.preview || '').toLowerCase().includes(q) || (e.kind === 'highlight' ? (HIGHLIGHT_PRESETS[e.color]?.label || '') : e.kind === 'note' ? 'nota' : 'marcador').toLowerCase().includes(q))
+                                    : currentAnnotations;
+                                if (!filtered.length) {
+                                    return <div className="rounded-2xl border border-dashed border-black/10 dark:border-white/10 p-4 text-sm opacity-50">Sin resultados para “{annotationSearch}”.</div>;
+                                }
+                                return filtered.map(entry => (
                                 <div key={entry.id} className="rounded-2xl border border-black/5 bg-black/5 p-3 dark:border-white/10 dark:bg-white/[0.03]">
                                     <div className="flex items-start justify-between gap-3">
                                         <div className="min-w-0">
@@ -1439,7 +1564,8 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                         Ir a la anotación
                                     </button>
                                 </div>
-                            ))}
+                                ));
+                            })()}
                         </div>
                     </div>
                 )}
@@ -1476,7 +1602,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     </div>
                 )}
 
-                {/* â”€â”€ PANEL DE BÃšSQUEDA â”€â”€ */}
+                {/* ── PANEL DE BÚSQUEDA ── */}
                 {showSearch && (
                     <div className="absolute right-0 bottom-7 w-80 z-50 flex flex-col shadow-2xl border-l fade-in"
                         style={{ top: tabs ? '88px' : '64px', backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)' }}
@@ -1547,7 +1673,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 )}
 
 
-                {/* â”€â”€ SMART TOC FLOTANTE â”€â”€ */}
+                {/* ── SMART TOC FLOTANTE ── */}
                 {smartTocAddon && toc.length > 0 && (
                     <>
                         {tocCollapsed ? (

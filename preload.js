@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+    getAppVersion: () => ipcRenderer.invoke('app-version'),
+    fetchOpenLibrary: (query) => ipcRenderer.invoke('fetch-openlibrary', query),
     pickBookFiles: () => ipcRenderer.invoke('pick-book-files'),
     pickBookFolder: () => ipcRenderer.invoke('pick-book-folder'),
     startFolderImport: () => ipcRenderer.invoke('start-folder-import'),
@@ -22,4 +24,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     offFolderImportBatch: () => ipcRenderer.removeAllListeners('folder-import-batch'),
     onFolderImportDone: (handler) => ipcRenderer.on('folder-import-done', (_e, payload) => handler(payload)),
     offFolderImportDone: () => ipcRenderer.removeAllListeners('folder-import-done'),
+    // ── Auto-updater ──
+    checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+    quitAndInstallUpdate: () => ipcRenderer.invoke('quit-and-install-update'),
+    onUpdateStatus: (handler) => ipcRenderer.on('update-status', (_e, payload) => handler(payload)),
+    offUpdateStatus: () => ipcRenderer.removeAllListeners('update-status'),
 });

@@ -7,6 +7,7 @@ const dns = require('dns');
 const net = require('net');
 const { execSync } = require('child_process');
 const JSZip = require('jszip');
+const { autoUpdater } = require('electron-updater');
 
 // ── Perf flags (set before app.ready) ────────────────────────────────────────
 // Enable GPU rasterization for smoother UI compositing
@@ -24,9 +25,9 @@ const CATALOG_MAX_BYTES = 2 * 1024 * 1024;
 const BOOK_DOWNLOAD_MAX_BYTES = 250 * 1024 * 1024;
 const EXTERNAL_FETCH_TIMEOUT_MS = 15000;
 
-// Extraer ruta de archivo epub/mobi de los argumentos
+// Extraer ruta de archivo epub/pdf de los argumentos
 function getFileFromArgs(argv) {
-    return argv.slice(1).find(a => /\.(epub|mobi|pdf)$/i.test(a)) || null;
+    return argv.slice(1).find(a => /\.(epub|pdf)$/i.test(a)) || null;
 }
 
 // Single-instance: si ya hay una ventana abierta, enfócarla y enviarle el archivo
@@ -90,7 +91,7 @@ function notifyRenderer(channel, payload) {
 }
 
 // Seleccionar carpeta de sincronización
-const BOOK_EXTENSIONS = new Set(['.epub', '.pdf', '.mobi']);
+const BOOK_EXTENSIONS = new Set(['.epub', '.pdf']);
 
 function isBookPath(filePath) {
     return BOOK_EXTENSIONS.has(path.extname(filePath).toLowerCase());
@@ -170,7 +171,7 @@ async function fetchBuffer(url, { maxBytes, timeoutMs = EXTERNAL_FETCH_TIMEOUT_M
             timeout: timeoutMs,
             headers: {
                 'User-Agent': 'SharkReader/2.5',
-                'Accept': 'application/atom+xml,application/xml,text/xml,application/epub+zip,application/pdf,application/x-mobipocket-ebook,*/*;q=0.8',
+                'Accept': 'application/atom+xml,application/xml,text/xml,application/epub+zip,application/pdf,*/*;q=0.8',
             },
         }, (res) => {
             if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirects < 4) {
@@ -216,11 +217,9 @@ function detectBookExtFromBuffer(buffer, contentType = '', sourceUrl = '') {
     const header = buffer.subarray(0, 160).toString('latin1');
     if (header.startsWith('%PDF')) return '.pdf';
     if (header.startsWith('PK')) return '.epub';
-    if (/BOOKMOBI|MOBI/i.test(header)) return '.mobi';
     const extFromUrl = path.extname(new URL(sourceUrl).pathname).toLowerCase();
     if (BOOK_EXTENSIONS.has(extFromUrl)) return extFromUrl;
     if (/pdf/i.test(contentType)) return '.pdf';
-    if (/mobi|mobipocket/i.test(contentType)) return '.mobi';
     if (/epub|zip/i.test(contentType)) return '.epub';
     return null;
 }
@@ -283,8 +282,8 @@ function parseOpdsCatalog(xml, sourceUrl) {
 
         const acquisition = links.find(link =>
             /acquisition|open-access/i.test(link.rel) ||
-            /epub|pdf|mobipocket|mobi/i.test(link.type) ||
-            /\.(epub|pdf|mobi)(?:$|[?#])/i.test(link.href)
+            /epub|pdf/i.test(link.type) ||
+            /\.(epub|pdf)(?:$|[?#])/i.test(link.href)
         );
         const nav = links.find(link =>
             /subsection|collection|start|alternate/i.test(link.rel) &&
@@ -503,7 +502,7 @@ async function readBookPayload(filePath) {
         return {
             name: path.basename(filePath),
             path: filePath,
-            type: ext === '.pdf' ? 'application/pdf' : ext === '.mobi' ? 'application/x-mobipocket-ebook' : 'application/epub+zip',
+            type: ext === '.pdf' ? 'application/pdf' : 'application/epub+zip',
             lastModified: stats.mtimeMs,
             dataBase64: data.toString('base64'),
             meta
@@ -524,7 +523,7 @@ function createBookImportStub(filePath) {
     return {
         name: path.basename(filePath),
         path: filePath,
-        type: ext === '.pdf' ? 'application/pdf' : ext === '.mobi' ? 'application/x-mobipocket-ebook' : 'application/epub+zip',
+        type: ext === '.pdf' ? 'application/pdf' : 'application/epub+zip',
         lastModified,
     };
 }
@@ -678,7 +677,7 @@ ipcMain.handle('pick-book-files', async () => {
     if (!mainWindow) return [];
     const result = await dialog.showOpenDialog(mainWindow, {
         properties: ['openFile', 'multiSelections'],
-        filters: [{ name: 'Libros', extensions: ['epub', 'pdf', 'mobi'] }],
+        filters: [{ name: 'Libros', extensions: ['epub', 'pdf'] }],
         title: 'Añadir libros'
     });
     if (result.canceled) return [];
@@ -813,7 +812,7 @@ ipcMain.handle('download-external-book', async (_e, downloadUrl, fallbackName = 
         const parsed = new URL(finalUrl);
         const ext = detectBookExtFromBuffer(buffer, contentType, finalUrl);
         if (!ext) {
-            return { ok: false, msg: 'La descarga no parece ser un EPUB, PDF o MOBI valido.' };
+            return { ok: false, msg: 'La descarga no parece ser un EPUB o PDF valido.' };
         }
         const safeBase = String(fallbackName || path.basename(parsed.pathname) || 'book')
             .replace(/\.[^/.]+$/, '')
@@ -824,7 +823,7 @@ ipcMain.handle('download-external-book', async (_e, downloadUrl, fallbackName = 
             payload: {
                 name: `${safeBase}${ext}`,
                 path: finalUrl,
-                type: ext === '.pdf' ? 'application/pdf' : ext === '.mobi' ? 'application/x-mobipocket-ebook' : 'application/epub+zip',
+                type: ext === '.pdf' ? 'application/pdf' : 'application/epub+zip',
                 lastModified: Date.now(),
                 dataBase64: buffer.toString('base64'),
                 meta: null,
@@ -879,7 +878,6 @@ ipcMain.handle('register-file-associations', async () => {
     const formats = [
         { ext: '.epub', progId: 'SharkReader.epub', desc: 'EPUB Document', contentType: 'application/epub+zip' },
         { ext: '.pdf', progId: 'SharkReader.pdf', desc: 'PDF Document', contentType: 'application/pdf' },
-        { ext: '.mobi', progId: 'SharkReader.mobi', desc: 'MOBI Document', contentType: 'application/x-mobipocket-ebook' },
     ];
 
     try {
@@ -913,10 +911,8 @@ ipcMain.handle('remove-file-associations', async () => {
         [
             'SharkReader.epub',
             'SharkReader.pdf',
-            'SharkReader.mobi',
             '.epub',
             '.pdf',
-            '.mobi',
         ].forEach(key => {
             try {
                 execSync(`reg delete "HKCU\\Software\\Classes\\${key}" /f`);
@@ -929,7 +925,83 @@ ipcMain.handle('remove-file-associations', async () => {
     }
 });
 
-app.whenReady().then(createWindow);
+ipcMain.handle('app-version', () => app.getVersion());
+
+// ── OpenLibrary metadata fetch ────────────────────────────────────────────────
+// Busca metadata de un libro por título+autor en la API pública de OpenLibrary.
+// Devuelve { coverUrl, description, year, isbn } o null si no encuentra nada.
+ipcMain.handle('fetch-openlibrary', async (_e, { title, author }) => {
+    if (!title) return null;
+    try {
+        const q = encodeURIComponent(`${title} ${author || ''}`.trim().slice(0, 120));
+        const searchUrl = `https://opds.openlibrary.org/search?q=${q}&limit=5`;
+        const { buffer } = await fetchBuffer(searchUrl, { maxBytes: 512 * 1024 });
+        const text = buffer.toString('utf8');
+        // Parse OPDS Atom response — extraer primer resultado
+        const idMatch = text.match(/<id>[^<]*\/works\/(OL\w+)<\/id>/);
+        if (!idMatch) return null;
+        const workId = idMatch[1];
+        const detailUrl = `https://openlibrary.org/works/${workId}.json`;
+        const { buffer: detailBuf } = await fetchBuffer(detailUrl, { maxBytes: 256 * 1024 });
+        const detail = JSON.parse(detailBuf.toString('utf8'));
+        const description = typeof detail.description === 'string'
+            ? detail.description
+            : detail.description?.value || null;
+        const year = detail.first_publish_date
+            ? parseInt(detail.first_publish_date)
+            : null;
+        // Portada: buscar ISBN del work para construir URL de portada
+        const isbn = detail.isbn_10?.[0] || detail.isbn_13?.[0] || null;
+        const coverId = detail.covers?.[0];
+        const coverUrl = coverId
+            ? `https://covers.openlibrary.org/b/id/${coverId}-L.jpg`
+            : isbn
+                ? `https://covers.openlibrary.org/b/isbn/${isbn}-L.jpg`
+                : null;
+        return { coverUrl, description: description?.slice(0, 2000) || null, year, isbn };
+    } catch (_) {
+        return null;
+    }
+});
+
+// ── Auto-updater (electron-updater + GitHub releases) ─────────────────────────
+function sendUpdateStatus(status, info) {
+    notifyRenderer('update-status', { status, info: info || null });
+}
+
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
+
+autoUpdater.on('checking-for-update', () => sendUpdateStatus('checking'));
+autoUpdater.on('update-available', (info) => sendUpdateStatus('available', { version: info?.version }));
+autoUpdater.on('update-not-available', () => sendUpdateStatus('not-available'));
+autoUpdater.on('download-progress', (p) => sendUpdateStatus('downloading', { percent: p?.percent }));
+autoUpdater.on('update-downloaded', (info) => sendUpdateStatus('downloaded', { version: info?.version }));
+autoUpdater.on('error', (err) => sendUpdateStatus('error', { message: String(err?.message || err) }));
+
+ipcMain.handle('check-for-updates', async () => {
+    if (isDev) { sendUpdateStatus('not-available'); return { ok: false, dev: true }; }
+    try {
+        await autoUpdater.checkForUpdates();
+        return { ok: true };
+    } catch (err) {
+        sendUpdateStatus('error', { message: String(err?.message || err) });
+        return { ok: false, msg: String(err?.message || err) };
+    }
+});
+
+ipcMain.handle('quit-and-install-update', () => {
+    try { autoUpdater.quitAndInstall(); return { ok: true }; }
+    catch (err) { return { ok: false, msg: String(err?.message || err) }; }
+});
+
+app.whenReady().then(() => {
+    createWindow();
+    // Comprobación silenciosa al arrancar (solo en producción, no bloquea el inicio)
+    if (!isDev) {
+        setTimeout(() => { autoUpdater.checkForUpdates().catch(() => {}); }, 4000);
+    }
+});
 
 app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();

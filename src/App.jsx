@@ -17,6 +17,7 @@ import {
     updateBookInList,
 } from './bookModel';
 import { buildPortableBackup, mergeBackupData } from './backupMerge';
+import { readerXp, readerLevelFromXp } from './readingProgress';
 import BookCard from './BookCard';
 import QuickEditCard from './QuickEditCard';
 import SettingsPanel from './SettingsPanel';
@@ -213,6 +214,7 @@ const ANNOTATION_COLOR_META = {
         const fileInputRef = useRef(null);
         const folderInputRef = useRef(null);
         const importInputRef = useRef(null);
+        const goodreadsInputRef = useRef(null);
         const avatarInputRef = useRef(null);
         const coverInputRef = useRef(null);
         const libraryScrollRef = useRef(null);
@@ -254,13 +256,13 @@ const ANNOTATION_COLOR_META = {
         }, [autoDarkMode, theme, themeClock]);
         const booksById = useMemo(() => new Map(books.map(book => [book.id, book])), [books]);
         const readerLevel = useMemo(() => {
-            const xp = Math.max(0, (stats.timeRead || 0) * 2)
-                + books.filter(book => book.isFinished).length * 80
-                + books.reduce((sum, book) => sum + (book.bookmarks?.length || 0) * 8 + (book.notes ? 20 : 0), 0);
-            const xpPerLevel = addonConfig.levelSystem?.xpPerLevel || 100;
-            const level = Math.max(1, Math.floor(xp / xpPerLevel) + 1);
-            const current = xp % xpPerLevel;
-            return { xp, level, current, xpPerLevel, progress: Math.round((current / xpPerLevel) * 100) };
+            const xp = readerXp({
+                minutesRead: stats.timeRead || 0,
+                booksFinished: books.filter(book => book.isFinished).length,
+                bookmarks: books.reduce((sum, book) => sum + (book.bookmarks?.length || 0), 0),
+                notedBooks: books.reduce((sum, book) => sum + (book.notes ? 1 : 0), 0),
+            });
+            return readerLevelFromXp(xp, addonConfig.levelSystem?.xpPerLevel || 100);
         }, [addonConfig.levelSystem?.xpPerLevel, books, stats.timeRead]);
 
         const bookPayloadsToFiles = useCallback((payloads = []) => {
@@ -890,10 +892,6 @@ const ANNOTATION_COLOR_META = {
         // ─────────────────────────────────────────
         const openBook = useCallback((bookId, cfi = null) => {
             const bookToOpen = booksRef.current.find(book => book.id === bookId);
-            if (bookToOpen?.type === 'mobi') {
-                showNoticeToast('MOBI se puede organizar en la biblioteca, pero el lector interno aun no soporta ese formato.', 'warning');
-                return;
-            }
             const existing = tabs.find(t => t.bookId === bookId);
             if (existing) {
                 setActiveTabId(existing.id);
@@ -1000,7 +998,6 @@ const ANNOTATION_COLOR_META = {
         const {
             handleContextMenu,
             toggleFavorite,
-            toggleWishlist,
             markFinished,
             deleteBook,
             updateBookLocation,
@@ -1549,7 +1546,7 @@ const ANNOTATION_COLOR_META = {
 
         const spinBookRoulette = useCallback(() => {
             const cfg = addonConfig.bookRoulette || {};
-            let pool = books.filter(book => !book.loading && book.type !== 'mobi');
+            let pool = books.filter(book => !book.loading);
             if (cfg.onlyUnread !== false) pool = pool.filter(b => !b.isFinished);
             if (cfg.onlyFavorites) pool = pool.filter(b => b.isFavorite);
             if (cfg.filterTag) {
@@ -1564,6 +1561,79 @@ const ANNOTATION_COLOR_META = {
             setRouletteBook(selected);
             setStats(prev => ({ ...prev, rouletteSpins: (prev.rouletteSpins || 0) + 1 }));
         }, [addonConfig.bookRoulette, books, showNoticeToast]);
+
+        // ── v3.5: OpenLibrary metadata fetch ───────────────────────────────────
+        const fetchOpenLibraryMeta = useCallback(async (book) => {
+            if (!window.electronAPI?.fetchOpenLibrary) return;
+            showNoticeToast('Buscando en OpenLibrary…', 'info');
+            try {
+                const result = await window.electronAPI.fetchOpenLibrary({ title: book.name, author: book.author });
+                if (!result) { showNoticeToast('No se encontró información para este libro.', 'warning'); return; }
+                const now = Date.now();
+                setBooks(prev => prev.map(b => b.id !== book.id ? b : {
+                    ...b,
+                    ...(result.coverUrl && !b.coverUrl ? { coverUrl: result.coverUrl } : {}),
+                    ...(result.description && !b.description ? { description: result.description } : {}),
+                    metadataUpdatedAt: now, updatedAt: now,
+                }));
+                showNoticeToast(`Información encontrada${result.coverUrl ? ' · portada aplicada' : ''}.`, 'success');
+            } catch (e) {
+                showNoticeToast('Error al buscar en OpenLibrary.', 'warning');
+            }
+        }, [setBooks, showNoticeToast]);
+
+        // ── v3.5: Import Goodreads CSV ──────────────────────────────────────────
+        const importGoodreadsCSV = useCallback((e) => {
+            const f = e.target.files[0]; if (!f) return;
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                try {
+                    const lines = ev.target.result.split('\n');
+                    const header = lines[0].split(',').map(h => h.replace(/"/g, '').trim());
+                    const idx = (name) => header.findIndex(h => h.toLowerCase().includes(name.toLowerCase()));
+                    const iTitle = idx('Title'), iAuthor = idx('Author'), iRating = idx('My Rating'),
+                          iRead = idx('Date Read'), iAdded = idx('Date Added'), iShelf = idx('Exclusive Shelf'),
+                          iISBN = idx('ISBN13');
+                    let imported = 0, skipped = 0;
+                    const now = Date.now();
+                    const newBooks = [];
+                    for (let i = 1; i < lines.length; i++) {
+                        const cols = lines[i].match(/(".*?"|[^,]+|(?<=,)(?=,))/g) || lines[i].split(',');
+                        const get = (j) => (cols[j] || '').replace(/^"|"$/g, '').trim();
+                        const title = get(iTitle); if (!title) continue;
+                        // Skip if already in library (title match)
+                        const exists = books.some(b => b.name?.toLowerCase() === title.toLowerCase());
+                        if (exists) { skipped++; continue; }
+                        const rating = parseInt(get(iRating)) || 0;
+                        const shelf = get(iShelf);
+                        const dateRead = get(iRead) ? new Date(get(iRead)).getTime() || null : null;
+                        const dateAdded = get(iAdded) ? new Date(get(iAdded)).getTime() || now : now;
+                        const isbn = get(iISBN)?.replace(/[^0-9]/g, '') || null;
+                        newBooks.push({
+                            id: `gr-${Date.now()}-${i}`,
+                            name: title, author: get(iAuthor), rating, type: 'epub',
+                            isFinished: shelf === 'read',
+                            dateAdded, dateFinished: dateRead || null,
+                            coverUrl: isbn ? `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg` : null,
+                            tags: shelf && shelf !== 'to-read' && shelf !== 'read' ? [shelf] : [],
+                            progress: shelf === 'read' ? 100 : 0,
+                            bookmarks: [], readingMinutes: 0,
+                            loading: false, file: null,
+                            updatedAt: now, metadataUpdatedAt: now, progressUpdatedAt: now,
+                            color: '#1e3a5f',
+                            _goodreadsImport: true,
+                        });
+                        imported++;
+                    }
+                    if (newBooks.length) setBooks(prev => [...prev, ...newBooks]);
+                    showNoticeToast(`Goodreads: ${imported} libros importados${skipped ? `, ${skipped} ya existían` : ''}.`, 'info');
+                } catch (err) {
+                    showNoticeToast('Error al leer el CSV de Goodreads. Comprueba el formato.', 'warning');
+                }
+            };
+            reader.readAsText(f, 'utf-8');
+            e.target.value = '';
+        }, [books, setBooks, showNoticeToast]);
 
         const exportAllData = () => {
             if (!userProfile) { alert("Inicia sesión para exportar."); return; }
@@ -1642,7 +1712,6 @@ const ANNOTATION_COLOR_META = {
                 if (b.loading) return false;
                 const contentIndex = contentIndexMap[b.id]?.text || '';
                 if (currentFilter === 'favorites' && !b.isFav) return false;
-                if (currentFilter === 'wishlist' && !b.isWishlist) return false;
                 if (currentFilter === 'unfinished') return !b.isFinished;
                 if (currentFilter === 'unstarted') return !b.lastReadDate && !b.isFinished;
                 if (currentFilter === 'reading') return b.lastReadDate > 0 && !b.isFinished;
@@ -1662,6 +1731,13 @@ const ANNOTATION_COLOR_META = {
                     const requiredRating = Number(currentFilter.slice(7));
                     return Number(b.rating || 0) === requiredRating;
                 }
+                // Smart shelves (estanterías automáticas)
+                if (currentFilter === 'shelf:abandoned') {
+                    const now = Date.now();
+                    return !b.isFinished && b.lastReadDate > 0 && (now - b.lastReadDate) > 180 * 86400000;
+                }
+                if (currentFilter === 'shelf:unopened') return !b.lastReadDate && !b.isFinished;
+                if (currentFilter === 'shelf:almostdone') return !b.isFinished && (b.progress || 0) >= 80;
                 if (currentFilter !== 'all' && currentFilter !== 'favorites' && b.category !== currentFilter) return false;
                 // Combined multi-filters (AND logic across tag list and author list)
                 if (filterTags.length > 0) {
@@ -1725,8 +1801,10 @@ const ANNOTATION_COLOR_META = {
                 unstarted: 0,
                 finished: 0,
                 favorites: 0,
-                wishlist: 0,
                 recents: 0,
+                shelfAbandoned: 0,
+                shelfUnopened: 0,
+                shelfAlmostDone: 0,
             };
             const categoryCounts = new Map(customCategories.map(category => [category, 0]));
             const collectionCounts = new Map(manualCollections.map(collection => [collection.id, 0]));
@@ -1746,8 +1824,10 @@ const ANNOTATION_COLOR_META = {
                 if (!book.lastReadDate && !book.isFinished) counts.unstarted += 1;
                 if (book.isFinished) counts.finished += 1;
                 if (book.isFav) counts.favorites += 1;
-                if (book.isWishlist) counts.wishlist += 1;
                 if ((book.dateAdded > now - 7 * 24 * 60 * 60 * 1000) || (book.lastReadDate > now - 14 * 24 * 60 * 60 * 1000)) counts.recents += 1;
+                if (!book.isFinished && book.lastReadDate > 0 && (now - book.lastReadDate) > 180 * 86400000) counts.shelfAbandoned += 1;
+                if (!book.lastReadDate && !book.isFinished) counts.shelfUnopened += 1;
+                if (!book.isFinished && (book.progress || 0) >= 80) counts.shelfAlmostDone += 1;
                 if (book.category && categoryCounts.has(book.category)) {
                     categoryCounts.set(book.category, (categoryCounts.get(book.category) || 0) + 1);
                 }
@@ -2029,7 +2109,7 @@ const ANNOTATION_COLOR_META = {
             const failedCount = (folderImport.failedFiles || []).length;
 
             if (folderImport.phase === 'empty') {
-                return { ...folderImport, title: 'No se encontraron libros', detail: 'La carpeta seleccionada no contiene EPUB, PDF o MOBI.', progress: 100, indeterminate: false, canCancel: false };
+                return { ...folderImport, title: 'No se encontraron libros', detail: 'La carpeta seleccionada no contiene EPUB ni PDF.', progress: 100, indeterminate: false, canCancel: false };
             }
 
             if (folderImport.phase === 'error') {
@@ -2284,6 +2364,9 @@ const ANNOTATION_COLOR_META = {
                                 <div className="w-px h-6 bg-white/20 mx-1"></div>
                                 <button onClick={openFilePicker} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap"><Icons.Plus /> <span className="hidden xl:inline">{t.addBook}</span></button>
                                 <button onClick={openFolderPicker} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap"><Icons.FolderPlus /> <span className="hidden xl:inline">{t.addFolder}</span></button>
+                                <button onClick={() => goodreadsInputRef.current?.click()} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap" title="Importar CSV de Goodreads">
+                                    <span className="text-sm leading-none">GR</span>
+                                </button>
                             </div>
                             {lastReadId && (
                                 <button onClick={() => openBook(lastReadId)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold bg-green-500 hover:bg-green-400 text-white shadow-md mr-2 whitespace-nowrap">
@@ -2328,46 +2411,25 @@ const ANNOTATION_COLOR_META = {
                     </div>
                 )}
 
-                {view === 'library' && (
-                    <div className="flex-shrink-0 px-6 py-3 border-b border-black/5 dark:border-white/5" style={{ backgroundColor: 'color-mix(in srgb, var(--topbar-bg) 82%, transparent)' }}>
-                        <div className="flex flex-wrap items-center gap-2">
-                            {[
-                                { id: 'all', label: lang === 'en' ? 'All' : 'Todos', count: libraryDerived.counts.all },
-                                { id: 'unfinished', label: lang === 'en' ? 'Unfinished' : 'Sin terminar', count: libraryDerived.counts.unfinished },
-                                { id: 'finished', label: lang === 'en' ? 'Finished' : 'Terminados', count: libraryDerived.counts.finished },
-                                { id: 'wishlist', label: 'Wishlist', count: libraryDerived.counts.wishlist },
-                            ].map(item => (
-                                <button
-                                    key={item.id}
-                                    onClick={() => setCurrentFilter(item.id)}
-                                    className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-bold transition ${currentFilter === item.id ? 'bg-sky-500 text-slate-950 shadow-lg' : 'bg-black/10 text-white/75 hover:bg-black/20 dark:bg-white/5 dark:hover:bg-white/10'}`}
-                                >
-                                    <span>{item.label}</span>
-                                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${currentFilter === item.id ? 'bg-slate-950/15' : 'bg-white/10'}`}>{item.count}</span>
-                                </button>
-                            ))}
-                        </div>
-                        {(filterTags.length > 0 || filterAuthors.length > 0) && (
-                            <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                                <span className="text-[9px] font-black uppercase tracking-widest text-white/50">Filtros activos:</span>
-                                {filterTags.map(tag => (
-                                    <button key={tag} onClick={() => toggleFilterTag(tag)}
-                                        className="flex items-center gap-1 bg-purple-500/80 text-white rounded-full px-2.5 py-1 text-xs font-bold hover:bg-purple-600 transition">
-                                        🏷️ {tag} ×
-                                    </button>
-                                ))}
-                                {filterAuthors.map(author => (
-                                    <button key={author} onClick={() => toggleFilterAuthor(author)}
-                                        className="flex items-center gap-1 bg-sky-500/80 text-white rounded-full px-2.5 py-1 text-xs font-bold hover:bg-sky-600 transition">
-                                        👤 {author} ×
-                                    </button>
-                                ))}
-                                <button onClick={() => { setFilterTags([]); setFilterAuthors([]); }}
-                                    className="text-xs font-bold text-white/50 hover:text-white/80 transition px-1">
-                                    Limpiar ×
-                                </button>
-                            </div>
-                        )}
+                {view === 'library' && (filterTags.length > 0 || filterAuthors.length > 0) && (
+                    <div className="flex-shrink-0 px-4 py-2 border-b border-black/5 dark:border-white/5 flex flex-wrap items-center gap-1.5" style={{ backgroundColor: 'color-mix(in srgb, var(--topbar-bg) 82%, transparent)' }}>
+                        <span className="text-[9px] font-black uppercase tracking-widest text-white/50">Filtros:</span>
+                        {filterTags.map(tag => (
+                            <button key={tag} onClick={() => toggleFilterTag(tag)}
+                                className="flex items-center gap-1 bg-purple-500/80 text-white rounded-full px-2.5 py-1 text-xs font-bold hover:bg-purple-600 transition">
+                                🏷️ {tag} ×
+                            </button>
+                        ))}
+                        {filterAuthors.map(author => (
+                            <button key={author} onClick={() => toggleFilterAuthor(author)}
+                                className="flex items-center gap-1 bg-sky-500/80 text-white rounded-full px-2.5 py-1 text-xs font-bold hover:bg-sky-600 transition">
+                                👤 {author} ×
+                            </button>
+                        ))}
+                        <button onClick={() => { setFilterTags([]); setFilterAuthors([]); }}
+                            className="text-xs font-bold text-white/50 hover:text-white/80 transition px-1">
+                            Limpiar ×
+                        </button>
                     </div>
                 )}
 
@@ -2384,9 +2446,10 @@ const ANNOTATION_COLOR_META = {
                 )}
 
                 {/* Inputs ocultos */}
-                <input type="file" accept=".epub,.pdf,.mobi" multiple ref={fileInputRef} className="hidden" onChange={handleFilesUpload} />
-                <input type="file" multiple ref={folderInputRef} accept=".epub,.pdf,.mobi" className="hidden" onChange={handleFilesUpload} webkitdirectory="" directory="" />
+                <input type="file" accept=".epub,.pdf" multiple ref={fileInputRef} className="hidden" onChange={handleFilesUpload} />
+                <input type="file" multiple ref={folderInputRef} accept=".epub,.pdf" className="hidden" onChange={handleFilesUpload} webkitdirectory="" directory="" />
                 <input type="file" accept=".json" ref={importInputRef} className="hidden" onChange={importData} />
+                <input type="file" accept=".csv" ref={goodreadsInputRef} className="hidden" onChange={importGoodreadsCSV} />
                 <input type="file" accept="image/*" ref={avatarInputRef} className="hidden" onChange={handleAvatarUpload} />
                 <input type="file" accept="image/*" ref={coverInputRef} className="hidden" onChange={handleCoverUpload} />
 
@@ -2452,7 +2515,6 @@ const ANNOTATION_COLOR_META = {
                                         { filter: 'unstarted', icon: <span>📚</span>, label: 'Por leer', count: libraryDerived.counts.unstarted },
                                         { filter: 'finished', icon: <span>✅</span>, label: 'Terminados', count: libraryDerived.counts.finished },
                                         { filter: 'favorites', icon: <Icons.Heart className="text-red-500" />, label: t.favorites, count: libraryDerived.counts.favorites },
-                                        { filter: 'wishlist', icon: <span>💜</span>, label: 'Wishlist', count: libraryDerived.counts.wishlist },
                                         { filter: 'recents', icon: <span>🕐</span>, label: 'Recientes', count: libraryDerived.counts.recents },
                                     ].map(item => (
                                         <button key={item.filter} onClick={() => { setCurrentFilter(item.filter); setView('library'); setSidebarOpen(false); }}
@@ -2461,6 +2523,23 @@ const ANNOTATION_COLOR_META = {
                                             <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md">{item.count}</span>
                                         </button>
                                     ))}
+
+                                    {/* Estanterías automáticas — solo se muestran si tienen libros */}
+                                    {(libraryDerived.counts.shelfAbandoned > 0 || libraryDerived.counts.shelfAlmostDone > 0) && (
+                                        <div className="mt-2 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
+                                            <p className="text-[9px] font-black uppercase tracking-widest opacity-30 px-1 mb-1">Estanterías</p>
+                                            {[
+                                                { filter: 'shelf:abandoned', icon: '⏸', label: 'Pausados +6 meses', count: libraryDerived.counts.shelfAbandoned },
+                                                { filter: 'shelf:almostdone', icon: '🏁', label: 'Casi terminados', count: libraryDerived.counts.shelfAlmostDone },
+                                            ].filter(s => s.count > 0).map(item => (
+                                                <button key={item.filter} onClick={() => { setCurrentFilter(item.filter); setView('library'); setSidebarOpen(false); }}
+                                                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left font-semibold text-sm ${currentFilter === item.filter ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
+                                                    <span className="opacity-70 text-base">{item.icon}</span> {item.label}
+                                                    <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md">{item.count}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
 
                                     {/* Por Autor */}
                                     {libraryDerived.authors.length > 0 && (() => {
@@ -3176,10 +3255,8 @@ const ANNOTATION_COLOR_META = {
                 {contextMenu && (
                     <div className="absolute shadow-2xl rounded-2xl py-2 z-50 text-sm border backdrop-blur-xl fade-in" style={{ top: contextMenu.y, left: contextMenu.x, backgroundColor: 'var(--surface-bg)', color: 'var(--text-color)', borderColor: 'var(--border-color)', minWidth: '220px' }}>
                         <button onClick={() => { setActiveBookModal(contextMenu.book); setContextMenu(null); }} className="w-full text-left px-5 py-3 flex items-center gap-3 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition"><Icons.Info /> {t.bookInfo}</button>
+                        <button onClick={() => { fetchOpenLibraryMeta(contextMenu.book); setContextMenu(null); }} className="w-full text-left px-5 py-3 flex items-center gap-3 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition">🔍 Buscar info (OpenLibrary)</button>
                         <button onClick={() => { toggleFavorite(contextMenu.book.id); setContextMenu(null); }} className="w-full text-left px-5 py-3 flex items-center gap-3 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition"><Icons.Heart fill={contextMenu.book.isFav ? '#ef4444' : 'none'} className={contextMenu.book.isFav ? 'text-red-500' : ''} /> {contextMenu.book.isFav ? t.remFav : t.addFav}</button>
-                        <button onClick={() => { toggleWishlist(contextMenu.book.id); setContextMenu(null); }} className="w-full text-left px-5 py-3 flex items-center gap-3 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition">
-                            <span>{contextMenu.book.isWishlist ? '💜' : '🕒'}</span> {contextMenu.book.isWishlist ? 'Quitar de wishlist' : 'Añadir a wishlist'}
-                        </button>
                         <button onClick={() => { markFinished(contextMenu.book.id); setContextMenu(null); }} className="w-full text-left px-5 py-3 flex items-center gap-3 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition">
                             {contextMenu.book.isFinished ? '↩️' : '✅'} {contextMenu.book.isFinished ? 'Marcar como leyendo' : 'Marcar como terminado'}
                         </button>

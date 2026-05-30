@@ -47,6 +47,11 @@ const LEVEL_NAMES = ['Aprendiz', 'Curioso', 'Lector', 'Devorador', 'Bibliófilo'
 const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, addons = {}, addonConfig = {}, initialTab = 'stats', onBack, dailyGoalMins = 30, weeklyGoalMins = 120, currentWeekMins = 0, readerLevel, journalEntries = [] }) => {
     const [activeTab, setActiveTab] = useState(initialTab);
     const [chartPeriod, setChartPeriod] = useState('week');
+    const [planGoal, setPlanGoal] = useState('');
+    const [planDate, setPlanDate] = useState(() => {
+        const d = new Date(); d.setFullYear(d.getFullYear() + 1);
+        return d.toISOString().slice(0, 10);
+    });
 
     // ── Heatmap ──────────────────────────────────────────────────────────────
     const weeks = useMemo(() => {
@@ -389,6 +394,52 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, add
                                 })}
                             </div>
                         </div>
+
+                        {/* Plan de lectura */}
+                        {(() => {
+                            const goalN = parseInt(planGoal);
+                            const booksFinished = books.filter(b => b.isFinished).length;
+                            const targetDate = planDate ? new Date(planDate) : null;
+                            const daysLeft = targetDate ? Math.max(0, Math.round((targetDate - new Date()) / 86400000)) : null;
+                            const booksLeft = goalN > 0 ? Math.max(0, goalN - booksFinished) : null;
+                            const daysPerBook = (booksLeft > 0 && daysLeft > 0) ? Math.round(daysLeft / booksLeft) : null;
+                            return (
+                                <div className="rounded-2xl p-5" style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}>
+                                    <h2 className="font-black text-sm mb-4 opacity-80">📅 Plan de lectura</h2>
+                                    <div className="flex flex-wrap items-end gap-4 mb-4">
+                                        <div className="flex flex-col gap-1">
+                                            <label className="text-[9px] font-black uppercase tracking-wider opacity-50">Quiero leer</label>
+                                            <div className="flex items-center gap-2">
+                                                <input type="number" min="1" max="9999" value={planGoal} onChange={e => setPlanGoal(e.target.value)} placeholder="N libros"
+                                                    className="w-24 rounded-xl px-3 py-2 text-sm font-bold outline-none border border-transparent focus:border-[var(--highlight)] transition"
+                                                    style={{ background: 'var(--bg-color)', color: 'var(--text-color)' }} />
+                                                <span className="text-sm opacity-60">libros antes del</span>
+                                            </div>
+                                        </div>
+                                        <div className="flex flex-col gap-1">
+                                            <label className="text-[9px] font-black uppercase tracking-wider opacity-50">Fecha límite</label>
+                                            <input type="date" value={planDate} onChange={e => setPlanDate(e.target.value)}
+                                                className="rounded-xl px-3 py-2 text-sm font-bold outline-none border border-transparent focus:border-[var(--highlight)] transition"
+                                                style={{ background: 'var(--bg-color)', color: 'var(--text-color)' }} />
+                                        </div>
+                                    </div>
+                                    {goalN > 0 && daysLeft !== null && (
+                                        <div className="grid grid-cols-3 gap-3">
+                                            {[
+                                                { label: 'Terminados', value: `${booksFinished} / ${goalN}`, color: 'var(--highlight)' },
+                                                { label: 'Días restantes', value: `${daysLeft}d`, color: '#f59e0b' },
+                                                { label: daysPerBook !== null ? 'Días por libro' : 'Meta cumplida', value: daysPerBook !== null ? `${daysPerBook}d` : '🏆', color: booksLeft === 0 ? '#22c55e' : '#a855f7' },
+                                            ].map(s => (
+                                                <div key={s.label} className="rounded-xl p-3 text-center" style={{ background: 'var(--bg-color)', border: '1px solid var(--border-color)' }}>
+                                                    <div className="text-lg font-black" style={{ color: s.color }}>{s.value}</div>
+                                                    <div className="text-[9px] font-bold uppercase tracking-wider opacity-50 mt-0.5">{s.label}</div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
 
                         {/* Top 5 libros por tiempo */}
                         {(() => {

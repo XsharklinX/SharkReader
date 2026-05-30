@@ -44,6 +44,15 @@ const SettingsPanel = ({
     const [assocStatus, setAssocStatus] = useState('');
     const assocStatusTimerRef = useRef(null);
     const [confirmDelete, setConfirmDelete] = useState(false);
+    const [appVersion, setAppVersion] = useState('');
+    const [updateState, setUpdateState] = useState({ status: 'idle', info: null });
+
+    useEffect(() => {
+        window.electronAPI?.getAppVersion?.().then(v => setAppVersion(v)).catch(() => {});
+        const handler = (payload) => setUpdateState(payload || { status: 'idle' });
+        window.electronAPI?.onUpdateStatus?.(handler);
+        return () => window.electronAPI?.offUpdateStatus?.();
+    }, []);
 
     const showAssocStatus = (value, ms = 0) => {
         clearTimeout(assocStatusTimerRef.current);
@@ -280,7 +289,7 @@ const SettingsPanel = ({
                         <div className="flex gap-2">
                             <button onClick={async () => { try { const r = await window.electronAPI.registerFileAssociations(); setAssocStatus(r.ok ? '✓ Registrado' : '✗ ' + r.msg); } catch (e) { setAssocStatus('✗ ' + e.message); } }}
                                 className="flex-1 py-3 rounded-xl font-bold text-sm text-white hover:brightness-110 transition" style={{ backgroundColor: 'var(--highlight)' }}>
-                                🔗 Registrar .epub y .mobi
+                                🔗 Registrar .epub y .pdf
                             </button>
                             <button onClick={async () => { try { await window.electronAPI.removeFileAssociations(); setAssocStatus('✓ Eliminado'); } catch (e) { setAssocStatus('✗ ' + e.message); } }}
                                 className="py-3 px-4 rounded-xl font-bold text-sm bg-black/5 dark:bg-white/5 hover:opacity-70 transition">
@@ -330,7 +339,7 @@ const SettingsPanel = ({
                     <div className="rounded-2xl border border-white/5 bg-black/5 dark:bg-white/[0.03] p-4 space-y-2">
                         <div className="flex items-center justify-between">
                             <span className="text-xs font-black opacity-60">Versión</span>
-                            <span className="text-xs font-bold opacity-90">2.7.1</span>
+                            <span className="text-xs font-bold opacity-90">{appVersion || '—'}</span>
                         </div>
                         <div className="flex items-center justify-between">
                             <span className="text-xs font-black opacity-60">Desarrollador</span>
@@ -343,6 +352,31 @@ const SettingsPanel = ({
                         <div className="flex items-center justify-between">
                             <span className="text-xs font-black opacity-60">Stack</span>
                             <span className="text-xs font-bold opacity-60">Electron · React · Vite</span>
+                        </div>
+                        <div className="pt-2 mt-1 border-t border-white/5">
+                            {(() => {
+                                const s = updateState.status;
+                                if (s === 'available' || s === 'downloading') {
+                                    const pct = updateState.info?.percent != null ? Math.round(updateState.info.percent) : null;
+                                    return <div className="text-xs font-bold opacity-70 py-1.5">{s === 'downloading' && pct != null ? `Descargando actualización… ${pct}%` : 'Descargando actualización…'}</div>;
+                                }
+                                if (s === 'downloaded') {
+                                    return (
+                                        <button onClick={() => window.electronAPI?.quitAndInstallUpdate?.()}
+                                            className="w-full py-2 rounded-xl font-bold text-sm bg-green-500/20 text-green-600 dark:text-green-300 hover:bg-green-500/30 transition">
+                                            ✅ Actualización lista — Reiniciar e instalar
+                                        </button>
+                                    );
+                                }
+                                return (
+                                    <button
+                                        onClick={() => { setUpdateState({ status: 'checking' }); window.electronAPI?.checkForUpdates?.(); }}
+                                        disabled={s === 'checking'}
+                                        className="w-full py-2 rounded-xl font-bold text-sm bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition disabled:opacity-50">
+                                        {s === 'checking' ? 'Buscando…' : s === 'not-available' ? '✓ Estás al día' : s === 'error' ? 'Error al buscar — reintentar' : 'Buscar actualizaciones'}
+                                    </button>
+                                );
+                            })()}
                         </div>
                     </div>
                 </div>

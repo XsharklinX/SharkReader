@@ -89,6 +89,47 @@ const PdfReader = ({
     // Highlights & annotations
     const [highlightPopup, setHighlightPopup] = useState(null); // { x, y, text, rects, pageNum }
     const [showAnnotationsPanel, setShowAnnotationsPanel] = useState(false);
+    const [annotationSearch, setAnnotationSearch] = useState('');
+
+    // v3.4 — dark mode (invierte el canvas) + outline/TOC
+    const [pdfDark, setPdfDark] = useState(false);
+    const [outline, setOutline] = useState([]);
+    const [showOutline, setShowOutline] = useState(false);
+    const canvasFilter = pdfDark ? 'invert(1) hue-rotate(180deg)' : 'none';
+
+    // Exporta las anotaciones del PDF como Markdown (ordenadas por página).
+    const exportPdfAnnotations = () => {
+        const items = (bookData.bookmarks || []).map(b => {
+            if (b.kind === 'highlight') { try { const d = JSON.parse(b.note); return { page: d.pageNum, kind: 'Subrayado', text: d.text }; } catch { return null; } }
+            return { page: parseInt(b.cfi) || 0, kind: b.kind === 'note' ? 'Nota' : 'Marcador', text: b.note || '' };
+        }).filter(Boolean).sort((a, z) => a.page - z.page);
+        if (!items.length) return;
+        const today = new Date().toISOString().slice(0, 10);
+        const esc = (s) => String(s).replace(/"/g, "'");
+        const lines = [
+            '---',
+            `title: "${esc(bookData.name || 'PDF')}"`,
+            bookData.author ? `author: "${esc(bookData.author)}"` : null,
+            `date: ${today}`,
+            'source: SharkReader',
+            'tags: ["lectura"]',
+            '---',
+            '',
+            `# ${bookData.name || 'PDF'}`,
+            '',
+        ].filter(l => l !== null);
+        items.forEach(a => {
+            lines.push(`> ${a.text || '(sin texto)'}`);
+            lines.push(`> — **${a.kind}** · pág. ${a.page}`);
+            lines.push('');
+        });
+        const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${(bookData.name || 'pdf').replace(/[^a-z0-9]/gi, '_')}.md`;
+        link.click();
+        URL.revokeObjectURL(url);
+    };
 
 
     useEffect(() => {
@@ -136,6 +177,26 @@ const PdfReader = ({
                 setCurrentPage(startPage);
                 setInputPage(String(startPage));
                 setIsLoading(false);
+                // Outline / índice del PDF (best-effort)
+                try {
+                    const ol = await pdf.getOutline();
+                    if (isMounted && ol && ol.length) {
+                        const flatten = async (items, depth = 0, acc = []) => {
+                            for (const it of items) {
+                                let page = null;
+                                try {
+                                    const dest = typeof it.dest === 'string' ? await pdf.getDestination(it.dest) : it.dest;
+                                    if (dest && dest[0]) page = (await pdf.getPageIndex(dest[0])) + 1;
+                                } catch (_) {}
+                                acc.push({ title: it.title, page, depth });
+                                if (it.items?.length && depth < 3) await flatten(it.items, depth + 1, acc);
+                            }
+                            return acc;
+                        };
+                        const flat = await flatten(ol);
+                        if (isMounted) setOutline(flat);
+                    }
+                } catch (_) {}
             } catch (err) {
                 console.error('Error loading PDF:', err);
                 if (isMounted) { setIsLoading(false); setPdfError(err?.message || 'No se pudo cargar el PDF.'); }
@@ -222,6 +283,9 @@ const PdfReader = ({
 
     useEffect(() => {
         const onKey = (e) => {
+            if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) { e.preventDefault(); setScale(s => Math.min(4, parseFloat((s + 0.2).toFixed(1)))); return; }
+            if ((e.ctrlKey || e.metaKey) && e.key === '-') { e.preventDefault(); setScale(s => Math.max(0.7, parseFloat((s - 0.2).toFixed(1)))); return; }
+            if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); setScale(1.2); return; }
             if (document.activeElement?.tagName === 'INPUT') return;
             if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') prevPage();
             if (e.key === 'ArrowRight' || e.key === 'ArrowDown') nextPage();
@@ -418,6 +482,20 @@ const PdfReader = ({
                             <button onClick={nextPage} disabled={currentPage >= totalPages}
                                 className="p-1.5 hover:bg-white/15 rounded-xl transition disabled:opacity-30"><Icons.ChevronRight /></button>
                             <div className="w-px h-5 bg-white/20 mx-0.5"></div>
+                            {/* Índice / TOC (solo si el PDF lo trae) */}
+                            {outline.length > 0 && (
+                                <button onClick={() => { setShowOutline(p => !p); setShowSearch(false); setShowAnnotationsPanel(false); }}
+                                    className={`p-1.5 rounded-xl transition ${showOutline ? 'bg-white/25' : 'hover:bg-white/15'}`}
+                                    title="Índice del documento">
+                                    <Icons.List />
+                                </button>
+                            )}
+                            {/* Dark mode (invertir) */}
+                            <button onClick={() => setPdfDark(p => !p)}
+                                className={`p-1.5 rounded-xl transition text-sm leading-none ${pdfDark ? 'bg-white/25' : 'hover:bg-white/15'}`}
+                                title={pdfDark ? 'Modo claro' : 'Modo oscuro (invertir)'}>
+                                {pdfDark ? '☀' : '🌙'}
+                            </button>
                             {/* Search */}
                             <button onClick={() => setShowSearch(p => !p)}
                                 className={`p-1.5 rounded-xl transition ${showSearch ? 'bg-white/25' : 'hover:bg-white/15'}`}
@@ -459,7 +537,7 @@ const PdfReader = ({
                 ) : dualPage ? (
                     <div ref={pageWrapRef} className="flex gap-3 items-start">
                         <div ref={pageWrap1Ref} style={{ position: 'relative', display: 'inline-block', lineHeight: 0 }}>
-                            <canvas ref={canvasRef} className="shadow-2xl" style={{ maxWidth: '100%', display: 'block', borderRadius: '2px' }} />
+                            <canvas ref={canvasRef} className="shadow-2xl" style={{ maxWidth: '100%', display: 'block', borderRadius: '2px', filter: canvasFilter }} />
                             <HighlightLayer pageNum={currentPage} bookmarks={bookData.bookmarks} />
                             <div ref={textLayerRef} className="pdf-text-layer"
                                 style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'auto', overflow: 'hidden', opacity: 1, lineHeight: 1 }}
@@ -467,7 +545,7 @@ const PdfReader = ({
                         </div>
                         {currentPage + 1 <= totalPages && (
                             <div ref={pageWrap2Ref} style={{ position: 'relative', display: 'inline-block', lineHeight: 0 }}>
-                                <canvas ref={canvasRef2} className="shadow-2xl" style={{ maxWidth: '100%', display: 'block', borderRadius: '2px' }} />
+                                <canvas ref={canvasRef2} className="shadow-2xl" style={{ maxWidth: '100%', display: 'block', borderRadius: '2px', filter: canvasFilter }} />
                                 <HighlightLayer pageNum={currentPage + 1} bookmarks={bookData.bookmarks} />
                                 <div ref={textLayerRef2} className="pdf-text-layer"
                                     style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'auto', overflow: 'hidden', opacity: 1, lineHeight: 1 }}
@@ -477,7 +555,7 @@ const PdfReader = ({
                     </div>
                 ) : (
                     <div ref={pageWrapRef} style={{ position: 'relative', display: 'inline-block', lineHeight: 0 }}>
-                        <canvas ref={canvasRef} className="shadow-2xl" style={{ maxWidth: '100%', display: 'block', borderRadius: '2px' }} />
+                        <canvas ref={canvasRef} className="shadow-2xl" style={{ maxWidth: '100%', display: 'block', borderRadius: '2px', filter: canvasFilter }} />
                         <HighlightLayer pageNum={currentPage} bookmarks={bookData.bookmarks} />
                         <div ref={textLayerRef} className="pdf-text-layer"
                             style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'auto', overflow: 'hidden', opacity: 1, lineHeight: 1 }}
@@ -518,6 +596,28 @@ const PdfReader = ({
                                 Guardar
                             </button>
                         </div>
+                    </div>
+                </div>
+            )}
+
+            {showOutline && outline.length > 0 && (
+                <div className="absolute left-0 bottom-7 w-72 z-50 flex flex-col shadow-2xl border-r fade-in"
+                    style={{ top: tabs ? '88px' : '64px', backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)' }}
+                    onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center justify-between px-4 py-3 border-b flex-shrink-0" style={{ borderColor: 'var(--border-color)' }}>
+                        <span className="font-black text-sm" style={{ color: 'var(--text-color)' }}>Índice</span>
+                        <button onClick={() => setShowOutline(false)} className="p-1 opacity-50 hover:opacity-100 transition"><Icons.Close /></button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-2" style={{ maxHeight: '460px', overscrollBehavior: 'contain' }}>
+                        {outline.map((it, i) => (
+                            <button key={i} onClick={() => { if (it.page) { goTo(it.page); setShowOutline(false); } }}
+                                disabled={!it.page}
+                                className="w-full text-left rounded-lg px-2 py-1.5 text-xs hover:bg-black/5 dark:hover:bg-white/5 transition disabled:opacity-40 flex items-center gap-2"
+                                style={{ paddingLeft: `${8 + it.depth * 14}px`, color: 'var(--text-color)' }}>
+                                <span className="flex-1 truncate opacity-80">{it.title}</span>
+                                {it.page && <span className="text-[10px] font-black opacity-40 flex-shrink-0">{it.page}</span>}
+                            </button>
+                        ))}
                     </div>
                 </div>
             )}
@@ -608,10 +708,26 @@ const PdfReader = ({
                     <div className="flex items-center justify-between px-4 py-3 border-b flex-shrink-0"
                         style={{ borderColor: 'var(--border-color)' }}>
                         <span className="font-black text-sm" style={{ color: 'var(--text-color)' }}>Anotaciones</span>
-                        <button onClick={() => setShowAnnotationsPanel(false)} className="p-1 opacity-50 hover:opacity-100 transition"><Icons.Close /></button>
+                        <div className="flex items-center gap-1">
+                            {(bookData.bookmarks || []).length > 0 && (
+                                <button onClick={exportPdfAnnotations} className="px-2 py-1 rounded-lg text-[10px] font-black hover:bg-black/5 dark:hover:bg-white/5 transition opacity-50 hover:opacity-100" title="Exportar como Markdown">↓ MD</button>
+                            )}
+                            <button onClick={() => setShowAnnotationsPanel(false)} className="p-1 opacity-50 hover:opacity-100 transition"><Icons.Close /></button>
+                        </div>
                     </div>
-                    <div className="flex-1 overflow-y-auto p-2" style={{ maxHeight: '420px' }}>
+                    {(bookData.bookmarks || []).length > 0 && (
+                        <div className="px-3 pt-2.5 pb-1 flex-shrink-0">
+                            <div className="flex items-center gap-1.5 bg-black/5 dark:bg-white/5 rounded-lg px-2 py-1.5">
+                                <Icons.Search className="w-3 h-3 opacity-40 flex-shrink-0" />
+                                <input type="text" value={annotationSearch} onChange={e => setAnnotationSearch(e.target.value)}
+                                    placeholder="Buscar en anotaciones..." className="bg-transparent outline-none text-xs flex-1 min-w-0" style={{ color: 'var(--text-color)' }} />
+                                {annotationSearch && <button onClick={() => setAnnotationSearch('')} className="opacity-40 hover:opacity-100 text-xs leading-none">×</button>}
+                            </div>
+                        </div>
+                    )}
+                    <div className="flex-1 overflow-y-auto p-2" style={{ maxHeight: '420px', overscrollBehavior: 'contain' }}>
                         {(() => {
+                            const q = annotationSearch.trim().toLowerCase();
                             const items = (bookData.bookmarks || [])
                                 .map(b => {
                                     if (b.kind === 'highlight') {
@@ -620,9 +736,10 @@ const PdfReader = ({
                                     return { ...b, _page: parseInt(b.cfi) || 0 };
                                 })
                                 .filter(Boolean)
+                                .filter(b => !q || (b.kind === 'highlight' ? (b._data.text || '') : (b.note || '')).toLowerCase().includes(q))
                                 .sort((a, z) => a._page - z._page);
                             if (!items.length) return (
-                                <p className="p-6 text-sm opacity-40 text-center font-medium">Sin anotaciones todavía.</p>
+                                <p className="p-6 text-sm opacity-40 text-center font-medium">{q ? `Sin resultados para “${annotationSearch}”.` : 'Sin anotaciones todavía.'}</p>
                             );
                             return items.map((b, i) => (
                                 <div key={i} className="rounded-xl px-3 py-2.5 mb-1 group hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"

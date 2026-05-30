@@ -68,8 +68,8 @@ export function useBookImport({
     }, []);
 
     const processFiles = useCallback(async (files, options = {}) => {
-        const valid = files.filter(f => /\.(epub|pdf|mobi)$/i.test(f.name));
-        if (!valid.length) { showNoticeToast(t.onlyEpubPdfMobi || 'Solo se aceptan archivos .epub, .pdf y .mobi', 'warning'); return; }
+        const valid = files.filter(f => /\.(epub|pdf)$/i.test(f.name));
+        if (!valid.length) { showNoticeToast('Solo se aceptan archivos .epub y .pdf', 'warning'); return; }
 
         const existingKeys = new Set(bookDedupKeysRef.current);
         const existingTitleKeys = new Set(bookTitleDedupKeysRef.current);
@@ -115,7 +115,7 @@ export function useBookImport({
         const newBooks = uniqueValid.map(file => {
             const id = Date.now().toString() + Math.random().toString(36).substr(2, 5);
             const baseName = file.name.replace(/\.[^/.]+$/, '');
-            const type = /\.pdf$/i.test(file.name) ? 'pdf' : /\.mobi$/i.test(file.name) ? 'mobi' : 'epub';
+            const type = /\.pdf$/i.test(file.name) ? 'pdf' : 'epub';
             const unknownAuthor = t.unknownAuthor || 'Autor desconocido';
             const nativeMeta = type === 'epub' ? file.nativeMeta : null;
             const nativeTitle = (nativeMeta?.title || '').trim();

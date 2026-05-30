@@ -1,7 +1,7 @@
 {
   "name": "sharkreader",
-  "version": "2.7.1",
-  "description": "Lector de EPUB y PDF con IA, pestañas, Pomodoro y vocabulario",
+  "version": "3.1.0",
+  "description": "Lector de EPUB y PDF local-first con IA, anotaciones, analíticas y workshop de addons",
   "main": "main.js",
   "author": "David Bonilla",
   "license": "ISC",
@@ -12,6 +12,7 @@
     "start": "node scripts/dev.cjs",
     "build:renderer": "vite build",
     "build": "pnpm build:renderer && electron-builder --win nsis portable",
+    "release": "pnpm build:renderer && electron-builder --win nsis portable --publish always",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -19,6 +20,13 @@
     "appId": "com.sharkreader.app",
     "productName": "SharkReader",
     "copyright": "Copyright © 2025 SharkReader",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "XsharklinX",
+        "repo": "SharkReader"
+      }
+    ],
     "directories": {
       "output": "dist"
     },
@@ -57,7 +65,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "SharkReader",
-      "runAfterFinish": true
+      "runAfterFinish": true,
+      "artifactName": "SharkReader-Setup-${version}.${ext}"
     },
     "portable": {
       "artifactName": "SharkReader-Portable-${version}.exe"
@@ -76,6 +85,7 @@
     "vitest": "^4.1.7"
   },
   "dependencies": {
+    "electron-updater": "^6.8.3",
     "epubjs": "^0.3.93",
     "jszip": "^3.10.1",
     "lie": "~3.3.0",

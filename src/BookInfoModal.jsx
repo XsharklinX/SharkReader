@@ -96,7 +96,7 @@ export default function BookInfoModal({ book, onChange, onClose, onSave, onMarkF
                                 <button onClick={() => onCreateCollection?.()} className="rounded-full bg-black/5 dark:bg-white/10 px-2.5 py-1 text-[10px] font-black hover:bg-black/10 dark:hover:bg-white/20 transition">+ Nueva</button>
                             </div>
                             {manualCollections.length === 0 ? (
-                                <div className="rounded-xl bg-black/5 dark:bg-white/5 px-3 py-2 text-xs opacity-55">TodavÃ­a no hay colecciones manuales.</div>
+                                <div className="rounded-xl bg-black/5 dark:bg-white/5 px-3 py-2 text-xs opacity-55">Todavía no hay colecciones manuales.</div>
                             ) : (
                                 <div className="flex flex-wrap gap-2">
                                     {manualCollections.map(collection => {
@@ -160,28 +160,52 @@ export default function BookInfoModal({ book, onChange, onClose, onSave, onMarkF
                         </div>
                     </div>
                     <div className="bg-black/5 dark:bg-white/5 p-4 rounded-2xl">
-                        <p className="text-[10px] font-black uppercase opacity-40 tracking-widest mb-3">📊 Estadísticas</p>
-                        <div className="grid grid-cols-2 gap-3 text-sm">
-                            {[
-                                { label: 'Tiempo leído', value: book.readingMinutes >= 60 ? `${Math.floor(book.readingMinutes / 60)}h ${book.readingMinutes % 60}m` : `${book.readingMinutes || 0} min` },
+                        <p className="text-[10px] font-black uppercase opacity-40 tracking-widest mb-3">📊 Estadísticas de lectura</p>
+                        {(() => {
+                            const mins = book.readingMinutes || 0;
+                            const fmt = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins} min`;
+                            const marks = book.bookmarks || [];
+                            const highlights = marks.filter(b => b.note?.includes('[Subrayado]')).length;
+                            const notes = marks.filter(b => b.kind === 'note').length;
+                            const bookmarks = marks.length - highlights - notes;
+                            // Días transcurridos desde el inicio hasta el fin (o hoy)
+                            let days = '—';
+                            if (book.dateStarted) {
+                                const end = book.dateFinished || Date.now();
+                                const d = Math.max(1, Math.round((end - book.dateStarted) / 86400000));
+                                days = `${d} ${d === 1 ? 'día' : 'días'}`;
+                            }
+                            const cards = [
+                                { label: 'Tiempo leído', value: fmt },
+                                { label: 'Progreso', value: `${book.progress || 0}%` },
+                                { label: 'Anotaciones', value: marks.length },
+                                { label: 'Periodo', value: days },
                                 { label: 'Inicio', value: book.dateStarted ? new Date(book.dateStarted).toLocaleDateString() : '—' },
-                                { label: 'Fin', value: book.dateFinished ? new Date(book.dateFinished).toLocaleDateString() : '—' }
-                            ].map(s => (
-                                <div key={s.label} className="bg-black/5 dark:bg-white/5 p-3 rounded-xl">
-                                    <p className="text-[10px] opacity-50 font-bold uppercase tracking-wider">{s.label}</p>
-                                    <p className="font-black mt-0.5">{s.value}</p>
-                                </div>
-                            ))}
-                        </div>
+                                { label: 'Fin', value: book.dateFinished ? new Date(book.dateFinished).toLocaleDateString() : '—' },
+                            ];
+                            return (
+                                <>
+                                    <div className="grid grid-cols-3 gap-2 text-sm">
+                                        {cards.map(s => (
+                                            <div key={s.label} className="bg-black/5 dark:bg-white/5 p-2.5 rounded-xl">
+                                                <p className="text-[9px] opacity-50 font-bold uppercase tracking-wider">{s.label}</p>
+                                                <p className="font-black mt-0.5 text-sm">{s.value}</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    {marks.length > 0 && (
+                                        <div className="flex flex-wrap gap-2 mt-2 text-[10px] font-bold opacity-60">
+                                            {highlights > 0 && <span>🖍️ {highlights} subrayados</span>}
+                                            {notes > 0 && <span>📝 {notes} notas</span>}
+                                            {bookmarks > 0 && <span>🔖 {bookmarks} marcadores</span>}
+                                        </div>
+                                    )}
+                                </>
+                            );
+                        })()}
                         <button onClick={() => { onMarkFinished(book.id); onChange(p => ({ ...p, isFinished: !p.isFinished, progress: !p.isFinished ? 100 : p.progress })); }}
                             className={`w-full mt-3 py-2 rounded-xl font-bold text-sm transition ${book.isFinished ? 'bg-green-500/20 text-green-600 dark:text-green-400' : 'bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10'}`}>
                             {book.isFinished ? '✅ Terminado — clic para desmarcar' : '☑ Marcar como terminado'}
-                        </button>
-                        <button
-                            onClick={() => onChange({ ...book, isWishlist: !book.isWishlist })}
-                            className={`w-full mt-2 py-2 rounded-xl font-bold text-sm transition ${book.isWishlist ? 'bg-fuchsia-500/20 text-fuchsia-600 dark:text-fuchsia-300' : 'bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10'}`}
-                        >
-                            {book.isWishlist ? '💜 En wishlist — clic para quitar' : '🕒 Añadir a wishlist'}
                         </button>
                     </div>
                     <div className="flex gap-3 mt-6">

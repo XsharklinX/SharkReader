@@ -47,7 +47,7 @@ export const getBookTitleDedupKey = (bookLike) => {
     const rawAuthor = nativeMeta?.creator || bookLike?.originalAuthor || bookLike?.author || '';
     const normalizedTitle = normalizeBookStem(rawTitle);
     const normalizedAuthor = normalizeBookIdentity(rawAuthor).replace(/\s+/g, ' ');
-    const type = bookLike?.type || (/\.pdf$/i.test(fileName) ? 'pdf' : /\.mobi$/i.test(fileName) ? 'mobi' : 'epub');
+    const type = bookLike?.type || (/\.pdf$/i.test(fileName) ? 'pdf' : 'epub');
     return `title:${type}|${normalizedTitle}|${normalizedAuthor}`;
 };
 
@@ -56,7 +56,7 @@ export const getBookDedupKey = (bookLike) => {
     if (sourcePath) return `path:${normalizeBookIdentity(sourcePath)}`;
 
     const fileName = bookLike?.file?.name || bookLike?.name || bookLike?.originalTitle || '';
-    const type = bookLike?.type || (/\.pdf$/i.test(fileName) ? 'pdf' : /\.mobi$/i.test(fileName) ? 'mobi' : 'epub');
+    const type = bookLike?.type || (/\.pdf$/i.test(fileName) ? 'pdf' : 'epub');
     const size = bookLike?.file?.size ?? bookLike?.size ?? '';
     return `file:${type}|${normalizeBookStem(fileName)}|${size}`;
 };
@@ -64,7 +64,6 @@ export const getBookDedupKey = (bookLike) => {
 export const getBookType = (file, fallbackType = 'epub') => {
     const fileName = file?.name || '';
     if (/\.pdf$/i.test(fileName)) return 'pdf';
-    if (/\.mobi$/i.test(fileName)) return 'mobi';
     return fallbackType;
 };
 
@@ -102,7 +101,6 @@ export const toStoredBookRecord = (book, overrides = {}, options = {}) => {
         isFinished: !!snapshot.isFinished,
         dateStarted: snapshot.dateStarted || null,
         dateFinished: snapshot.dateFinished || null,
-        isWishlist: !!snapshot.isWishlist,
         updatedAt,
         progressUpdatedAt: snapshot.progressUpdatedAt || snapshot.lastReadDate || updatedAt,
         metadataUpdatedAt: snapshot.metadataUpdatedAt || updatedAt,
@@ -151,7 +149,6 @@ export const hydrateStoredBook = (stored) => {
         readingMinutes: stored.readingMinutes || 0,
         category: stored.category || null,
         loading: false,
-        isWishlist: !!stored.isWishlist,
         updatedAt: stored.updatedAt || stored.lastReadDate || stored.dateAdded || Date.now(),
         progressUpdatedAt: stored.progressUpdatedAt || stored.lastReadDate || stored.updatedAt || stored.dateAdded || Date.now(),
         metadataUpdatedAt: stored.metadataUpdatedAt || stored.updatedAt || stored.dateAdded || Date.now(),

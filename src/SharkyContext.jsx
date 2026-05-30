@@ -601,19 +601,6 @@ export const SharkyProvider = ({
         setTimeout(() => setSharkyMoodEvent(null), 3500);
     }, [addons.sharkyMascot, addonConfig.sharkyMascot, lang]);
 
-    const notifyReadingSpeed = useCallback(({ wpm }) => {
-        if (!addons.sharkyMascot) return;
-        const cfg = addonConfig.sharkyMascot || {};
-        if ((cfg.personality || 'friendly') === 'minimal') return;
-        const l = lang === 'en' ? 'en' : 'es';
-        let msg = null;
-        if (wpm > 400) msg = l === 'es' ? `¡${wpm} ppm! Estás leyendo muy rápido hoy.` : `${wpm} wpm! You're reading fast today.`;
-        else if (wpm < 100 && wpm > 0) msg = l === 'es' ? `Leyendo despacio... ¿todo bien?` : `Reading slow... everything okay?`;
-        if (!msg) return;
-        setSharkyMoodEvent(msg);
-        setTimeout(() => setSharkyMoodEvent(null), 3500);
-    }, [addons.sharkyMascot, addonConfig.sharkyMascot, lang]);
-
     const notifyStreakMilestone = useCallback((streak) => {
         if (!addons.sharkyMascot) return;
         const milestones = [7, 14, 30, 60, 100, 365];
@@ -680,8 +667,8 @@ export const SharkyProvider = ({
 
     useEffect(() => {
         if (!actionsRef) return;
-        actionsRef.current = { notifyMilestone, notifyBookFinished, notifySessionEnd, notifyBookOpened, notifyReadingSpeed, notifyStreakMilestone, notifyBookAnniversary, notifyNextInSeries, notifyStreakLost };
-    }, [actionsRef, notifyMilestone, notifyBookFinished, notifySessionEnd, notifyBookOpened, notifyReadingSpeed, notifyStreakMilestone, notifyBookAnniversary, notifyNextInSeries, notifyStreakLost]);
+        actionsRef.current = { notifyMilestone, notifyBookFinished, notifySessionEnd, notifyBookOpened, notifyStreakMilestone, notifyBookAnniversary, notifyNextInSeries, notifyStreakLost };
+    }, [actionsRef, notifyMilestone, notifyBookFinished, notifySessionEnd, notifyBookOpened, notifyStreakMilestone, notifyBookAnniversary, notifyNextInSeries, notifyStreakLost]);
 
     const value = {
         sharkyOpen, setSharkyOpen,

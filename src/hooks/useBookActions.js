@@ -56,14 +56,6 @@ export function useBookActions({
         setBooks(prev => prev.map(b => b.id === bookId ? { ...b, isFav: !b.isFav, metadataUpdatedAt: now, updatedAt: now } : b));
     }, [setBooks]);
 
-    const toggleWishlist = useCallback((bookId) => {
-        const now = Date.now();
-        setBooks(prev => prev.map(b => b.id === bookId
-            ? { ...b, isWishlist: !b.isWishlist, metadataUpdatedAt: now, updatedAt: now }
-            : b
-        ));
-    }, [setBooks]);
-
     const markFinished = useCallback((bookId) => {
         setBooks(prev => {
             const next = prev.map(b => {
@@ -321,7 +313,6 @@ export function useBookActions({
     return {
         handleContextMenu,
         toggleFavorite,
-        toggleWishlist,
         markFinished,
         deleteBook,
         updateBookLocation,

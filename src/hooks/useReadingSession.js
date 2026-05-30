@@ -2,6 +2,7 @@ import { useEffect, startTransition } from 'react';
 import { checkNewAchievements } from '../achievements';
 import { updateBookInList } from '../bookModel';
 import { saveAppData } from '../db';
+import { applyReadingMinute } from '../readingProgress';
 
 export function useReadingSession({
     view,
@@ -34,41 +35,13 @@ export function useReadingSession({
         if (view === 'reader' && userProfile) {
             interval = setInterval(() => {
                 const today = new Date();
-                const todayStr = today.toDateString();
-                const hour = today.getHours();
                 let newStreak = null;
                 let lostStreak = null;
                 setStats(prev => {
-                    let { timeRead = 0, pagesTurned = 0, streak = 0, currentDailyMins = 0, lastActiveDate = '', streakSavers = 0, history = {}, minutesByDay = {}, hourlyLog = {}, maxStreak = 0 } = prev;
-                    timeRead++;
-                    minutesByDay = { ...minutesByDay, [todayStr]: (minutesByDay[todayStr] || 0) + 1 };
-                    hourlyLog = { ...hourlyLog, [hour]: (hourlyLog[hour] || 0) + 1 };
-                    if (lastActiveDate !== todayStr) { currentDailyMins = 1; lastActiveDate = todayStr; }
-                    else { currentDailyMins++; }
-                    if (currentDailyMins === 5 && history[todayStr] !== 'read') {
-                        const dates = Object.keys(history).filter(k => history[k] === 'read' || history[k] === 'saved').sort((a, b) => new Date(a) - new Date(b));
-                        const lastDateStr = dates[dates.length - 1];
-                        if (lastDateStr) {
-                            const lastDate = new Date(lastDateStr); lastDate.setHours(0, 0, 0, 0);
-                            const todayMidnight = new Date(today); todayMidnight.setHours(0, 0, 0, 0);
-                            const diffDays = Math.round((todayMidnight - lastDate) / 86400000);
-                            if (diffDays === 1) { streak++; }
-                            else if (diffDays > 1) {
-                                const missed = diffDays - 1;
-                                if (streakSavers >= missed) {
-                                    streakSavers -= missed; streak++;
-                                    for (let i = 1; i <= missed; i++) {
-                                        const d = new Date(lastDateStr); d.setDate(d.getDate() + i);
-                                        history[d.toDateString()] = 'saved';
-                                    }
-                                } else { if (streak > 3) lostStreak = streak; streak = 1; streakSavers = 0; }
-                            }
-                        } else { streak = 1; }
-                        history[todayStr] = 'read';
-                        if (streak > 0 && streak % 5 === 0) streakSavers = Math.min(2, streakSavers + 1);
-                        newStreak = streak;
-                    }
-                    return { timeRead, pagesTurned, streak, currentDailyMins, lastActiveDate, streakSavers, history, minutesByDay, hourlyLog, maxStreak: Math.max(maxStreak, streak) };
+                    const r = applyReadingMinute(prev, today);
+                    newStreak = r.newStreak;
+                    lostStreak = r.lostStreak;
+                    return r.next;
                 });
                 if (activeBookIdRef.current) {
                     startTransition(() => {
