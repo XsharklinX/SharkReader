@@ -1,6 +1,6 @@
 {
   "name": "sharkreader",
-  "version": "3.1.0",
+  "version": "3.6.0",
   "description": "Lector de EPUB y PDF local-first con IA, anotaciones, analíticas y workshop de addons",
   "main": "main.js",
   "author": "David Bonilla",
@@ -11,6 +11,7 @@
     "dev": "node scripts/dev.cjs",
     "start": "node scripts/dev.cjs",
     "build:renderer": "vite build",
+    "prebuild": "if exist dist\\win-unpacked rmdir /s /q dist\\win-unpacked",
     "build": "pnpm build:renderer && electron-builder --win nsis portable",
     "release": "pnpm build:renderer && electron-builder --win nsis portable --publish always",
     "test": "vitest run",

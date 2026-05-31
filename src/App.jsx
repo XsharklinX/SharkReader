@@ -214,7 +214,6 @@ const ANNOTATION_COLOR_META = {
         const fileInputRef = useRef(null);
         const folderInputRef = useRef(null);
         const importInputRef = useRef(null);
-        const goodreadsInputRef = useRef(null);
         const avatarInputRef = useRef(null);
         const coverInputRef = useRef(null);
         const libraryScrollRef = useRef(null);
@@ -1582,59 +1581,6 @@ const ANNOTATION_COLOR_META = {
             }
         }, [setBooks, showNoticeToast]);
 
-        // ── v3.5: Import Goodreads CSV ──────────────────────────────────────────
-        const importGoodreadsCSV = useCallback((e) => {
-            const f = e.target.files[0]; if (!f) return;
-            const reader = new FileReader();
-            reader.onload = (ev) => {
-                try {
-                    const lines = ev.target.result.split('\n');
-                    const header = lines[0].split(',').map(h => h.replace(/"/g, '').trim());
-                    const idx = (name) => header.findIndex(h => h.toLowerCase().includes(name.toLowerCase()));
-                    const iTitle = idx('Title'), iAuthor = idx('Author'), iRating = idx('My Rating'),
-                          iRead = idx('Date Read'), iAdded = idx('Date Added'), iShelf = idx('Exclusive Shelf'),
-                          iISBN = idx('ISBN13');
-                    let imported = 0, skipped = 0;
-                    const now = Date.now();
-                    const newBooks = [];
-                    for (let i = 1; i < lines.length; i++) {
-                        const cols = lines[i].match(/(".*?"|[^,]+|(?<=,)(?=,))/g) || lines[i].split(',');
-                        const get = (j) => (cols[j] || '').replace(/^"|"$/g, '').trim();
-                        const title = get(iTitle); if (!title) continue;
-                        // Skip if already in library (title match)
-                        const exists = books.some(b => b.name?.toLowerCase() === title.toLowerCase());
-                        if (exists) { skipped++; continue; }
-                        const rating = parseInt(get(iRating)) || 0;
-                        const shelf = get(iShelf);
-                        const dateRead = get(iRead) ? new Date(get(iRead)).getTime() || null : null;
-                        const dateAdded = get(iAdded) ? new Date(get(iAdded)).getTime() || now : now;
-                        const isbn = get(iISBN)?.replace(/[^0-9]/g, '') || null;
-                        newBooks.push({
-                            id: `gr-${Date.now()}-${i}`,
-                            name: title, author: get(iAuthor), rating, type: 'epub',
-                            isFinished: shelf === 'read',
-                            dateAdded, dateFinished: dateRead || null,
-                            coverUrl: isbn ? `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg` : null,
-                            tags: shelf && shelf !== 'to-read' && shelf !== 'read' ? [shelf] : [],
-                            progress: shelf === 'read' ? 100 : 0,
-                            bookmarks: [], readingMinutes: 0,
-                            loading: false, file: null,
-                            updatedAt: now, metadataUpdatedAt: now, progressUpdatedAt: now,
-                            color: '#1e3a5f',
-                            _goodreadsImport: true,
-                        });
-                        imported++;
-                    }
-                    if (newBooks.length) setBooks(prev => [...prev, ...newBooks]);
-                    showNoticeToast(`Goodreads: ${imported} libros importados${skipped ? `, ${skipped} ya existían` : ''}.`, 'info');
-                } catch (err) {
-                    showNoticeToast('Error al leer el CSV de Goodreads. Comprueba el formato.', 'warning');
-                }
-            };
-            reader.readAsText(f, 'utf-8');
-            e.target.value = '';
-        }, [books, setBooks, showNoticeToast]);
-
         const exportAllData = () => {
             if (!userProfile) { alert("Inicia sesión para exportar."); return; }
             const data = buildPortableBackup({
@@ -2364,9 +2310,6 @@ const ANNOTATION_COLOR_META = {
                                 <div className="w-px h-6 bg-white/20 mx-1"></div>
                                 <button onClick={openFilePicker} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap"><Icons.Plus /> <span className="hidden xl:inline">{t.addBook}</span></button>
                                 <button onClick={openFolderPicker} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap"><Icons.FolderPlus /> <span className="hidden xl:inline">{t.addFolder}</span></button>
-                                <button onClick={() => goodreadsInputRef.current?.click()} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap" title="Importar CSV de Goodreads">
-                                    <span className="text-sm leading-none">GR</span>
-                                </button>
                             </div>
                             {lastReadId && (
                                 <button onClick={() => openBook(lastReadId)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold bg-green-500 hover:bg-green-400 text-white shadow-md mr-2 whitespace-nowrap">
@@ -2449,7 +2392,6 @@ const ANNOTATION_COLOR_META = {
                 <input type="file" accept=".epub,.pdf" multiple ref={fileInputRef} className="hidden" onChange={handleFilesUpload} />
                 <input type="file" multiple ref={folderInputRef} accept=".epub,.pdf" className="hidden" onChange={handleFilesUpload} webkitdirectory="" directory="" />
                 <input type="file" accept=".json" ref={importInputRef} className="hidden" onChange={importData} />
-                <input type="file" accept=".csv" ref={goodreadsInputRef} className="hidden" onChange={importGoodreadsCSV} />
                 <input type="file" accept="image/*" ref={avatarInputRef} className="hidden" onChange={handleAvatarUpload} />
                 <input type="file" accept="image/*" ref={coverInputRef} className="hidden" onChange={handleCoverUpload} />
 
@@ -3012,27 +2954,88 @@ const ANNOTATION_COLOR_META = {
                         {/* Vista de cuadrícula normal */}
                         {!searchTerm && (
                             <>
-                                {displayedBooks.length === 0 && (
-                                    <div className="absolute inset-0 flex items-center justify-center p-6 fade-in">
-                                        <div className="empty-state-container max-w-2xl w-full p-12 rounded-[2rem] flex flex-col items-center text-center shadow-sm border-2 border-dashed" style={{ borderColor: 'var(--border-color)' }}>
-                                            <div className="w-24 h-24 mb-6 rounded-full flex items-center justify-center shadow-inner" style={{ backgroundColor: 'var(--topbar-bg)', color: 'white' }}>
-                                                {currentFilter === 'favorites' ? <Icons.Heart className="w-12 h-12" /> : <Icons.BookOpen />}
-                                            </div>
-                                            <h2 className="text-3xl font-black mb-3">{currentFilter === 'favorites' ? 'Sin Favoritos' : t.emptyTitle}</h2>
-                                            <p className="text-lg opacity-70 mb-10 max-w-lg">{t.emptyDesc}</p>
-                                            {currentFilter === 'all' && (
-                                                <div className="flex flex-col sm:flex-row gap-4 w-full justify-center">
-                                                    <button onClick={openFilePicker} className="px-8 py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl shadow-lg transition flex items-center justify-center gap-2"><Icons.Plus /> {t.addBook}</button>
-                                                    <button onClick={openFolderPicker} className="px-8 py-4 bg-slate-700 hover:bg-slate-600 text-white font-bold rounded-xl shadow-lg transition flex items-center justify-center gap-2"><Icons.FolderPlus /> {t.addFolder}</button>
+                                {displayedBooks.length === 0 && (() => {
+                                    const isSearch = !!searchTerm.trim();
+                                    const isFiltered = currentFilter !== 'all';
+                                    const isEmptyLibrary = books.filter(b => !b.loading).length === 0;
+
+                                    const configs = {
+                                        search: { emoji: '🔍', title: `Sin resultados para "${searchTerm}"`, sub: 'Prueba con el título, autor, serie o un tag del libro.', accent: '#38bdf8', sharkyMood: 'sad' },
+                                        favorites: { emoji: '❤️', title: 'Aún no tienes favoritos', sub: 'Pulsa el corazón de cualquier libro para guardarlo aquí.', accent: '#f43f5e', sharkyMood: 'sad' },
+                                        finished: { emoji: '🏁', title: 'Todavía no has terminado ningún libro', sub: '¡Sigue leyendo! Cuando termines uno aparecerá aquí.', accent: '#22c55e', sharkyMood: 'focus' },
+                                        reading: { emoji: '📖', title: 'No estás leyendo nada ahora', sub: 'Abre un libro y empezará a aparecer aquí automáticamente.', accent: '#a78bfa', sharkyMood: 'curious' },
+                                        unstarted: { emoji: '📚', title: 'Todos tus libros tienen progreso', sub: '¡Impresionante! No queda ninguno sin empezar.', accent: '#fbbf24', sharkyMood: 'happy' },
+                                        shelf: { emoji: '⏸', title: 'Esta estantería está vacía', sub: 'Nada en este filtro automático por ahora.', accent: '#fb923c', sharkyMood: 'curious' },
+                                        recents: { emoji: '🕐', title: 'Sin actividad reciente', sub: 'Los libros abiertos o añadidos recientemente aparecen aquí.', accent: '#38bdf8', sharkyMood: 'sleepy' },
+                                        filtered: { emoji: '🏷️', title: 'Sin resultados para este filtro', sub: 'Prueba a quitar alguno de los filtros activos.', accent: '#38bdf8', sharkyMood: 'curious' },
+                                        empty: { emoji: '🦈', title: '¡Bienvenido a SharkReader!', sub: 'Tu biblioteca está vacía. Añade tu primer EPUB o PDF para empezar.', accent: 'var(--highlight)', sharkyMood: 'celebrate' },
+                                    };
+
+                                    let cfg;
+                                    if (isSearch) cfg = configs.search;
+                                    else if (isEmptyLibrary) cfg = configs.empty;
+                                    else if (currentFilter === 'favorites') cfg = configs.favorites;
+                                    else if (currentFilter === 'finished') cfg = configs.finished;
+                                    else if (currentFilter === 'reading') cfg = configs.reading;
+                                    else if (currentFilter === 'unstarted') cfg = configs.unstarted;
+                                    else if (currentFilter === 'recents') cfg = configs.recents;
+                                    else if (currentFilter.startsWith('shelf:')) cfg = configs.shelf;
+                                    else if (isFiltered) cfg = configs.filtered;
+                                    else cfg = configs.empty;
+
+                                    return (
+                                        <div className="absolute inset-0 flex items-center justify-center p-6 fade-in">
+                                            <div className="max-w-md w-full flex flex-col items-center text-center px-8 py-10 rounded-[2rem]"
+                                                style={{ background: 'var(--surface-bg)', border: '1px solid var(--border-color)', boxShadow: `0 0 60px ${cfg.accent}0a` }}>
+                                                {/* Sharky + emoji badge */}
+                                                <div className="relative mb-5">
+                                                    <div className="w-20 h-20 rounded-2xl flex items-center justify-center"
+                                                        style={{ background: `${cfg.accent}15`, border: `1px solid ${cfg.accent}25` }}>
+                                                        <span className="text-4xl leading-none">{cfg.emoji}</span>
+                                                    </div>
                                                 </div>
-                                            )}
-                                            <div className="mt-6 p-4 bg-blue-500/10 rounded-xl border border-blue-500/20 text-left max-w-md">
-                                                <p className="text-xs font-bold text-blue-600 dark:text-blue-400 mb-1">💡 Nota:</p>
-                                                <p className="text-[10px] opacity-70">{t.fileNote}</p>
+                                                {/* Text */}
+                                                <h2 className="text-xl font-black mb-2 leading-tight">{cfg.title}</h2>
+                                                <p className="text-sm opacity-55 leading-relaxed mb-6 max-w-xs">{cfg.sub}</p>
+                                                {/* CTAs */}
+                                                {(isEmptyLibrary || currentFilter === 'all') && !isSearch && (
+                                                    <div className="flex flex-col sm:flex-row gap-2.5 w-full justify-center">
+                                                        <button onClick={openFilePicker}
+                                                            className="flex items-center justify-center gap-2 px-6 py-3 rounded-2xl font-bold text-sm text-white transition active:scale-[0.97]"
+                                                            style={{ background: `linear-gradient(135deg, var(--highlight), var(--topbar-bg))` }}>
+                                                            <Icons.Plus /> Añadir libro
+                                                        </button>
+                                                        <button onClick={openFolderPicker}
+                                                            className="flex items-center justify-center gap-2 px-6 py-3 rounded-2xl font-bold text-sm transition active:scale-[0.97]"
+                                                            style={{ background: 'var(--bg-color)', border: '1px solid var(--border-color)' }}>
+                                                            <Icons.FolderPlus /> Añadir carpeta
+                                                        </button>
+                                                    </div>
+                                                )}
+                                                {isSearch && (
+                                                    <button onClick={() => setSearchTerm('')}
+                                                        className="px-6 py-2.5 rounded-2xl font-bold text-sm transition"
+                                                        style={{ background: 'var(--bg-color)', border: '1px solid var(--border-color)' }}>
+                                                        × Limpiar búsqueda
+                                                    </button>
+                                                )}
+                                                {isFiltered && !isSearch && !isEmptyLibrary && (
+                                                    <button onClick={() => setCurrentFilter('all')}
+                                                        className="px-6 py-2.5 rounded-2xl font-bold text-sm transition"
+                                                        style={{ background: 'var(--bg-color)', border: '1px solid var(--border-color)' }}>
+                                                        Ver todos los libros
+                                                    </button>
+                                                )}
+                                                {/* Hint for empty library */}
+                                                {isEmptyLibrary && (
+                                                    <p className="mt-4 text-[10px] opacity-35 max-w-[240px] leading-relaxed">
+                                                        Arrastra archivos .epub o .pdf directamente a esta ventana
+                                                    </p>
+                                                )}
                                             </div>
                                         </div>
-                                    </div>
-                                )}
+                                    );
+                                })()}
                                 {displayedBooks.length > 0 && libraryView === 'grid' && (
                                     virtualLibrary.enabled ? (
                                         <div className="virtual-library-spacer" style={{ height: virtualLibrary.totalHeight }}>

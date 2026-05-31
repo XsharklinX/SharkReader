@@ -101,6 +101,7 @@ export const toStoredBookRecord = (book, overrides = {}, options = {}) => {
         isFinished: !!snapshot.isFinished,
         dateStarted: snapshot.dateStarted || null,
         dateFinished: snapshot.dateFinished || null,
+        anniversaryMilestonesSeen: Array.isArray(snapshot.anniversaryMilestonesSeen) ? snapshot.anniversaryMilestonesSeen : [],
         updatedAt,
         progressUpdatedAt: snapshot.progressUpdatedAt || snapshot.lastReadDate || updatedAt,
         metadataUpdatedAt: snapshot.metadataUpdatedAt || updatedAt,
@@ -149,6 +150,7 @@ export const hydrateStoredBook = (stored) => {
         readingMinutes: stored.readingMinutes || 0,
         category: stored.category || null,
         loading: false,
+        anniversaryMilestonesSeen: Array.isArray(stored.anniversaryMilestonesSeen) ? stored.anniversaryMilestonesSeen : [],
         updatedAt: stored.updatedAt || stored.lastReadDate || stored.dateAdded || Date.now(),
         progressUpdatedAt: stored.progressUpdatedAt || stored.lastReadDate || stored.updatedAt || stored.dateAdded || Date.now(),
         metadataUpdatedAt: stored.metadataUpdatedAt || stored.updatedAt || stored.dateAdded || Date.now(),
@@ -197,6 +199,9 @@ export const applyImportedBookData = (book, imported) => {
         isFinished: imported.isFinished ?? book.isFinished ?? false,
         dateStarted: imported.dateStarted ?? book.dateStarted ?? null,
         dateFinished: imported.dateFinished ?? book.dateFinished ?? null,
+        anniversaryMilestonesSeen: Array.isArray(imported.anniversaryMilestonesSeen)
+            ? imported.anniversaryMilestonesSeen
+            : (Array.isArray(book.anniversaryMilestonesSeen) ? book.anniversaryMilestonesSeen : []),
         sourcePath: imported.sourcePath || book.sourcePath || null,
         updatedAt: imported.updatedAt || book.updatedAt || Date.now(),
         progressUpdatedAt: imported.progressUpdatedAt || book.progressUpdatedAt || imported.lastReadDate || book.lastReadDate || Date.now(),

@@ -174,6 +174,7 @@ const buildBookRecordFromLegacy = (fileRecord, metaRecord = {}) => ({
     isFinished: !!metaRecord.isFinished,
     dateStarted: metaRecord.dateStarted || null,
     dateFinished: metaRecord.dateFinished || null,
+    anniversaryMilestonesSeen: Array.isArray(metaRecord.anniversaryMilestonesSeen) ? metaRecord.anniversaryMilestonesSeen : [],
     updatedAt: metaRecord.updatedAt || metaRecord.lastReadDate || fileRecord.dateAdded || Date.now(),
     progressUpdatedAt: metaRecord.progressUpdatedAt || metaRecord.lastReadDate || metaRecord.updatedAt || fileRecord.dateAdded || Date.now(),
     metadataUpdatedAt: metaRecord.metadataUpdatedAt || metaRecord.updatedAt || fileRecord.dateAdded || Date.now(),

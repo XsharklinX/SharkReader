@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SharkReader — Lector EPUB y PDF local-first para Windows</title>
+  <meta name="description" content="SharkReader es un lector de EPUB y PDF para Windows. Sin suscripciones, sin nube. Sharky, tu asistente personal, te acompaña mientras lees.">
+  <meta property="og:title" content="SharkReader">
+  <meta property="og:description" content="Lector EPUB y PDF local-first para Windows. Gratis.">
+  <meta property="og:image" content="https://raw.githubusercontent.com/XsharklinX/SharkReader/main/docs/assets/og.png">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #070b14;
+      --surface: #0d1222;
+      --border: rgba(255,255,255,0.07);
+      --accent: #38bdf8;
+      --accent2: #818cf8;
+      --text: #e2e8f0;
+      --muted: rgba(226,232,240,0.5);
+      --radius: 20px;
+    }
+
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    /* ── Utilities ── */
+    .container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.25);
+      color: var(--accent); font-size: 11px; font-weight: 700;
+      letter-spacing: .08em; text-transform: uppercase; padding: 4px 12px;
+      border-radius: 999px;
+    }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 14px 28px; border-radius: 14px; font-weight: 700;
+      font-size: 15px; cursor: pointer; border: none; text-decoration: none;
+      transition: all .18s; white-space: nowrap;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), #0284c7);
+      color: #031420; box-shadow: 0 8px 32px rgba(56,189,248,0.35);
+    }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 12px 40px rgba(56,189,248,0.45); }
+    .btn-secondary {
+      background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-secondary:hover { background: rgba(255,255,255,0.1); }
+
+    /* ── Nav ── */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      padding: 16px 24px;
+      background: rgba(7,11,20,0.85); backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+      transition: all .3s;
+    }
+    .nav-inner {
+      max-width: 1100px; margin: 0 auto;
+      display: flex; align-items: center; gap: 24px;
+    }
+    .nav-logo { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+    .nav-logo-text {
+      font-size: 17px; font-weight: 900;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .nav-links { display: flex; gap: 4px; margin-left: auto; }
+    .nav-links a {
+      color: var(--muted); text-decoration: none; font-size: 14px; font-weight: 600;
+      padding: 6px 14px; border-radius: 10px; transition: all .15s;
+    }
+    .nav-links a:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+    .nav-dl {
+      margin-left: 8px;
+      background: linear-gradient(135deg, var(--accent), #0284c7);
+      color: #031420; padding: 8px 18px; border-radius: 12px;
+      font-size: 13px; font-weight: 800; text-decoration: none;
+      transition: all .15s;
+    }
+    .nav-dl:hover { transform: translateY(-1px); }
+
+    /* ── Hero ── */
+    .hero {
+      min-height: 100vh; display: flex; align-items: center;
+      padding: 120px 24px 80px;
+      position: relative; overflow: hidden;
+    }
+    .hero-bg {
+      position: absolute; inset: 0; pointer-events: none;
+      background:
+        radial-gradient(ellipse 80% 60% at 50% 0%, rgba(56,189,248,0.12) 0%, transparent 70%),
+        radial-gradient(ellipse 50% 40% at 80% 60%, rgba(129,140,248,0.08) 0%, transparent 60%);
+    }
+    .hero-grid {
+      max-width: 1100px; margin: 0 auto; display: grid;
+      grid-template-columns: 1fr 1fr; gap: 64px; align-items: center;
+    }
+    .hero-eyecatch { font-size: 12px; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; color: var(--accent); margin-bottom: 16px; }
+    .hero h1 {
+      font-size: clamp(40px, 6vw, 64px); font-weight: 900; line-height: 1.05;
+      letter-spacing: -1.5px; margin-bottom: 20px;
+    }
+    .hero h1 .gradient {
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .hero p { font-size: 17px; color: var(--muted); line-height: 1.7; margin-bottom: 36px; max-width: 440px; }
+    .hero-ctas { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 32px; }
+    .hero-meta { display: flex; gap: 20px; font-size: 12px; color: var(--muted); font-weight: 600; }
+    .hero-meta span { display: flex; align-items: center; gap: 6px; }
+
+    /* App preview */
+    .app-preview {
+      position: relative;
+    }
+    .app-frame {
+      background: #0d1222; border-radius: 16px;
+      border: 1px solid rgba(56,189,248,0.15);
+      overflow: hidden;
+      box-shadow: 0 40px 120px rgba(0,0,0,0.8), 0 0 0 1px rgba(56,189,248,0.08);
+    }
+    .app-titlebar {
+      background: rgba(56,189,248,0.1); padding: 10px 16px;
+      display: flex; align-items: center; gap: 8px;
+      border-bottom: 1px solid rgba(56,189,248,0.1);
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .app-content { padding: 20px; }
+
+    /* ── Sections ── */
+    section { padding: 96px 24px; }
+    .section-header { text-align: center; margin-bottom: 64px; }
+    .section-header .badge { margin-bottom: 16px; }
+    .section-header h2 { font-size: clamp(28px, 4vw, 44px); font-weight: 900; letter-spacing: -1px; margin-bottom: 12px; }
+    .section-header p { font-size: 16px; color: var(--muted); max-width: 480px; margin: 0 auto; }
+
+    /* ── Features ── */
+    .features { background: var(--surface); }
+    .features-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+      max-width: 1100px; margin: 0 auto;
+    }
+    .feature-card {
+      padding: 28px; border-radius: var(--radius);
+      background: rgba(255,255,255,0.02); border: 1px solid var(--border);
+      transition: all .2s;
+    }
+    .feature-card:hover { border-color: rgba(56,189,248,0.25); background: rgba(56,189,248,0.04); transform: translateY(-2px); }
+    .feature-icon {
+      width: 48px; height: 48px; border-radius: 14px; margin-bottom: 16px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+    }
+    .feature-card h3 { font-size: 16px; font-weight: 800; margin-bottom: 8px; }
+    .feature-card p { font-size: 13.5px; color: var(--muted); line-height: 1.65; }
+
+    /* ── Stats strip ── */
+    .stats-strip { background: linear-gradient(135deg, rgba(56,189,248,0.08), rgba(129,140,248,0.08)); }
+    .stats-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+      background: var(--border); border: 1px solid var(--border); border-radius: var(--radius);
+      overflow: hidden; max-width: 1100px; margin: 0 auto;
+    }
+    .stat-item {
+      background: var(--bg); padding: 36px 24px; text-align: center;
+    }
+    .stat-number { font-size: 44px; font-weight: 900; letter-spacing: -2px; line-height: 1; }
+    .stat-label { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .1em; margin-top: 6px; }
+
+    /* ── Screenshots ── */
+    .screens-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+      max-width: 1100px; margin: 0 auto;
+    }
+    .screen-card {
+      border-radius: var(--radius); overflow: hidden;
+      border: 1px solid var(--border);
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+      background: var(--surface);
+    }
+    .screen-label {
+      padding: 14px 20px; font-size: 12px; font-weight: 700;
+      color: var(--muted); text-transform: uppercase; letter-spacing: .1em;
+      border-bottom: 1px solid var(--border);
+    }
+    .screen-content { padding: 20px; }
+
+    /* ── Download ── */
+    .download { background: var(--surface); }
+    .download-card {
+      max-width: 700px; margin: 0 auto; text-align: center;
+      padding: 56px 48px; border-radius: 28px;
+      background: rgba(56,189,248,0.04);
+      border: 1px solid rgba(56,189,248,0.15);
+      box-shadow: 0 0 80px rgba(56,189,248,0.06);
+    }
+    .download-version {
+      font-size: 13px; color: var(--accent); font-weight: 700; margin-bottom: 8px;
+    }
+    .download-card h2 { font-size: 32px; font-weight: 900; margin-bottom: 12px; }
+    .download-card p { color: var(--muted); margin-bottom: 36px; }
+    .download-btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px; }
+    .download-note { font-size: 11px; color: var(--muted); }
+
+    /* ── Changelog ── */
+    .changelog-list { max-width: 700px; margin: 0 auto; }
+    .changelog-item {
+      padding: 28px; border-radius: var(--radius);
+      border: 1px solid var(--border); margin-bottom: 16px;
+      background: rgba(255,255,255,0.01);
+    }
+    .changelog-item-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .changelog-version { font-size: 15px; font-weight: 900; }
+    .changelog-date { font-size: 12px; color: var(--muted); font-weight: 600; }
+    .changelog-tag {
+      margin-left: auto; font-size: 10px; font-weight: 800; text-transform: uppercase;
+      letter-spacing: .1em; padding: 3px 10px; border-radius: 999px;
+    }
+    .changelog-tag.latest { background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }
+    .changelog-features { list-style: none; }
+    .changelog-features li {
+      font-size: 13.5px; color: var(--muted); padding: 4px 0;
+      padding-left: 20px; position: relative;
+    }
+    .changelog-features li::before {
+      content: '→'; position: absolute; left: 0; color: var(--accent); font-weight: 700;
+    }
+
+    /* ── Footer ── */
+    footer {
+      padding: 56px 24px; border-top: 1px solid var(--border);
+      text-align: center;
+    }
+    footer .logo { font-size: 20px; font-weight: 900; margin-bottom: 8px; }
+    footer p { font-size: 13px; color: var(--muted); margin-bottom: 20px; }
+    .footer-links { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
+    .footer-links a { font-size: 13px; color: var(--muted); text-decoration: none; font-weight: 600; transition: color .15s; }
+    .footer-links a:hover { color: var(--accent); }
+
+    /* ── SVG Mockups ── */
+    .mockup-reader {
+      font-family: 'Inter', sans-serif; font-size: 10px;
+    }
+
+    /* ── Animations ── */
+    .fade-in { opacity: 0; transform: translateY(20px); transition: opacity .6s ease, transform .6s ease; }
+    .fade-in.visible { opacity: 1; transform: none; }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      .hero-grid, .screens-grid { grid-template-columns: 1fr; }
+      .features-grid { grid-template-columns: 1fr; }
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+      .hero-grid { gap: 40px; }
+      .app-preview { display: none; }
+      nav .nav-links { display: none; }
+      .download-card { padding: 36px 24px; }
+    }
+    @media (max-width: 480px) {
+      .stats-grid { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Navigation ── -->
+<nav>
+  <div class="nav-inner">
+    <a class="nav-logo" href="#">
+      <span style="font-size:24px">🦈</span>
+      <span class="nav-logo-text">SharkReader</span>
+    </a>
+    <div class="nav-links">
+      <a href="#features">Características</a>
+      <a href="#screenshots">Capturas</a>
+      <a href="#changelog">Novedades</a>
+    </div>
+    <a class="nav-dl" href="#download" id="nav-download-btn">Descargar</a>
+  </div>
+</nav>
+
+<!-- ── Hero ── -->
+<section class="hero">
+  <div class="hero-bg"></div>
+  <div class="hero-grid container">
+    <div>
+      <p class="hero-eyecatch">🦈 Local-first · Windows · Gratis</p>
+      <h1>Lee más.<br><span class="gradient">Sin límites.</span></h1>
+      <p>SharkReader es el lector de EPUB y PDF para Windows que siempre quisiste. Sin suscripciones, sin nube, sin compromiso. Tus libros, tus datos.</p>
+      <div class="hero-ctas">
+        <a href="#" class="btn btn-primary" id="hero-installer-btn">
+          ⬇ Descargar gratis
+        </a>
+        <a href="#features" class="btn btn-secondary">Ver características →</a>
+      </div>
+      <div class="hero-meta">
+        <span>🪟 Windows 10/11</span>
+        <span id="version-badge">🏷 v3.6.0</span>
+        <span>🔒 100% local</span>
+      </div>
+    </div>
+    <div class="app-preview fade-in">
+      <div class="app-frame">
+        <div class="app-titlebar">
+          <span class="dot" style="background:#ff5f57"></span>
+          <span class="dot" style="background:#ffbd2e"></span>
+          <span class="dot" style="background:#28c940"></span>
+          <span style="margin-left:8px;font-size:11px;color:rgba(255,255,255,0.4);font-weight:600">SharkReader</span>
+        </div>
+        <!-- SVG app mockup -->
+        <div class="app-content">
+          <svg viewBox="0 0 420 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;display:block">
+            <!-- Topbar -->
+            <rect width="420" height="32" fill="#0f1a2e"/>
+            <rect x="8" y="8" width="60" height="16" rx="4" fill="rgba(56,189,248,0.15)"/>
+            <text x="14" y="20" fill="#38bdf8" font-size="8" font-weight="700" font-family="Inter,sans-serif">🦈 SharkReader</text>
+            <rect x="280" y="9" width="80" height="14" rx="4" fill="rgba(255,255,255,0.05)"/>
+            <text x="288" y="20" fill="rgba(255,255,255,0.4)" font-size="7" font-family="Inter,sans-serif">Título, autor...</text>
+            <rect x="376" y="9" width="36" height="14" rx="4" fill="rgba(56,189,248,0.2)"/>
+            <text x="382" y="20" fill="#38bdf8" font-size="7" font-weight="700" font-family="Inter,sans-serif">+ Añadir</text>
+            <!-- Sidebar -->
+            <rect x="0" y="32" width="130" height="228" fill="#080e1d"/>
+            <rect x="8" y="42" width="114" height="18" rx="5" fill="rgba(56,189,248,0.12)"/>
+            <text x="16" y="55" fill="#38bdf8" font-size="8" font-weight="700" font-family="Inter,sans-serif">📚 Biblioteca (152)</text>
+            <rect x="8" y="64" width="114" height="14" rx="4" fill="rgba(255,255,255,0.03)"/>
+            <text x="16" y="74" fill="rgba(255,255,255,0.4)" font-size="7" font-family="Inter,sans-serif">📖 Leyendo</text>
+            <rect x="8" y="80" width="114" height="14" rx="4" fill="rgba(255,255,255,0.03)"/>
+            <text x="16" y="90" fill="rgba(255,255,255,0.4)" font-size="7" font-family="Inter,sans-serif">✅ Terminados</text>
+            <rect x="8" y="96" width="114" height="14" rx="4" fill="rgba(255,255,255,0.03)"/>
+            <text x="16" y="106" fill="rgba(255,255,255,0.4)" font-size="7" font-family="Inter,sans-serif">❤️ Favoritos</text>
+            <text x="8" y="130" fill="rgba(255,255,255,0.2)" font-size="6" font-weight="700" font-family="Inter,sans-serif">ESTANTERÍAS</text>
+            <rect x="8" y="135" width="114" height="12" rx="3" fill="rgba(251,191,36,0.08)"/>
+            <text x="14" y="144" fill="rgba(251,191,36,0.7)" font-size="7" font-family="Inter,sans-serif">⏸ Pausados +6m</text>
+            <!-- Book grid -->
+            <rect x="130" y="32" width="290" height="228" fill="#0a1020"/>
+            <!-- Books -->
+            <rect x="140" y="44" width="52" height="72" rx="5" fill="#1a2744"/>
+            <rect x="140" y="44" width="52" height="72" rx="5" fill="url(#g1)"/>
+            <rect x="200" y="44" width="52" height="72" rx="5" fill="#1a3a2a"/>
+            <rect x="260" y="44" width="52" height="72" rx="5" fill="#2a1a3a"/>
+            <rect x="320" y="44" width="52" height="72" rx="5" fill="#1a2a3a"/>
+            <text x="155" y="100" fill="rgba(255,255,255,0.6)" font-size="6" font-family="Inter,sans-serif">📗</text>
+            <text x="215" y="100" fill="rgba(255,255,255,0.6)" font-size="6" font-family="Inter,sans-serif">📕</text>
+            <text x="275" y="100" fill="rgba(255,255,255,0.6)" font-size="6" font-family="Inter,sans-serif">📘</text>
+            <text x="335" y="100" fill="rgba(255,255,255,0.6)" font-size="6" font-family="Inter,sans-serif">📙</text>
+            <!-- Progress bars under books -->
+            <rect x="140" y="120" width="52" height="3" rx="2" fill="rgba(255,255,255,0.08)"/>
+            <rect x="140" y="120" width="38" height="3" rx="2" fill="#38bdf8"/>
+            <rect x="200" y="120" width="52" height="3" rx="2" fill="rgba(255,255,255,0.08)"/>
+            <rect x="200" y="120" width="52" height="3" rx="2" fill="#22c55e"/>
+            <rect x="260" y="120" width="52" height="3" rx="2" fill="rgba(255,255,255,0.08)"/>
+            <rect x="260" y="120" width="20" height="3" rx="2" fill="#a78bfa"/>
+            <rect x="320" y="120" width="52" height="3" rx="2" fill="rgba(255,255,255,0.08)"/>
+            <rect x="320" y="120" width="42" height="3" rx="2" fill="#f59e0b"/>
+            <rect x="140" y="136" width="52" height="72" rx="5" fill="#1a2a2a"/>
+            <rect x="200" y="136" width="52" height="72" rx="5" fill="#3a1a1a"/>
+            <rect x="260" y="136" width="52" height="72" rx="5" fill="#1a1a3a"/>
+            <rect x="320" y="136" width="52" height="72" rx="5" fill="#2a2a1a"/>
+            <!-- Sharky widget -->
+            <circle cx="390" cy="245" r="18" fill="#0d1222" stroke="rgba(56,189,248,0.3)" stroke-width="1"/>
+            <text x="383" y="250" font-size="12">🦈</text>
+            <defs>
+              <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.2"/>
+                <stop offset="100%" stop-color="transparent"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+      </div>
+      <!-- Floating badges -->
+      <div style="position:absolute;top:-16px;right:-16px;background:#0d1222;border:1px solid rgba(56,189,248,0.25);border-radius:12px;padding:8px 14px;font-size:11px;font-weight:700;color:#38bdf8;white-space:nowrap">
+        🏆 60 logros desbloqueables
+      </div>
+      <div style="position:absolute;bottom:-16px;left:-16px;background:#0d1222;border:1px solid rgba(34,197,94,0.25);border-radius:12px;padding:8px 14px;font-size:11px;font-weight:700;color:#22c55e;white-space:nowrap">
+        📊 Analíticas detalladas
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Stats ── -->
+<section class="stats-strip" style="padding:48px 24px">
+  <div class="stats-grid container">
+    <div class="stat-item">
+      <div class="stat-number" style="color:#38bdf8">EPUB+PDF</div>
+      <div class="stat-label">Formatos soportados</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-number" style="color:#a78bfa">60</div>
+      <div class="stat-label">Logros desbloqueables</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-number" style="color:#34d399">16</div>
+      <div class="stat-label">Addons en Workshop</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-number" style="color:#fbbf24">100%</div>
+      <div class="stat-label">Local · Sin nube · Gratis</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Features ── -->
+<section class="features" id="features">
+  <div class="section-header fade-in">
+    <div class="badge">Características</div>
+    <h2>Todo lo que necesitas para leer mejor</h2>
+    <p>Una app de escritorio completa que se queda contigo sin necesitar internet.</p>
+  </div>
+  <div class="features-grid container">
+    <div class="feature-card fade-in">
+      <div class="feature-icon" style="background:rgba(56,189,248,0.1)">📖</div>
+      <h3>Lector EPUB y PDF</h3>
+      <p>Subrayados multicolor, notas al margen, marcadores, TOC inteligente con búsqueda, tipografía per-libro, modo oscuro universal y doble página.</p>
+    </div>
+    <div class="feature-card fade-in">
+      <div class="feature-icon" style="background:rgba(129,140,248,0.1)">🦈</div>
+      <h3>Sharky, tu mascota lectora</h3>
+      <p>Sharky te felicita por tus logros, te avisa cuando pierdes una racha y te acompaña con personalidad propia. Cosméticos desbloqueables.</p>
+    </div>
+    <div class="feature-card fade-in">
+      <div class="feature-icon" style="background:rgba(52,211,153,0.1)">🏆</div>
+      <h3>60 logros y gamificación</h3>
+      <p>Sistema de niveles XP, rachas diarias, 60 logros categorizados por rareza (común, raro, épico, legendario) y un Resumen Anual estilo Wrapped.</p>
+    </div>
+    <div class="feature-card fade-in">
+      <div class="feature-icon" style="background:rgba(251,191,36,0.1)">📊</div>
+      <h3>Analíticas detalladas</h3>
+      <p>Heatmap anual, gráfica por días/semanas/meses, metas diaria/semanal/mensual, plan de lectura con fecha objetivo y racha máxima histórica.</p>
+    </div>
+    <div class="feature-card fade-in">
+      <div class="feature-icon" style="background:rgba(249,115,22,0.1)">📚</div>
+      <h3>Biblioteca inteligente</h3>
+      <p>Estanterías automáticas, importar desde Goodreads CSV, fetch de portadas desde OpenLibrary, series con gap detection, colecciones con emoji.</p>
+    </div>
+    <div class="feature-card fade-in">
+      <div class="feature-icon" style="background:rgba(244,63,94,0.1)">🔗</div>
+      <h3>Export a Obsidian</h3>
+      <p>Exporta tus anotaciones con frontmatter YAML agrupadas por capítulo, o cópialas al portapapeles con un clic. Compatible con cualquier vault.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Screenshots ── -->
+<section id="screenshots" style="padding:96px 24px">
+  <div class="section-header fade-in">
+    <div class="badge">Capturas</div>
+    <h2>Diseñado para el lector serio</h2>
+    <p>Interfaz oscura, limpia y sin distracciones. Tus libros, en primer plano.</p>
+  </div>
+  <div class="screens-grid container">
+    <div class="screen-card fade-in">
+      <div class="screen-label">📖 Lector EPUB — Modo oscuro</div>
+      <div class="screen-content">
+        <svg viewBox="0 0 400 220" xmlns="http://www.w3.org/2000/svg" style="width:100%">
+          <rect width="400" height="220" fill="#080e1d"/>
+          <rect width="400" height="28" fill="#0f1a2e"/>
+          <text x="16" y="18" fill="rgba(255,255,255,0.5)" font-size="7" font-family="Inter" font-weight="600">Las 48 Leyes del Poder · Cap. 7</text>
+          <rect x="300" y="7" width="40" height="14" rx="3" fill="rgba(56,189,248,0.15)"/>
+          <text x="308" y="18" fill="#38bdf8" font-size="7" font-family="Inter" font-weight="700">Índice</text>
+          <rect x="348" y="7" width="44" height="14" rx="3" fill="rgba(56,189,248,0.2)"/>
+          <text x="354" y="18" fill="#38bdf8" font-size="7" font-family="Inter" font-weight="700">110% ▾</text>
+          <!-- Text lines -->
+          <rect x="60" y="44" width="280" height="7" rx="2" fill="rgba(255,255,255,0.15)"/>
+          <rect x="60" y="56" width="280" height="7" rx="2" fill="rgba(255,255,255,0.1)"/>
+          <rect x="60" y="68" width="240" height="7" rx="2" fill="rgba(255,255,255,0.1)"/>
+          <!-- Highlight -->
+          <rect x="60" y="80" width="200" height="10" rx="2" fill="rgba(250,204,21,0.25)"/>
+          <rect x="60" y="80" width="200" height="7" rx="2" fill="rgba(255,255,255,0.12)"/>
+          <rect x="60" y="94" width="280" height="7" rx="2" fill="rgba(255,255,255,0.1)"/>
+          <rect x="60" y="106" width="260" height="7" rx="2" fill="rgba(255,255,255,0.1)"/>
+          <rect x="60" y="118" width="180" height="7" rx="2" fill="rgba(255,255,255,0.08)"/>
+          <!-- Annotation panel -->
+          <rect x="300" y="32" width="96" height="180" rx="0" fill="#0d1828" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+          <text x="308" y="46" fill="rgba(255,255,255,0.5)" font-size="6" font-weight="700" font-family="Inter">ANOTACIONES</text>
+          <rect x="306" y="52" width="84" height="28" rx="5" fill="rgba(250,204,21,0.08)" stroke="rgba(250,204,21,0.15)" stroke-width="1"/>
+          <text x="312" y="62" fill="rgba(255,255,255,0.5)" font-size="6" font-family="Inter">Importante</text>
+          <rect x="308" y="64" width="70" height="4" rx="1" fill="rgba(255,255,255,0.1)"/>
+          <rect x="306" y="86" width="84" height="28" rx="5" fill="rgba(99,179,237,0.08)" stroke="rgba(99,179,237,0.15)" stroke-width="1"/>
+          <text x="312" y="96" fill="rgba(255,255,255,0.5)" font-size="6" font-family="Inter">Duda</text>
+          <!-- Progress bar -->
+          <rect x="0" y="214" width="400" height="6" fill="#0f1a2e"/>
+          <rect x="0" y="214" width="145" height="6" fill="rgba(56,189,248,0.4)"/>
+          <text x="370" y="212" fill="rgba(255,255,255,0.3)" font-size="6" font-family="Inter">36%</text>
+        </svg>
+      </div>
+    </div>
+    <div class="screen-card fade-in">
+      <div class="screen-label">📊 Analíticas — Wrapped anual</div>
+      <div class="screen-content">
+        <svg viewBox="0 0 400 220" xmlns="http://www.w3.org/2000/svg" style="width:100%">
+          <defs>
+            <linearGradient id="wrapGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#0a0e1a"/>
+              <stop offset="100%" stop-color="#0d1527"/>
+            </linearGradient>
+            <radialGradient id="glow1" cx="50%" cy="0%">
+              <stop offset="0%" stop-color="#38bdf8" stop-opacity=".25"/>
+              <stop offset="100%" stop-color="transparent"/>
+            </radialGradient>
+          </defs>
+          <rect width="400" height="220" fill="url(#wrapGrad)"/>
+          <rect width="400" height="220" fill="url(#glow1)"/>
+          <!-- Wrapped card -->
+          <rect x="80" y="16" width="240" height="190" rx="16" fill="#0d1527" stroke="rgba(56,189,248,0.15)" stroke-width="1"/>
+          <!-- Progress dots -->
+          <circle cx="120" cy="32" r="3" fill="#38bdf8"/>
+          <circle cx="132" cy="32" r="3" fill="rgba(56,189,248,0.3)"/>
+          <circle cx="144" cy="32" r="3" fill="rgba(56,189,248,0.15)"/>
+          <circle cx="156" cy="32" r="3" fill="rgba(56,189,248,0.15)"/>
+          <!-- Shark emoji big -->
+          <text x="184" y="90" font-size="36" text-anchor="middle">🦈</text>
+          <text x="200" y="110" fill="rgba(56,189,248,0.6)" font-size="7" font-weight="700" font-family="Inter" text-anchor="middle" letter-spacing="2">LIBROS TERMINADOS</text>
+          <text x="200" y="140" fill="#38bdf8" font-size="36" font-weight="900" font-family="Inter" text-anchor="middle">12</text>
+          <text x="200" y="158" fill="rgba(255,255,255,0.7)" font-size="9" font-weight="800" font-family="Inter" text-anchor="middle">¡Bien hecho!</text>
+          <text x="200" y="172" fill="rgba(255,255,255,0.35)" font-size="7" font-family="Inter" text-anchor="middle">"Don Quijote" y 11 más</text>
+          <!-- Nav buttons -->
+          <rect x="96" y="188" width="44" height="14" rx="5" fill="rgba(255,255,255,0.05)"/>
+          <text x="118" y="198" fill="rgba(255,255,255,0.4)" font-size="7" font-family="Inter" text-anchor="middle">← Atrás</text>
+          <rect x="260" y="188" width="52" height="14" rx="5" fill="#38bdf8"/>
+          <text x="286" y="198" fill="#031420" font-size="7" font-weight="700" font-family="Inter" text-anchor="middle">Siguiente →</text>
+        </svg>
+      </div>
+    </div>
+    <div class="screen-card fade-in">
+      <div class="screen-label">🏆 Panel de Logros — 60 desbloqueables</div>
+      <div class="screen-content">
+        <svg viewBox="0 0 400 220" xmlns="http://www.w3.org/2000/svg" style="width:100%">
+          <rect width="400" height="220" fill="#080e1d"/>
+          <rect width="400" height="48" fill="#0f1a2e"/>
+          <text x="20" y="22" fill="white" font-size="11" font-weight="900" font-family="Inter">Mis Logros</text>
+          <text x="20" y="38" fill="rgba(255,255,255,0.4)" font-size="8" font-family="Inter">42 / 60 desbloqueados</text>
+          <rect x="320" y="14" width="64" height="8" rx="4" fill="rgba(255,255,255,0.08)"/>
+          <rect x="320" y="14" width="45" height="8" rx="4" fill="#38bdf8"/>
+          <!-- Legendary row -->
+          <text x="16" y="68" fill="#f59e0b" font-size="7" font-weight="700" font-family="Inter" letter-spacing="1">LEGENDARIO</text>
+          <rect x="16" y="74" width="180" height="40" rx="8" fill="rgba(245,158,11,0.08)" stroke="rgba(245,158,11,0.2)" stroke-width="1"/>
+          <text x="28" y="100" font-size="20">🌌</text>
+          <text x="54" y="89" fill="white" font-size="8" font-weight="800" font-family="Inter">Año Imparable</text>
+          <rect x="54" y="93" width="28" height="6" rx="2" fill="rgba(245,158,11,0.2)"/>
+          <text x="58" y="100" fill="#f59e0b" font-size="5" font-weight="700" font-family="Inter">LEGENDARIO</text>
+          <text x="54" y="108" fill="rgba(255,255,255,0.35)" font-size="6" font-family="Inter">Racha de 365 días</text>
+          <circle cx="188" cy="94" r="8" fill="rgba(245,158,11,0.15)"/>
+          <text x="185" y="97" fill="#f59e0b" font-size="8" font-weight="900" font-family="Inter">✓</text>
+          <rect x="204" y="74" width="180" height="40" rx="8" fill="rgba(245,158,11,0.08)" stroke="rgba(245,158,11,0.2)" stroke-width="1"/>
+          <text x="216" y="100" font-size="20">👑</text>
+          <text x="242" y="89" fill="white" font-size="8" font-weight="800" font-family="Inter">Gran Lector</text>
+          <text x="242" y="108" fill="rgba(255,255,255,0.35)" font-size="6" font-family="Inter">Termina 10 libros</text>
+          <!-- Epic row -->
+          <text x="16" y="130" fill="#a855f7" font-size="7" font-weight="700" font-family="Inter" letter-spacing="1">ÉPICO</text>
+          <rect x="16" y="136" width="118" height="36" rx="8" fill="rgba(168,85,247,0.08)" stroke="rgba(168,85,247,0.2)" stroke-width="1"/>
+          <text x="26" y="158" font-size="16">⚡</text>
+          <text x="48" y="150" fill="white" font-size="7" font-weight="700" font-family="Inter">Mes Imparable</text>
+          <text x="48" y="163" fill="rgba(255,255,255,0.35)" font-size="6" font-family="Inter">Racha 30 días</text>
+          <rect x="140" y="136" width="118" height="36" rx="8" fill="rgba(168,85,247,0.08)" stroke="rgba(168,85,247,0.2)" stroke-width="1"/>
+          <text x="150" y="158" font-size="16">🧠</text>
+          <text x="172" y="150" fill="white" font-size="7" font-weight="700" font-family="Inter">Sabio</text>
+          <text x="172" y="163" fill="rgba(255,255,255,0.35)" font-size="6" font-family="Inter">100 horas leídas</text>
+          <!-- Locked -->
+          <rect x="264" y="136" width="118" height="36" rx="8" fill="rgba(128,128,128,0.04)" stroke="rgba(128,128,128,0.1)" stroke-width="1"/>
+          <text x="274" y="156" font-size="16" opacity=".3">🗄️</text>
+          <text x="296" y="150" fill="rgba(255,255,255,0.2)" font-size="7" font-weight="700" font-family="Inter">Curador</text>
+          <text x="296" y="163" fill="rgba(255,255,255,0.15)" font-size="6" font-family="Inter">50 libros · Bloqueado</text>
+          <!-- Streak progress -->
+          <rect x="16" y="186" width="368" height="20" rx="6" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
+          <rect x="22" y="192" width="160" height="8" rx="3" fill="rgba(56,189,248,0.15)"/>
+          <rect x="22" y="192" width="112" height="8" rx="3" fill="#38bdf8"/>
+          <text x="200" y="200" fill="rgba(255,255,255,0.3)" font-size="6" font-family="Inter">70% completado · 42/60</text>
+        </svg>
+      </div>
+    </div>
+    <div class="screen-card fade-in">
+      <div class="screen-label">🛠️ Workshop — Addons activables</div>
+      <div class="screen-content">
+        <svg viewBox="0 0 400 220" xmlns="http://www.w3.org/2000/svg" style="width:100%">
+          <rect width="400" height="220" fill="#080e1d"/>
+          <!-- Modal -->
+          <rect x="20" y="8" width="360" height="204" rx="14" fill="#0d1222" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+          <!-- Header -->
+          <rect x="20" y="8" width="360" height="36" rx="14" fill="#0f1a30"/>
+          <rect x="20" y="26" width="360" height="18" fill="#0f1a30"/>
+          <text x="58" y="30" fill="white" font-size="9" font-weight="800" font-family="Inter">🔧 Workshop de Addons</text>
+          <!-- Category pills -->
+          <rect x="32" y="52" width="44" height="14" rx="6" fill="rgba(56,189,248,0.2)"/>
+          <text x="40" y="62" fill="#38bdf8" font-size="6" font-weight="700" font-family="Inter">Todos (16)</text>
+          <rect x="82" y="52" width="60" height="14" rx="6" fill="rgba(255,255,255,0.04)"/>
+          <text x="90" y="62" fill="rgba(255,255,255,0.4)" font-size="6" font-family="Inter">Productividad</text>
+          <rect x="148" y="52" width="40" height="14" rx="6" fill="rgba(255,255,255,0.04)"/>
+          <text x="156" y="62" fill="rgba(255,255,255,0.4)" font-size="6" font-family="Inter">Stats</text>
+          <!-- Addon rows -->
+          <rect x="28" y="74" width="344" height="30" rx="8" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
+          <text x="42" y="92" font-size="14">🦈</text>
+          <text x="62" y="87" fill="white" font-size="7" font-weight="700" font-family="Inter">Sharky Mascota</text>
+          <text x="62" y="97" fill="rgba(255,255,255,0.4)" font-size="6" font-family="Inter">Tu asistente de lectura personal</text>
+          <rect x="330" y="82" width="34" height="14" rx="7" fill="#38bdf8"/>
+          <circle cx="357" cy="89" r="5" fill="white"/>
+          <rect x="28" y="110" width="344" height="30" rx="8" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
+          <text x="42" y="128" font-size="14">🍅</text>
+          <text x="62" y="123" fill="white" font-size="7" font-weight="700" font-family="Inter">Pomodoro Timer</text>
+          <text x="62" y="133" fill="rgba(255,255,255,0.4)" font-size="6" font-family="Inter">Sesiones cronometradas de lectura</text>
+          <rect x="330" y="118" width="34" height="14" rx="7" fill="#38bdf8"/>
+          <circle cx="357" cy="125" r="5" fill="white"/>
+          <rect x="28" y="146" width="344" height="30" rx="8" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
+          <text x="42" y="164" font-size="14">🎲</text>
+          <text x="62" y="159" fill="white" font-size="7" font-weight="700" font-family="Inter">Ruleta de Libros</text>
+          <text x="62" y="169" fill="rgba(255,255,255,0.4)" font-size="6" font-family="Inter">¿No sabes qué leer? Deja que el azar decida</text>
+          <rect x="330" y="154" width="34" height="14" rx="7" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>
+          <circle cx="341" cy="161" r="5" fill="rgba(255,255,255,0.2)"/>
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Download ── -->
+<section class="download" id="download">
+  <div class="download-card container fade-in">
+    <div class="download-version" id="dl-version">v3.6.0 — Última versión</div>
+    <h2>Descarga SharkReader</h2>
+    <p>Gratis para siempre. Sin cuenta, sin suscripción, sin acceso a tus datos.</p>
+    <div class="download-btns">
+      <a href="#" class="btn btn-primary" id="dl-installer" style="font-size:16px;padding:16px 36px">
+        ⬇ Instalador (.exe)
+      </a>
+      <a href="#" class="btn btn-secondary" id="dl-portable">
+        📦 Portable (.exe)
+      </a>
+    </div>
+    <div class="download-note">
+      Windows 10 / 11 · 64-bit · ~120 MB<br>
+      <span id="dl-date" style="margin-top:4px;display:block;color:rgba(255,255,255,0.25)"></span>
+    </div>
+  </div>
+</section>
+
+<!-- ── Changelog ── -->
+<section id="changelog" style="padding:96px 24px">
+  <div class="section-header fade-in">
+    <div class="badge">Novedades</div>
+    <h2>Actualizaciones recientes</h2>
+    <p>SharkReader mejora constantemente con nuevas funciones y correcciones.</p>
+  </div>
+  <div class="changelog-list">
+    <div class="changelog-item fade-in">
+      <div class="changelog-item-header">
+        <span class="changelog-version">v3.6.0</span>
+        <span class="changelog-date">Mayo 2026</span>
+        <span class="changelog-tag latest">Última versión</span>
+      </div>
+      <ul class="changelog-features">
+        <li>Onboarding completamente rediseñado con hero visual animado y acento de color por paso</li>
+        <li>Resumen Anual estilo Wrapped — 7 slides con tus estadísticas del año</li>
+        <li>60 logros desbloqueables (+24 nuevos: series, niveles, horas extremas, Goodreads, Obsidian)</li>
+        <li>Estados vacíos diseñados para 9 contextos distintos de la biblioteca</li>
+        <li>Skill UI/UX Pro Max integrada para mejores decisiones de diseño</li>
+      </ul>
+    </div>
+    <div class="changelog-item fade-in">
+      <div class="changelog-item-header">
+        <span class="changelog-version">v3.5.0</span>
+        <span class="changelog-date">Mayo 2026</span>
+      </div>
+      <ul class="changelog-features">
+        <li>Fetch de portadas y metadata desde OpenLibrary (sin registro, gratis)</li>
+        <li>Importar biblioteca completa desde Goodreads CSV</li>
+        <li>Estanterías automáticas: "Pausados +6 meses" y "Casi terminados (+80%)"</li>
+        <li>Plan de lectura con fecha objetivo y cálculo de ritmo</li>
+        <li>MOBI eliminado del importador (se prometía lo que no se cumplía)</li>
+      </ul>
+    </div>
+    <div class="changelog-item fade-in">
+      <div class="changelog-item-header">
+        <span class="changelog-version">v3.4.0</span>
+        <span class="changelog-date">Mayo 2026</span>
+      </div>
+      <ul class="changelog-features">
+        <li>PDF de primera clase: TOC/outline, dark mode (inversión de canvas), zoom Ctrl+/-/0</li>
+        <li>Export de anotaciones PDF → Markdown con frontmatter</li>
+        <li>Dark mode universal EPUB: overrides CSS con !important para fondos hardcodeados</li>
+      </ul>
+    </div>
+    <div class="changelog-item fade-in">
+      <div class="changelog-item-header">
+        <span class="changelog-version">v3.3.0</span>
+        <span class="changelog-date">Mayo 2026</span>
+      </div>
+      <ul class="changelog-features">
+        <li>Export a Obsidian: .md con frontmatter YAML + anotaciones agrupadas por capítulo</li>
+        <li>Notas visibles en el texto del EPUB con subrayado punteado</li>
+        <li>Buscar dentro del panel de anotaciones (EPUB y PDF)</li>
+        <li>Estadísticas por libro: tiempo, progreso, anotaciones desglosadas, periodo</li>
+      </ul>
+    </div>
+  </div>
+  <div style="text-align:center;margin-top:32px">
+    <a href="https://github.com/XsharklinX/SharkReader/releases" target="_blank" class="btn btn-secondary">
+      Ver todos los releases en GitHub →
+    </a>
+  </div>
+</section>
+
+<!-- ── Footer ── -->
+<footer>
+  <div class="logo">🦈 SharkReader</div>
+  <p>Desarrollado con ❤️ por <strong>David Bonilla</strong> · Electron · React · Vite · Open Source</p>
+  <div class="footer-links">
+    <a href="https://github.com/XsharklinX/SharkReader" target="_blank">GitHub</a>
+    <a href="https://github.com/XsharklinX/SharkReader/releases" target="_blank">Releases</a>
+    <a href="https://github.com/XsharklinX/SharkReader/issues" target="_blank">Reportar bug</a>
+    <a href="https://github.com/XsharklinX/SharkReader/blob/main/LICENSE" target="_blank">Licencia ISC</a>
+  </div>
+  <p style="margin-top:24px;font-size:11px;color:rgba(255,255,255,0.15)">
+    SharkReader es software libre. Tus libros y datos permanecen en tu dispositivo.
+  </p>
+</footer>
+
+<script>
+// ── GitHub Releases API ──────────────────────────────────────────────────────
+const REPO = 'XsharklinX/SharkReader';
+const API  = `https://api.github.com/repos/${REPO}/releases/latest`;
+
+async function loadLatestRelease() {
+  try {
+    const res = await fetch(API);
+    if (!res.ok) return;
+    const release = await res.json();
+    const version = release.tag_name || 'v3.6.0';
+    const date = release.published_at
+      ? new Date(release.published_at).toLocaleDateString('es-ES', { year:'numeric', month:'long', day:'numeric' })
+      : '';
+
+    const installer = release.assets?.find(a => a.name.includes('Setup') && a.name.endsWith('.exe'));
+    const portable  = release.assets?.find(a => a.name.includes('Portable') && a.name.endsWith('.exe'));
+
+    // Update UI
+    document.querySelectorAll('#version-badge').forEach(el => { el.textContent = `🏷 ${version}`; });
+    document.querySelectorAll('#dl-version').forEach(el => { el.textContent = `${version} — Última versión`; });
+    if (date) document.querySelectorAll('#dl-date').forEach(el => { el.textContent = `Publicado el ${date}`; });
+
+    const dlBase = `https://github.com/${REPO}/releases/tag/${release.tag_name}`;
+
+    const installerUrl = installer?.browser_download_url || dlBase;
+    const portableUrl  = portable?.browser_download_url  || dlBase;
+
+    document.querySelectorAll('#hero-installer-btn, #dl-installer').forEach(el => {
+      el.href = installerUrl;
+      if (installer) el.querySelector ? null : null;
+    });
+    document.querySelectorAll('#dl-portable').forEach(el => { el.href = portableUrl; });
+    document.querySelectorAll('#nav-download-btn').forEach(el => { el.href = installerUrl; });
+
+    console.log(`SharkReader ${version} loaded from GitHub Releases`);
+  } catch (e) {
+    console.warn('Could not fetch release info:', e);
+  }
+}
+
+loadLatestRelease();
+
+// ── Scroll animations ────────────────────────────────────────────────────────
+const observer = new IntersectionObserver(
+  entries => entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); observer.unobserve(e.target); } }),
+  { threshold: 0.12 }
+);
+document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+// ── Sticky nav shadow ────────────────────────────────────────────────────────
+window.addEventListener('scroll', () => {
+  document.querySelector('nav').style.boxShadow =
+    window.scrollY > 20 ? '0 8px 32px rgba(0,0,0,0.4)' : 'none';
+});
+</script>
+
+</body>
+</html>

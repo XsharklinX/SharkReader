@@ -973,6 +973,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const exportToObsidian = () => {
             if (currentAnnotations.length === 0) return;
             downloadText(buildObsidianMarkdown(), `${slugName()}.md`);
+            try { localStorage.setItem('sr_obsidian_exported', '1'); } catch (_) {}
         };
 
         const copyAnnotations = async () => {

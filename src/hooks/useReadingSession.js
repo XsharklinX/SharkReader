@@ -79,10 +79,29 @@ export function useReadingSession({
         if (!bk || !bk.dateStarted || !(bk.readingMinutes > 0)) return;
         const daysSince = Math.floor((Date.now() - bk.dateStarted) / 86400000);
         const milestones = [7, 14, 30, 60, 100, 180, 365];
-        if (milestones.includes(daysSince)) {
-            setAnniversaryInfo({ name: bk.name, days: daysSince, readingMinutes: bk.readingMinutes || 0 });
-            setTimeout(() => sharkyActionsRef?.current?.notifyBookAnniversary({ bookName: bk.name, dateStarted: bk.dateStarted }), 1500);
-        }
+        if (!milestones.includes(daysSince)) return;
+
+        const seenMilestones = Array.isArray(bk.anniversaryMilestonesSeen) ? bk.anniversaryMilestonesSeen : [];
+        if (seenMilestones.includes(daysSince)) return;
+
+        const now = Date.now();
+        startTransition(() => {
+            setBooks(prev => updateBookInList(prev, lastReadId, currentBook => {
+                const currentSeen = Array.isArray(currentBook?.anniversaryMilestonesSeen)
+                    ? currentBook.anniversaryMilestonesSeen
+                    : [];
+                if (currentSeen.includes(daysSince)) return currentBook;
+                return {
+                    ...currentBook,
+                    anniversaryMilestonesSeen: [...currentSeen, daysSince].sort((a, b) => a - b),
+                    metadataUpdatedAt: now,
+                    updatedAt: now,
+                };
+            }));
+        });
+
+        setAnniversaryInfo({ name: bk.name, days: daysSince, readingMinutes: bk.readingMinutes || 0 });
+        setTimeout(() => sharkyActionsRef?.current?.notifyBookAnniversary({ bookName: bk.name, dateStarted: bk.dateStarted }), 1500);
     }, [lastReadId, booksById]); // eslint-disable-line
 
     // Achievement check when reading state changes

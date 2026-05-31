@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, lazy, Suspense } from 'react';
 import { ACHIEVEMENTS, RARITY, isAchievementVisible } from './achievements';
+const YearWrapped = lazy(() => import('./YearWrapped'));
 
 const MONTHS_SHORT = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 const DAYS_SHORT = ['D', 'L', 'M', 'X', 'J', 'V', 'S'];
@@ -47,6 +48,7 @@ const LEVEL_NAMES = ['Aprendiz', 'Curioso', 'Lector', 'Devorador', 'Bibliófilo'
 const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, addons = {}, addonConfig = {}, initialTab = 'stats', onBack, dailyGoalMins = 30, weeklyGoalMins = 120, currentWeekMins = 0, readerLevel, journalEntries = [] }) => {
     const [activeTab, setActiveTab] = useState(initialTab);
     const [chartPeriod, setChartPeriod] = useState('week');
+    const [showWrapped, setShowWrapped] = useState(false);
     const [planGoal, setPlanGoal] = useState('');
     const [planDate, setPlanDate] = useState(() => {
         const d = new Date(); d.setFullYear(d.getFullYear() + 1);
@@ -217,8 +219,20 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, add
                         const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
                         const a = document.createElement('a'); a.href = url; a.download = 'SharkReader_Top5.csv'; a.click(); URL.revokeObjectURL(url);
                     }} className="px-2 py-1.5 rounded-xl text-xs font-bold opacity-60 hover:opacity-100 hover:bg-white/20 transition">.CSV</button>
+                    <button onClick={() => setShowWrapped(true)}
+                        className="px-3 py-1.5 rounded-xl text-xs font-black transition flex items-center gap-1.5"
+                        style={{ background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.3)', color: '#fbbf24' }}
+                        title={`Resumen ${new Date().getFullYear()}`}>
+                        ✨ Wrapped
+                    </button>
                 </div>
             </div>
+
+            {showWrapped && (
+                <Suspense fallback={null}>
+                    <YearWrapped stats={stats} books={books} onClose={() => setShowWrapped(false)} />
+                </Suspense>
+            )}
 
             <div className="flex-1 overflow-y-auto">
                 {activeTab === 'stats' && (
