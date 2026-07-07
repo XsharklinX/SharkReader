@@ -45,7 +45,7 @@ const AchievementCard = ({ achievement, unlocked, unlockedAt }) => {
 
 const LEVEL_NAMES = ['Aprendiz', 'Curioso', 'Lector', 'Devorador', 'Bibliófilo', 'Sabio', 'Leyenda'];
 
-const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, addons = {}, addonConfig = {}, initialTab = 'stats', onBack, dailyGoalMins = 30, weeklyGoalMins = 120, currentWeekMins = 0, readerLevel, journalEntries = [] }) => {
+const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, addons = {}, addonConfig = {}, initialTab = 'stats', onBack, dailyGoalMins = 30, weeklyGoalMins = 120, currentWeekMins = 0, readerLevel, journalEntries = [], onReadingPlanSet }) => {
     const [activeTab, setActiveTab] = useState(initialTab);
     const [chartPeriod, setChartPeriod] = useState('week');
     const [showWrapped, setShowWrapped] = useState(false);
@@ -411,7 +411,7 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, add
 
                         {/* Plan de lectura */}
                         {(() => {
-                            const goalN = parseInt(planGoal);
+                            const goalN = parseInt(planGoal, 10);
                             const booksFinished = books.filter(b => b.isFinished).length;
                             const targetDate = planDate ? new Date(planDate) : null;
                             const daysLeft = targetDate ? Math.max(0, Math.round((targetDate - new Date()) / 86400000)) : null;
@@ -424,7 +424,7 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, add
                                         <div className="flex flex-col gap-1">
                                             <label className="text-[9px] font-black uppercase tracking-wider opacity-50">Quiero leer</label>
                                             <div className="flex items-center gap-2">
-                                                <input type="number" min="1" max="9999" value={planGoal} onChange={e => setPlanGoal(e.target.value)} placeholder="N libros"
+                                                <input type="number" min="1" max="9999" value={planGoal} onChange={e => { setPlanGoal(e.target.value); if (parseInt(e.target.value, 10) > 0 && planDate) onReadingPlanSet?.(); }} placeholder="N libros"
                                                     className="w-24 rounded-xl px-3 py-2 text-sm font-bold outline-none border border-transparent focus:border-[var(--highlight)] transition"
                                                     style={{ background: 'var(--bg-color)', color: 'var(--text-color)' }} />
                                                 <span className="text-sm opacity-60">libros antes del</span>
@@ -432,7 +432,7 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, add
                                         </div>
                                         <div className="flex flex-col gap-1">
                                             <label className="text-[9px] font-black uppercase tracking-wider opacity-50">Fecha límite</label>
-                                            <input type="date" value={planDate} onChange={e => setPlanDate(e.target.value)}
+                                            <input type="date" value={planDate} onChange={e => { setPlanDate(e.target.value); if (parseInt(planGoal, 10) > 0 && e.target.value) onReadingPlanSet?.(); }}
                                                 className="rounded-xl px-3 py-2 text-sm font-bold outline-none border border-transparent focus:border-[var(--highlight)] transition"
                                                 style={{ background: 'var(--bg-color)', color: 'var(--text-color)' }} />
                                         </div>

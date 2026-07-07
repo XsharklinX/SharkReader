@@ -1,6 +1,7 @@
 import { useCallback, startTransition } from 'react';
 import { updateBookInList } from '../bookModel';
 import { deleteBookFromDB } from '../db';
+import { sounds } from '../sounds';
 
 const HIGHLIGHT_COLOR_LABELS = {
     yellow: 'importante',
@@ -45,6 +46,8 @@ export function useBookActions({
     currentFilter,
     setCurrentFilter,
     t,
+    addons,
+    addonConfig,
 }) {
     const handleContextMenu = useCallback((e, book) => {
         e.preventDefault();
@@ -64,6 +67,9 @@ export function useBookActions({
                 const nowFinished = !b.isFinished;
                 if (nowFinished) {
                     sharkyActionsRef.current?.notifyBookFinished(b.name, b.readingMinutes || 0);
+                    if (addons?.soundFeedback && addonConfig?.soundFeedback?.achievements !== false) {
+                        sounds.bookFinished((addonConfig?.soundFeedback?.volume || 50) / 100 * 0.25);
+                    }
                     if (b.series && b.seriesIndex) {
                         const nextBook = prev.find(x => x.series === b.series && x.seriesIndex === b.seriesIndex + 1 && !x.isFinished);
                         if (nextBook) {
@@ -82,7 +88,7 @@ export function useBookActions({
             });
             return next;
         });
-    }, [setBooks, sharkyActionsRef]);
+    }, [addonConfig?.soundFeedback?.achievements, addonConfig?.soundFeedback?.volume, addons?.soundFeedback, setBooks, sharkyActionsRef]);
 
     const deleteBook = useCallback((bookId) => {
         if (!window.confirm(t.confirmDelete)) return;
@@ -101,9 +107,18 @@ export function useBookActions({
         const previousUpdate = progressUpdateThrottleRef.current.get(bookId) || { ts: 0, percent: null, cfi: null };
         const hasPercent = percent !== null && percent !== undefined;
         const roundedPercent = hasPercent ? Math.round(percent * 10) / 10 : null;
-        const percentChanged = roundedPercent !== previousUpdate.percent;
+        const percentDelta = hasPercent && previousUpdate.percent !== null
+            ? Math.abs(roundedPercent - previousUpdate.percent)
+            : (hasPercent ? Infinity : 0);
+        const percentChanged = percentDelta >= 0.5;
         const cfiChanged = cfi && cfi !== previousUpdate.cfi;
-        if (!percentChanged && !cfiChanged && now - previousUpdate.ts < 1200) return;
+        const elapsed = now - previousUpdate.ts;
+        const shouldUpdate =
+            previousUpdate.ts === 0 ||
+            percentChanged ||
+            elapsed >= 2500 ||
+            (cfiChanged && elapsed >= 900);
+        if (!shouldUpdate) return;
         progressUpdateThrottleRef.current.set(bookId, { ts: now, percent: roundedPercent, cfi });
 
         startTransition(() => {

@@ -1,15 +1,15 @@
 ﻿// SharkReader - App Component (v2 — Tabs + Optimizations + Series + Vocab + AI)
 import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense, startTransition, useDeferredValue } from 'react';
+import JSZip from 'jszip';
 import { Icons, renderAvatar } from './icons';
 import { translations, languageNames, RANDOM_EMOJIS } from './translations';
-import { safeParse, loadBooksFromDB, saveBookToDB, saveBooksToDB, saveAppData, loadAppData, saveSetting, resetAllAppData, getAppDataCounts, saveCache, loadCacheByPrefix } from './db';
+import { safeParse, loadBooksFromDB, saveBookToDB, saveBooksToDB, saveAppData, loadAppData, saveSetting, resetAllAppDataVerified, getAppDataCounts, saveCache, loadCacheByPrefix } from './db';
 import { extractEpubMeta } from './epubMeta';
 import { RARITY } from './achievements';
 import { DEFAULT_EXTERNAL_SOURCES, migrateWorkshopData, normalizeAddonConfig, normalizeAddonState, validateAddonToggle } from './workshopModules';
 import {
     applyImportedBookData,
     getBookDedupKey,
-    getBookSearchIndex,
     getBookTitleDedupKey,
     hydrateStoredBook,
     stripBookFilesForExport,
@@ -17,9 +17,8 @@ import {
     updateBookInList,
 } from './bookModel';
 import { buildPortableBackup, mergeBackupData } from './backupMerge';
+import { clearDiagnosticEntries, getDiagnosticEntries, installDiagnostics } from './diagnostics';
 import { readerXp, readerLevelFromXp } from './readingProgress';
-import BookCard from './BookCard';
-import QuickEditCard from './QuickEditCard';
 import SettingsPanel from './SettingsPanel';
 import TabBar from './TabBar';
 import LoginModal from './LoginModal';
@@ -40,14 +39,19 @@ import { useOnboarding } from './hooks/useOnboarding';
 import { useReadingSession } from './hooks/useReadingSession';
 import { useStats } from './hooks/useStats';
 import { useUI } from './hooks/useUI';
+import { useLibrary } from './hooks/useLibrary';
+import { useReaderTabSummaries } from './hooks/useReaderTabSummaries';
+import { useStableReaderBook } from './hooks/useStableReaderBook';
+import { useReaderPerformance } from './hooks/useReaderPerformance';
 import { buildBookContentExcerpt, buildBookContentIndex, CONTENT_INDEX_CACHE_PREFIX } from './contentIndex';
+import Sidebar from './Sidebar';
+import LibraryView from './LibraryView';
+import { sounds } from './sounds';
 
 const EpubReader = lazy(() => import('./EpubReader'));
 const PdfReader = lazy(() => import('./PdfReader'));
 const AnalyticsView = lazy(() => import('./AnalyticsView'));
 
-const LIBRARY_VIRTUALIZE_THRESHOLD = 80;
-const LIBRARY_SCROLL_OVERSCAN = 4;
 const panelLoader = (label = 'Cargando panel...') => (
     <div className="flex items-center justify-center py-8 px-6 text-sm font-semibold opacity-70">
         <div className="w-2.5 h-2.5 rounded-full bg-[var(--highlight)] animate-pulse mr-3"></div>
@@ -71,17 +75,14 @@ const splitBookTags = (value) => String(value || '')
     .map(tag => tag.trim())
     .filter(Boolean);
 
-const normalizeTagKey = (value) => String(value || '').trim().toLowerCase();
-const ANNOTATION_COLOR_META = {
-    yellow: { label: 'Importante', swatch: '#facc15' },
-    green: { label: 'Idea', swatch: '#22c55e' },
-    blue: { label: 'Duda', swatch: '#3b82f6' },
-    pink: { label: 'Cita', swatch: '#f472b6' },
-};
     // ─────────────────────────────────────────
     // APP PRINCIPAL
     // ─────────────────────────────────────────
     const App = () => {
+        useEffect(() => {
+            installDiagnostics();
+        }, []);
+
 
         // ── LIBROS ──
         const [books, setBooks] = useState([]);
@@ -220,7 +221,10 @@ const ANNOTATION_COLOR_META = {
         const booksRef = useRef([]); // To safely access books in async effects without dependencies
         const contentIndexQueueRef = useRef([]);
         const contentIndexRunningRef = useRef(false);
+        const contentIndexMapRef = useRef({});
+        const contentIndexQueuedRef = useRef(new Set());
         const persistTimerRef = useRef(null);       // books debounce
+        const persistedBookSignaturesRef = useRef(new Map());
         const persistSettingsRef = useRef(null);    // display prefs → IndexedDB debounce
         const persistUserRef = useRef(null);        // user data & goals debounce
         const persistAddonsRef = useRef(null);      // addons & AI config debounce
@@ -233,6 +237,7 @@ const ANNOTATION_COLOR_META = {
         const progressUpdateThrottleRef = useRef(new Map());
         const watchedFolderTimerRef = useRef(null);
         const watchedFolderLastRunRef = useRef(0);
+        const openBookNotifyTimerRef = useRef(null);
 
         // ── LOGROS / WORKSHOP / ANALYTICS ──
         const [achievements, setAchievements] = useState({});
@@ -253,7 +258,10 @@ const ANNOTATION_COLOR_META = {
             const hour = new Date(themeClock).getHours();
             return hour >= 19 || hour < 7 ? 'dark' : 'light';
         }, [autoDarkMode, theme, themeClock]);
+
         const booksById = useMemo(() => new Map(books.map(book => [book.id, book])), [books]);
+        const readerTabBooks = useReaderTabSummaries(tabs, booksById);
+        const { handleReaderPageTurn } = useReaderPerformance({ setStats, addonsRef, addonConfig });
         const readerLevel = useMemo(() => {
             const xp = readerXp({
                 minutesRead: stats.timeRead || 0,
@@ -304,6 +312,7 @@ const ANNOTATION_COLOR_META = {
             importExternalCatalogEntry,
             cancelActiveFolderImport,
             retryFailedFolderImports,
+            resetImportState,
         } = useBookImport({
             setBooks,
             activeObjectUrlsRef,
@@ -329,24 +338,64 @@ const ANNOTATION_COLOR_META = {
         }, [books]);
 
         useEffect(() => {
+            contentIndexMapRef.current = contentIndexMap;
+        }, [contentIndexMap]);
+
+        useEffect(() => {
             if (!isDbLoaded || !isStateHydrated) return;
+            const searchNeedle = deferredSearchTerm.trim();
+            if (searchNeedle.length < 3) return;
             const candidates = books
-                .filter(book => !book.loading && (book.type === 'epub' || book.type === 'pdf') && book.file)
-                .filter(book => !contentIndexMap[book.id]?.text)
+                .filter(book => !book.loading && book.type === 'epub' && book.file)
+                .filter(book => !contentIndexMapRef.current[book.id]?.text && !contentIndexQueuedRef.current.has(book.id))
+                .slice(0, 12)
                 .map(book => book.id);
             if (!candidates.length) return;
-            contentIndexQueueRef.current = Array.from(new Set([...contentIndexQueueRef.current, ...candidates]));
+            candidates.forEach(bookId => {
+                contentIndexQueuedRef.current.add(bookId);
+                contentIndexQueueRef.current.push(bookId);
+            });
             if (contentIndexRunningRef.current) return;
 
             let cancelled = false;
             const run = async () => {
                 contentIndexRunningRef.current = true;
+                let pendingIndexUpdates = {};
+                let pendingIndexCount = 0;
+
+                const flushPendingIndexUpdates = () => {
+                    if (cancelled || pendingIndexCount === 0) return;
+                    const updates = pendingIndexUpdates;
+                    pendingIndexUpdates = {};
+                    pendingIndexCount = 0;
+                    setContentIndexMap(prev => {
+                        let changed = false;
+                        const next = { ...prev };
+                        Object.entries(updates).forEach(([indexedBookId, payload]) => {
+                            if (next[indexedBookId]?.text !== payload.text) {
+                                next[indexedBookId] = payload;
+                                changed = true;
+                            }
+                        });
+                        if (!changed) return prev;
+                        contentIndexMapRef.current = next;
+                        return next;
+                    });
+                };
+
                 while (!cancelled && contentIndexQueueRef.current.length > 0) {
                     const bookId = contentIndexQueueRef.current.shift();
-                    if (!bookId || contentIndexMap[bookId]?.text) continue;
+                    if (!bookId || contentIndexMapRef.current[bookId]?.text) {
+                        contentIndexQueuedRef.current.delete(bookId);
+                        continue;
+                    }
                     const book = booksRef.current.find(item => item.id === bookId);
-                    if (!book?.file || (book.type !== 'epub' && book.type !== 'pdf')) continue;
+                    if (!book?.file || (book.type !== 'epub' && book.type !== 'pdf')) {
+                        contentIndexQueuedRef.current.delete(bookId);
+                        continue;
+                    }
                     try {
+                        const startedAt = performance.now();
                         const text = await buildBookContentIndex(book);
                         const payload = {
                             text,
@@ -354,13 +403,23 @@ const ANNOTATION_COLOR_META = {
                             indexedAt: Date.now(),
                         };
                         await saveCache(`${CONTENT_INDEX_CACHE_PREFIX}${bookId}`, payload);
-                        if (!cancelled) {
-                            setContentIndexMap(prev => (prev[bookId]?.text === payload.text ? prev : { ...prev, [bookId]: payload }));
+                        const elapsed = Math.round(performance.now() - startedAt);
+                        if (elapsed > 1500) {
+                            console.info(`[SharkReader] Indexado lento: ${book.name || bookId} (${elapsed}ms)`);
+                        }
+                        if (!cancelled && contentIndexMapRef.current[bookId]?.text !== payload.text) {
+                            pendingIndexUpdates[bookId] = payload;
+                            pendingIndexCount += 1;
+                            if (pendingIndexCount >= 2) flushPendingIndexUpdates();
                         }
                     } catch (error) {
                         console.warn(`[SharkReader] No se pudo indexar contenido para ${book?.name || bookId}:`, error);
+                    } finally {
+                        contentIndexQueuedRef.current.delete(bookId);
                     }
+                    await new Promise(resolve => setTimeout(resolve, 180));
                 }
+                flushPendingIndexUpdates();
                 contentIndexRunningRef.current = false;
             };
 
@@ -368,7 +427,7 @@ const ANNOTATION_COLOR_META = {
             return () => {
                 cancelled = true;
             };
-        }, [books, contentIndexMap, isDbLoaded, isStateHydrated]);
+        }, [books, deferredSearchTerm, isDbLoaded, isStateHydrated]);
 
         useEffect(() => {
             if (view !== 'library') return;
@@ -379,10 +438,16 @@ const ANNOTATION_COLOR_META = {
             const syncViewport = () => {
                 cancelAnimationFrame(frame);
                 frame = requestAnimationFrame(() => {
-                    setLibraryViewport({
-                        width: node.clientWidth,
-                        height: node.clientHeight,
-                        scrollTop: node.scrollTop,
+                    const next = {
+                        width: Math.round(node.clientWidth),
+                        height: Math.round(node.clientHeight),
+                        scrollTop: Math.round(node.scrollTop / 48) * 48,
+                    };
+                    setLibraryViewport(prev => {
+                        if (prev.width === next.width && prev.height === next.height && prev.scrollTop === next.scrollTop) {
+                            return prev;
+                        }
+                        return next;
                     });
                 });
             };
@@ -398,6 +463,10 @@ const ANNOTATION_COLOR_META = {
                 resizeObserver?.disconnect();
             };
         }, [view]);
+
+        useEffect(() => {
+            libraryScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+        }, [currentFilter, filterTags.length, filterAuthors.length]);
 
         useEffect(() => {
             document.body.className = `theme-${appliedTheme}`;
@@ -468,7 +537,10 @@ const ANNOTATION_COLOR_META = {
                     const hasResidualData = Object.values(counts).some(count => Number(count) > 0);
                     if (hasResidualData) {
                         console.warn('[SharkReader] Reset incompleto detectado al arrancar; limpiando stores restantes.', counts);
-                        await resetAllAppData();
+                        const resetResult = await resetAllAppDataVerified({ retries: 1 });
+                        if (!resetResult.ok) {
+                            console.error('[SharkReader] Reset verificado fallo al arrancar:', resetResult.counts);
+                        }
                         storedBooks = [];
                     }
                     sessionStorage.removeItem('sharkreader_pending_reset_verify');
@@ -487,7 +559,7 @@ const ANNOTATION_COLOR_META = {
                 if (cancelled) return;
                 didResolve = true;
                 if (sessionStorage.getItem('sharkreader_pending_reset_verify') === 'true') {
-                    resetAllAppData().finally(() => {
+                    resetAllAppDataVerified({ retries: 1 }).finally(() => {
                         sessionStorage.removeItem('sharkreader_pending_reset_verify');
                         setIsStateHydrated(true);
                     });
@@ -614,19 +686,20 @@ const ANNOTATION_COLOR_META = {
         useEffect(() => {
             if (!isDbLoaded) return;
 
-            // Small delay to let React finish the initial render
+            // Delay metadata repair so startup and first library render stay responsive.
             const timer = setTimeout(async () => {
                 const UNKNOWN = ['Autor desconocido', 'Unknown Author', 'Autor Desconocido', 'unknown author'];
 
                 // En Electron instalado, un File de IDB puede fallar si perdió el permiso.
                 const currentBooks = booksRef.current || [];
-                const needsMeta = currentBooks.filter(b =>
-                    b.type === 'epub' &&
-                    b.file &&
-                    // b.file.size > 0 && // No confiamos en file.size en Electron
-                    (!b.coverUrl || UNKNOWN.some(u => u.toLowerCase() === (b.originalAuthor || '').toLowerCase())) &&
-                    !metadataRepairingRef.current.has(b.id)
-                );
+                const needsMeta = currentBooks
+                    .filter(b =>
+                        b.type === 'epub' &&
+                        b.file &&
+                        (!b.coverUrl || UNKNOWN.some(u => u.toLowerCase() === (b.originalAuthor || '').toLowerCase())) &&
+                        !metadataRepairingRef.current.has(b.id)
+                    )
+                    .slice(0, 8);
 
                 if (!needsMeta.length) {
                     console.log('[SharkReader] No hay libros que necesiten re-extracción');
@@ -640,7 +713,7 @@ const ANNOTATION_COLOR_META = {
                     Promise.race([Promise.resolve(p).catch(e => { console.error('[SharkReader] extractEpubMeta error:', e); return def; }), new Promise(r => setTimeout(() => r(def), ms))]);
 
                 for (const book of needsMeta) {
-                    await new Promise(r => setTimeout(r, 80));
+                    await new Promise(r => setTimeout(r, 450));
                     try {
                         console.log(`[SharkReader] Extrayendo: ${book.originalTitle} (file size: ${book.file?.size})`);
                         let meta = null;
@@ -712,7 +785,7 @@ const ANNOTATION_COLOR_META = {
                 }
 
                 console.log('[SharkReader] Re-extracción completada');
-            }, 500);
+            }, 12000);
 
             return () => clearTimeout(timer);
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -724,11 +797,44 @@ const ANNOTATION_COLOR_META = {
             clearTimeout(persistTimerRef.current);
             persistTimerRef.current = setTimeout(() => {
                 // Use requestIdleCallback so JSON serialization doesn't block page turns
-                const doSave = () => {
-                    const bookRecords = books.filter(b => !b.loading).map(b => toStoredBookRecord(b, {}, { includeFile: false }));
-                    saveBooksToDB(bookRecords);
-                    saveSetting('categories', customCategories);
-                    saveSetting('collections', manualCollections);
+                const doSave = async () => {
+                    const changedRecords = [];
+                    const liveIds = new Set();
+                    books.forEach(book => {
+                        if (book.loading) return;
+                        liveIds.add(book.id);
+                        const record = toStoredBookRecord(book, {}, { includeFile: false });
+                        const signature = JSON.stringify({
+                            updatedAt: record.updatedAt || 0,
+                            progressUpdatedAt: record.progressUpdatedAt || 0,
+                            metadataUpdatedAt: record.metadataUpdatedAt || 0,
+                            progress: record.progress || 0,
+                            lastLocation: record.lastLocation || null,
+                            bookmarks: record.bookmarks || [],
+                            notes: record.notes || '',
+                            isFav: !!record.isFav,
+                            rating: record.rating || 0,
+                            category: record.category || null,
+                            customTitle: record.customTitle || '',
+                            customAuthor: record.customAuthor || '',
+                            customCover: record.customCover || null,
+                        });
+                        if (persistedBookSignaturesRef.current.get(book.id) !== signature) {
+                            persistedBookSignaturesRef.current.set(book.id, signature);
+                            changedRecords.push(record);
+                        }
+                    });
+                    persistedBookSignaturesRef.current.forEach((_, bookId) => {
+                        if (!liveIds.has(bookId)) persistedBookSignaturesRef.current.delete(bookId);
+                    });
+                    const results = await Promise.all([
+                        changedRecords.length ? saveBooksToDB(changedRecords) : true,
+                        saveSetting('categories', customCategories),
+                        saveSetting('collections', manualCollections),
+                    ]);
+                    if (results.some(result => result === false)) {
+                        console.warn('[SharkReader] Persistencia parcial fallida: libros/categorias/colecciones');
+                    }
                 };
                 if ('requestIdleCallback' in window) {
                     requestIdleCallback(doSave, { timeout: 5000 });
@@ -786,18 +892,22 @@ const ANNOTATION_COLOR_META = {
             if (!isDbLoaded || !isStateHydrated || isResettingRef.current) return;
             clearTimeout(persistSettingsRef.current);
             persistSettingsRef.current = setTimeout(() => {
-                saveAppData('theme', theme);
-                saveAppData('autoDarkMode', autoDarkMode);
-                saveAppData('tutorialEnabled', tutorialEnabled);
-                saveAppData('tutorialSeen', !showWelcomeTutorial);
-                saveAppData('tutorialSeenHints', tutorialSeenHints);
-                saveAppData('lang', lang);
-                saveAppData('readFlow', readFlow);
-                saveAppData('readLayout', readLayout);
-                saveAppData('pageTransition', pageTransition);
-                saveAppData('warmMode', warmMode);
-                saveAppData('libraryView', libraryView);
-                saveAppData('accentColor', accentColor);
+                Promise.all([
+                    saveAppData('theme', theme),
+                    saveAppData('autoDarkMode', autoDarkMode),
+                    saveAppData('tutorialEnabled', tutorialEnabled),
+                    saveAppData('tutorialSeen', !showWelcomeTutorial),
+                    saveAppData('tutorialSeenHints', tutorialSeenHints),
+                    saveAppData('lang', lang),
+                    saveAppData('readFlow', readFlow),
+                    saveAppData('readLayout', readLayout),
+                    saveAppData('pageTransition', pageTransition),
+                    saveAppData('warmMode', warmMode),
+                    saveAppData('libraryView', libraryView),
+                    saveAppData('accentColor', accentColor),
+                ]).then(results => {
+                    if (results.some(result => result === false)) console.warn('[SharkReader] Persistencia parcial fallida: settings');
+                });
             }, 1000);
             return () => clearTimeout(persistSettingsRef.current);
         }, [theme, autoDarkMode, tutorialEnabled, showWelcomeTutorial, tutorialSeenHints, lang, readFlow, readLayout, pageTransition, warmMode, libraryView, accentColor, isDbLoaded, isStateHydrated]);
@@ -807,16 +917,20 @@ const ANNOTATION_COLOR_META = {
             if (!isDbLoaded || !isStateHydrated || isResettingRef.current) return;
             clearTimeout(persistUserRef.current);
             persistUserRef.current = setTimeout(() => {
-                saveAppData('userProfile', userProfile);
-                saveAppData('vocabulary', vocabulary);
-                saveAppData('dailyGoalMins', dailyGoalMins);
-                saveAppData('weeklyGoalMins', weeklyGoalMins);
-                saveAppData('yearlyGoal', yearlyGoal);
-                saveAppData('achievements', achievements);
-                saveAppData('journalEntries', journalEntries);
-                saveAppData('currentFilter', currentFilter);
-                saveAppData('sortBy', sortBy);
-                saveAppData('categoryColors', categoryColors);
+                Promise.all([
+                    saveAppData('userProfile', userProfile),
+                    saveAppData('vocabulary', vocabulary),
+                    saveAppData('dailyGoalMins', dailyGoalMins),
+                    saveAppData('weeklyGoalMins', weeklyGoalMins),
+                    saveAppData('yearlyGoal', yearlyGoal),
+                    saveAppData('achievements', achievements),
+                    saveAppData('journalEntries', journalEntries),
+                    saveAppData('currentFilter', currentFilter),
+                    saveAppData('sortBy', sortBy),
+                    saveAppData('categoryColors', categoryColors),
+                ]).then(results => {
+                    if (results.some(result => result === false)) console.warn('[SharkReader] Persistencia parcial fallida: usuario/stats');
+                });
             }, 1500);
             return () => clearTimeout(persistUserRef.current);
         }, [userProfile, vocabulary, dailyGoalMins, weeklyGoalMins, yearlyGoal, achievements, journalEntries, currentFilter, sortBy, categoryColors, isDbLoaded, isStateHydrated]);
@@ -826,13 +940,17 @@ const ANNOTATION_COLOR_META = {
             if (!isDbLoaded || !isStateHydrated || isResettingRef.current) return;
             clearTimeout(persistAddonsRef.current);
             persistAddonsRef.current = setTimeout(() => {
-                saveAppData('aiProvider', aiProvider);
-                saveAppData('aiApiKey', aiApiKey);
-                saveAppData('syncFolder', syncFolder);
-                saveAppData('externalSources', externalSources);
-                saveAppData('addons', addons);
-                saveAppData('addonConfig', addonConfig);
-                saveAppData('workshop', migrateWorkshopData({ addons, addonConfig, externalSources }));
+                Promise.all([
+                    saveAppData('aiProvider', aiProvider),
+                    saveAppData('aiApiKey', aiApiKey),
+                    saveAppData('syncFolder', syncFolder),
+                    saveAppData('externalSources', externalSources),
+                    saveAppData('addons', addons),
+                    saveAppData('addonConfig', addonConfig),
+                    saveAppData('workshop', migrateWorkshopData({ addons, addonConfig, externalSources })),
+                ]).then(results => {
+                    if (results.some(result => result === false)) console.warn('[SharkReader] Persistencia parcial fallida: addons/IA');
+                });
             }, 1500);
             return () => clearTimeout(persistAddonsRef.current);
         }, [aiProvider, aiApiKey, syncFolder, externalSources, addons, addonConfig, isDbLoaded, isStateHydrated]);
@@ -848,6 +966,8 @@ const ANNOTATION_COLOR_META = {
 
         useEffect(() => {
             return () => {
+                clearTimeout(openBookNotifyTimerRef.current);
+                openBookNotifyTimerRef.current = null;
                 activeObjectUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
                 activeObjectUrlsRef.current.clear();
             };
@@ -862,11 +982,14 @@ const ANNOTATION_COLOR_META = {
                 panelMode,
                 rightTabId,
             };
-            saveAppData('readerSession', session);
+            saveAppData('readerSession', session).then(ok => {
+                if (ok === false) console.warn('[SharkReader] No se pudo persistir la sesion del lector');
+            });
             localStorage.setItem('sharkreader_reader_session', JSON.stringify(session));
         }, [tabs, activeTabId, tabTargetCfi, panelMode, rightTabId, isStateHydrated]);
 
         useEffect(() => {
+            if (!isDbLoaded || !isStateHydrated || isResettingRef.current) return;
             if (!books.length && tabs.length === 0) return;
             const validBookIds = new Set(books.map(book => book.id));
             const validTabs = tabs.filter(tab => validBookIds.has(tab.bookId));
@@ -884,7 +1007,7 @@ const ANNOTATION_COLOR_META = {
                 const next = Object.fromEntries(Object.entries(prev).filter(([tabId]) => validTabs.some(tab => tab.id === tabId)));
                 return Object.keys(next).length === Object.keys(prev).length ? prev : next;
             });
-        }, [books, tabs, activeTabId, rightTabId]);
+        }, [books, tabs, activeTabId, rightTabId, isDbLoaded, isStateHydrated]);
 
         // ─────────────────────────────────────────
         // TABS
@@ -912,7 +1035,9 @@ const ANNOTATION_COLOR_META = {
             }));
             setView('reader');
             const isNew = !bookToOpen?.lastReadDate;
-            setTimeout(() => {
+            clearTimeout(openBookNotifyTimerRef.current);
+            openBookNotifyTimerRef.current = setTimeout(() => {
+                openBookNotifyTimerRef.current = null;
                 sharkyActionsRef.current?.notifyBookOpened({
                     bookName: bookToOpen?.name || '',
                     progress: startProgress,
@@ -974,18 +1099,38 @@ const ANNOTATION_COLOR_META = {
             if (document.fullscreenElement) document.exitFullscreen();
         }, [activeTabId, closeTab]);
 
+        const switchReaderTab = useCallback((id) => {
+            setActiveTabId(id);
+            setView('reader');
+        }, []);
+
         const toggleSpreadLayout = useCallback(() => {
             setReadLayout(prev => prev === 'auto' ? 'none' : 'auto');
         }, []);
 
         const activeTab = tabs.find(t => t.id === activeTabId);
         const currentBookData = useMemo(() => activeTab ? booksById.get(activeTab.bookId) || null : null, [activeTab, booksById]);
+        const stableCurrentBookData = useStableReaderBook(currentBookData);
         const currentTargetCfi = tabTargetCfi[activeTabId] || null;
         const rightBookData = useMemo(() => {
             if (!panelMode || !rightTabId) return null;
             const rt = tabs.find(t => t.id === rightTabId);
             return rt ? booksById.get(rt.bookId) || null : null;
         }, [panelMode, rightTabId, tabs, booksById]);
+        const stableRightBookData = useStableReaderBook(rightBookData);
+
+        useEffect(() => {
+            if (!isDbLoaded || !isStateHydrated || isResettingRef.current || view !== 'reader') return;
+            if (!currentBookData) {
+                setView('library');
+                return;
+            }
+            if (!currentBookData.file) {
+                showNoticeToast('Ese libro no tiene un archivo disponible. Se mantuvo en biblioteca.', 'warning');
+                setView('library');
+            }
+        }, [currentBookData, isDbLoaded, isStateHydrated, showNoticeToast, view]);
+
         const persistPdfZoom = useCallback((bookId, pdfScale) => {
             setBooks(prev => updateBookInList(prev, bookId, book => {
                 if (book.pdfScale === pdfScale) return book;
@@ -1025,6 +1170,8 @@ const ANNOTATION_COLOR_META = {
             currentFilter,
             setCurrentFilter,
             t,
+            addons,
+            addonConfig,
         });
 
         useReadingSession({
@@ -1168,6 +1315,10 @@ const ANNOTATION_COLOR_META = {
                 'sharkreader_sortBy',
                 'sharkreader_current_filter',
                 'sharkreader_sort_by',
+                'sharkreader_reader_session',
+                'sharkreader_toc_cache',
+                'sharkreader_content_index',
+                'sr_obsidian_exported',
                 'page_transition',
             ];
 
@@ -1177,6 +1328,8 @@ const ANNOTATION_COLOR_META = {
             clearTimeout(persistUserRef.current);
             clearTimeout(persistAddonsRef.current);
             clearTimeout(syncTimerRef.current);
+            clearTimeout(openBookNotifyTimerRef.current);
+            openBookNotifyTimerRef.current = null;
             resetTutorialCooldown();
 
             try {
@@ -1193,10 +1346,7 @@ const ANNOTATION_COLOR_META = {
             bookDedupKeysRef.current.clear();
             bookTitleDedupKeysRef.current.clear();
             metadataRepairingRef.current.clear();
-            folderImportQueueRef.current = [];
-            folderImportProcessingRef.current = false;
-            activeFolderImportIdRef.current = null;
-            cancelFolderImportRef.current = true;
+            resetImportState();
             activeBookIdRef.current = null;
             resetUI();
             setAchievementToast(null);
@@ -1218,14 +1368,16 @@ const ANNOTATION_COLOR_META = {
             setLastReadId(null);
             setCurrentFilter('all');
             setView('library');
-            setFolderImport(null);
-            setFailedImportRetryQueue([]);
             setUserProfile(null);
             setBooks([]);
 
-            await resetAllAppData();
+            const resetResult = await resetAllAppDataVerified({ retries: 1 });
+            if (!resetResult.ok) {
+                console.error('[SharkReader] Reset total no pudo limpiar todos los stores:', resetResult.counts);
+                showNoticeToast('No se pudieron borrar todos los datos. Se reintentara al reiniciar.', 'warning');
+            }
             window.location.replace(window.location.pathname);
-        }, []);
+        }, [resetImportState, resetTutorialCooldown, resetUI, showNoticeToast]);
 
         const assignBookCategory = useCallback((bookId, category) => {
             const now = Date.now();
@@ -1366,9 +1518,9 @@ const ANNOTATION_COLOR_META = {
             setQuickEditBookId(null);
         }, []);
 
-        const toggleAddon = (id) => {
+        const toggleAddon = (id, options = {}) => {
             setAddons(prev => {
-                const validation = validateAddonToggle(id, !prev[id], { userProfile, lang });
+                const validation = validateAddonToggle(id, !prev[id], { userProfile, lang, allowExperimental: !!options.allowExperimental });
                 if (!validation.ok) {
                     showNoticeToast(validation.reason, 'warning');
                     return prev;
@@ -1497,10 +1649,14 @@ const ANNOTATION_COLOR_META = {
             const runScan = async () => {
                 if (folderImport || Date.now() - watchedFolderLastRunRef.current < 60000) return;
                 watchedFolderLastRunRef.current = Date.now();
-                const session = await window.electronAPI.startFolderImportPath(folder);
-                if (session?.sessionId) {
-                    beginFolderImportSession(session, 'Carpeta vigilada');
-                    showNoticeToast('Carpeta vigilada: escaneo iniciado.', 'info');
+                try {
+                    const session = await window.electronAPI.startFolderImportPath(folder);
+                    if (session?.sessionId) {
+                        beginFolderImportSession(session, 'Carpeta vigilada');
+                        showNoticeToast('Carpeta vigilada: escaneo iniciado.', 'info');
+                    }
+                } catch (error) {
+                    console.warn('[SharkReader] Error escaneando carpeta vigilada:', error);
                 }
             };
 
@@ -1594,6 +1750,82 @@ const ANNOTATION_COLOR_META = {
             const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
             const a = document.createElement('a'); a.href = url; a.download = `SharkReader_Backup_${new Date().toISOString().split('T')[0]}.json`; a.click(); URL.revokeObjectURL(url);
         };
+
+        const downloadBlob = useCallback((blob, filename) => {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 500);
+        }, []);
+
+        const exportDiagnostics = useCallback(() => {
+            const payload = {
+                app: 'SharkReader',
+                exportedAt: new Date().toISOString(),
+                version: '3.6.0',
+                userAgent: navigator.userAgent,
+                diagnostics: getDiagnosticEntries(),
+                snapshot: {
+                    books: booksRef.current?.length || 0,
+                    tabs: tabs.length,
+                    view,
+                    addons,
+                    workshop: migrateWorkshopData({ addons, addonConfig, externalSources }),
+                },
+            };
+            downloadBlob(
+                new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+                `SharkReader_Diagnostico_${new Date().toISOString().slice(0, 10)}.json`
+            );
+        }, [addonConfig, addons, downloadBlob, externalSources, tabs.length, view]);
+
+        const clearDiagnostics = useCallback(() => {
+            clearDiagnosticEntries();
+            showNoticeToast('Diagnostico limpiado.', 'info');
+        }, [showNoticeToast]);
+
+        const exportZipBackup = useCallback(async () => {
+            const backup = buildPortableBackup({
+                books: booksRef.current.filter(b => !b.loading).map(stripBookFilesForExport),
+                categories: customCategories,
+                collections: manualCollections,
+                stats,
+                user: userProfile || {},
+                workshop: migrateWorkshopData({ addons, addonConfig, externalSources }),
+            });
+
+            const zip = new JSZip();
+            zip.file('sharkreader-backup.json', JSON.stringify(backup, null, 2));
+            zip.file('books-metadata.json', JSON.stringify(backup.books || [], null, 2));
+            zip.file('progress-and-stats.json', JSON.stringify({ stats, books: (backup.books || []).map(book => ({
+                id: book.id,
+                title: book.customTitle || book.originalTitle || book.name,
+                progress: book.progress || 0,
+                lastLocation: book.lastLocation || null,
+                readingMinutes: book.readingMinutes || 0,
+                progressUpdatedAt: book.progressUpdatedAt || book.updatedAt || null,
+            })) }, null, 2));
+            zip.file('settings-workshop.json', JSON.stringify({
+                categories: customCategories,
+                collections: manualCollections,
+                workshop: backup.workshop,
+                externalSources,
+            }, null, 2));
+            zip.file('diagnostics.json', JSON.stringify(getDiagnosticEntries(), null, 2));
+            zip.file('README.txt', [
+                'SharkReader backup ZIP',
+                `Exportado: ${new Date().toISOString()}`,
+                '',
+                'Este ZIP contiene datos de biblioteca, metadata, progreso, configuracion y diagnostico.',
+                'No incluye archivos EPUB/PDF completos para evitar duplicar contenido protegido.',
+            ].join('\n'));
+
+            const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+            downloadBlob(blob, `SharkReader_Backup_${new Date().toISOString().slice(0, 10)}.zip`);
+        }, [addonConfig, addons, customCategories, downloadBlob, externalSources, manualCollections, stats, userProfile]);
+
         const importData = (e) => {
             const f = e.target.files[0]; if (!f) return;
             const r = new FileReader();
@@ -1651,202 +1883,42 @@ const ANNOTATION_COLOR_META = {
         };
 
 
-        const displayedBooks = useMemo(() => {
-            const now = Date.now();
-            const searchNeedle = deferredSearchTerm.trim().toLowerCase();
-            const filtered = books.filter(b => {
-                if (b.loading) return false;
-                const contentIndex = contentIndexMap[b.id]?.text || '';
-                if (currentFilter === 'favorites' && !b.isFav) return false;
-                if (currentFilter === 'unfinished') return !b.isFinished;
-                if (currentFilter === 'unstarted') return !b.lastReadDate && !b.isFinished;
-                if (currentFilter === 'reading') return b.lastReadDate > 0 && !b.isFinished;
-                if (currentFilter === 'finished') return b.isFinished === true;
-                if (currentFilter === 'recents') return (b.dateAdded > now - 7 * 24 * 60 * 60 * 1000) || (b.lastReadDate > now - 14 * 24 * 60 * 60 * 1000);
-                if (currentFilter.startsWith('collection:')) {
-                    const collectionId = currentFilter.slice(11);
-                    const collection = manualCollections.find(item => item.id === collectionId);
-                    return !!collection?.bookIds?.includes(b.id);
-                }
-                if (currentFilter.startsWith('author:')) return b.author?.toLowerCase() === currentFilter.slice(7).toLowerCase();
-                if (currentFilter.startsWith('tag:')) {
-                    const tagNeedle = normalizeTagKey(currentFilter.slice(4));
-                    return splitBookTags(b.tags).some(tag => normalizeTagKey(tag) === tagNeedle);
-                }
-                if (currentFilter.startsWith('rating:')) {
-                    const requiredRating = Number(currentFilter.slice(7));
-                    return Number(b.rating || 0) === requiredRating;
-                }
-                // Smart shelves (estanterías automáticas)
-                if (currentFilter === 'shelf:abandoned') {
-                    const now = Date.now();
-                    return !b.isFinished && b.lastReadDate > 0 && (now - b.lastReadDate) > 180 * 86400000;
-                }
-                if (currentFilter === 'shelf:unopened') return !b.lastReadDate && !b.isFinished;
-                if (currentFilter === 'shelf:almostdone') return !b.isFinished && (b.progress || 0) >= 80;
-                if (currentFilter !== 'all' && currentFilter !== 'favorites' && b.category !== currentFilter) return false;
-                // Combined multi-filters (AND logic across tag list and author list)
-                if (filterTags.length > 0) {
-                    const bookTagNorms = splitBookTags(b.tags).map(normalizeTagKey);
-                    if (!filterTags.some(tag => bookTagNorms.includes(normalizeTagKey(tag)))) return false;
-                }
-                if (filterAuthors.length > 0) {
-                    if (!filterAuthors.some(a => b.author?.toLowerCase() === a.toLowerCase())) return false;
-                }
-                if (searchNeedle) {
-                    return getBookSearchIndex(b).includes(searchNeedle) || contentIndex.includes(searchNeedle);
-                }
-                return true;
-            });
-            return [...filtered].sort((a, b) => {
-                if (sortBy === 'lastRead') return (b.lastReadDate || 0) - (a.lastReadDate || 0);
-                if (sortBy === 'added') return (b.dateAdded || 0) - (a.dateAdded || 0);
-                if (sortBy === 'name') return a.name.localeCompare(b.name);
-                if (sortBy === 'progress') return (b.progress || 0) - (a.progress || 0);
-                if (sortBy === 'rating') return (b.rating || 0) - (a.rating || 0);
-                if (sortBy === 'series') {
-                    const seriesCompare = (a.series || '').localeCompare(b.series || '');
-                    if (seriesCompare !== 0) return seriesCompare;
-                    const indexCompare = (a.seriesIndex || 0) - (b.seriesIndex || 0);
-                    if (indexCompare !== 0) return indexCompare;
-                    return a.name.localeCompare(b.name);
-                }
-                return 0;
-            });
-        }, [books, contentIndexMap, currentFilter, deferredSearchTerm, manualCollections, sortBy, filterTags, filterAuthors]);
+        const {
+            displayedBooks,
+            searchResultsWithMatches,
+            libraryDerived,
+            virtualLibrary,
+            annotationBookOptions,
+            annotationGroups,
+            annotationSummary,
+            openBookIds,
+            folderImportOverlay,
+        } = useLibrary({
+            books,
+            contentIndexMap,
+            currentFilter,
+            deferredSearchTerm,
+            searchTerm,
+            manualCollections,
+            sortBy,
+            filterTags,
+            filterAuthors,
+            customCategories,
+            netflixView: addons.netflixView,
+            libraryView,
+            libraryViewport,
+            getAnnotationEntries,
+            shouldComputeAnnotations: sidebarOpen,
+            annotationSearch,
+            annotationBookFilter,
+            tabs,
+            folderImport,
+        });
 
         const selectAll = useCallback(() => {
             setSelectedBookIds(new Set(displayedBooks.map(b => b.id)));
         }, [displayedBooks]);
 
-        const searchResultsWithMatches = useMemo(() => {
-            if (!searchTerm) return null;
-            const term = deferredSearchTerm.toLowerCase();
-            return displayedBooks.map(b => ({
-                ...b,
-                contentMatch: (contentIndexMap[b.id]?.text || '').includes(term),
-                matchedFields: [
-                    b.name.toLowerCase().includes(term) && 'Título',
-                    b.author.toLowerCase().includes(term) && 'Autor',
-                    b.series && b.series.toLowerCase().includes(term) && 'Serie',
-                    b.tags && b.tags.toLowerCase().includes(term) && 'Etiquetas',
-                    b.description && b.description.toLowerCase().includes(term) && 'Sinopsis',
-                    b.publisher && b.publisher.toLowerCase().includes(term) && 'Editorial',
-                    (contentIndexMap[b.id]?.text || '').includes(term) && 'Contenido',
-                ].filter(Boolean)
-            }));
-        }, [contentIndexMap, deferredSearchTerm, displayedBooks]);
-
-        const libraryDerived = useMemo(() => {
-            const now = Date.now();
-            const authorsSet = new Set();
-            const counts = {
-                all: 0,
-                reading: 0,
-                unfinished: 0,
-                unstarted: 0,
-                finished: 0,
-                favorites: 0,
-                recents: 0,
-                shelfAbandoned: 0,
-                shelfUnopened: 0,
-                shelfAlmostDone: 0,
-            };
-            const categoryCounts = new Map(customCategories.map(category => [category, 0]));
-            const collectionCounts = new Map(manualCollections.map(collection => [collection.id, 0]));
-            const authorCounts = new Map();
-            const tagCounts = new Map();
-            const ratingCounts = new Map([[1, 0], [2, 0], [3, 0], [4, 0], [5, 0]]);
-
-            books.forEach(book => {
-                if (book.loading) return;
-                counts.all += 1;
-                if (book.author) {
-                    authorsSet.add(book.author);
-                    authorCounts.set(book.author, (authorCounts.get(book.author) || 0) + 1);
-                }
-                if (book.lastReadDate > 0 && !book.isFinished) counts.reading += 1;
-                if (!book.isFinished) counts.unfinished += 1;
-                if (!book.lastReadDate && !book.isFinished) counts.unstarted += 1;
-                if (book.isFinished) counts.finished += 1;
-                if (book.isFav) counts.favorites += 1;
-                if ((book.dateAdded > now - 7 * 24 * 60 * 60 * 1000) || (book.lastReadDate > now - 14 * 24 * 60 * 60 * 1000)) counts.recents += 1;
-                if (!book.isFinished && book.lastReadDate > 0 && (now - book.lastReadDate) > 180 * 86400000) counts.shelfAbandoned += 1;
-                if (!book.lastReadDate && !book.isFinished) counts.shelfUnopened += 1;
-                if (!book.isFinished && (book.progress || 0) >= 80) counts.shelfAlmostDone += 1;
-                if (book.category && categoryCounts.has(book.category)) {
-                    categoryCounts.set(book.category, (categoryCounts.get(book.category) || 0) + 1);
-                }
-                manualCollections.forEach(collection => {
-                    if (collection.bookIds?.includes(book.id)) {
-                        collectionCounts.set(collection.id, (collectionCounts.get(collection.id) || 0) + 1);
-                    }
-                });
-                splitBookTags(book.tags).forEach(tag => {
-                    tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
-                });
-                const rating = Number(book.rating || 0);
-                if (rating >= 1 && rating <= 5) {
-                    ratingCounts.set(rating, (ratingCounts.get(rating) || 0) + 1);
-                }
-            });
-
-            return {
-                authors: [...authorsSet].sort(),
-                tags: [...tagCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])),
-                counts,
-                authorCounts,
-                categoryCounts,
-                collectionCounts,
-                tagCounts,
-                ratingCounts,
-            };
-        }, [books, customCategories, manualCollections]);
-
-        const virtualLibrary = useMemo(() => {
-            const total = displayedBooks.length;
-            const enabled = !searchTerm && total > LIBRARY_VIRTUALIZE_THRESHOLD && libraryViewport.height > 0;
-            if (!enabled) {
-                return { enabled: false, items: displayedBooks, top: 0, totalHeight: 0, columns: 1 };
-            }
-
-            if (libraryView === 'list') {
-                const itemHeight = 88;
-                const startIndex = Math.max(0, Math.floor(libraryViewport.scrollTop / itemHeight) - LIBRARY_SCROLL_OVERSCAN);
-                const visibleCount = Math.ceil(libraryViewport.height / itemHeight) + LIBRARY_SCROLL_OVERSCAN * 2;
-                const endIndex = Math.min(total, startIndex + visibleCount);
-                return {
-                    enabled: true,
-                    items: displayedBooks.slice(startIndex, endIndex),
-                    top: startIndex * itemHeight,
-                    totalHeight: total * itemHeight,
-                    columns: 1,
-                };
-            }
-
-            const horizontalPadding = libraryViewport.width >= 768 ? 96 : 32;
-            const availableWidth = Math.max(260, libraryViewport.width - horizontalPadding);
-            const minCardWidth = addons.netflixView ? 200 : 160;
-            const columnGap = 24;
-            const rowGap = addons.netflixView ? 32 : 40;
-            const columns = Math.max(1, Math.floor((availableWidth + columnGap) / (minCardWidth + columnGap)));
-            const cardWidth = (availableWidth - columnGap * (columns - 1)) / columns;
-            const rowHeight = Math.ceil(cardWidth * 1.5 + 74 + rowGap);
-            const rowCount = Math.ceil(total / columns);
-            const startRow = Math.max(0, Math.floor(libraryViewport.scrollTop / rowHeight) - LIBRARY_SCROLL_OVERSCAN);
-            const visibleRows = Math.ceil(libraryViewport.height / rowHeight) + LIBRARY_SCROLL_OVERSCAN * 2;
-            const endRow = Math.min(rowCount, startRow + visibleRows);
-            const startIndex = startRow * columns;
-            const endIndex = Math.min(total, endRow * columns);
-
-            return {
-                enabled: true,
-                items: displayedBooks.slice(startIndex, endIndex),
-                top: startRow * rowHeight,
-                totalHeight: rowCount * rowHeight,
-                columns,
-            };
-        }, [addons.netflixView, displayedBooks, libraryView, libraryViewport.height, libraryViewport.scrollTop, libraryViewport.width, searchTerm]);
 
         const exportQuotesAsImage = () => {
             const allQuotes = books.flatMap(b =>
@@ -1987,102 +2059,6 @@ const ANNOTATION_COLOR_META = {
             setStats(prev => ({ ...prev, quoteExported: true }));
         }, [theme, setStats]);
 
-        const annotationEntries = useMemo(() => getAnnotationEntries(), [getAnnotationEntries]);
-        const annotationBookOptions = useMemo(() => {
-            const grouped = annotationEntries.reduce((acc, entry) => {
-                if (!acc.has(entry.bookId)) {
-                    acc.set(entry.bookId, { bookId: entry.bookId, bookName: entry.bookName, bookAuthor: entry.bookAuthor, total: 0 });
-                }
-                acc.get(entry.bookId).total += 1;
-                return acc;
-            }, new Map());
-            return Array.from(grouped.values()).sort((a, b) => a.bookName.localeCompare(b.bookName, 'es'));
-        }, [annotationEntries]);
-        const filteredAnnotationEntries = useMemo(() => {
-            const term = annotationSearch.trim().toLowerCase();
-            return annotationEntries.filter(entry => {
-                if (annotationBookFilter !== 'all' && entry.bookId !== annotationBookFilter) return false;
-                if (!term) return true;
-                return [
-                    entry.text,
-                    entry.bookName,
-                    entry.bookAuthor,
-                    entry.rawNote,
-                    entry.colorLabel,
-                    entry.kind,
-                ].filter(Boolean).some(value => String(value).toLowerCase().includes(term));
-            });
-        }, [annotationBookFilter, annotationEntries, annotationSearch]);
-        const annotationsByBook = useMemo(() => {
-            return filteredAnnotationEntries.reduce((acc, entry) => {
-                if (!acc[entry.bookId]) {
-                    acc[entry.bookId] = {
-                        bookId: entry.bookId,
-                        bookName: entry.bookName,
-                        bookAuthor: entry.bookAuthor,
-                        total: 0,
-                        highlights: 0,
-                        notes: 0,
-                        bookmarks: 0,
-                        entries: [],
-                    };
-                }
-                acc[entry.bookId].total += 1;
-                if (entry.kind === 'highlight') acc[entry.bookId].highlights += 1;
-                else if (entry.kind === 'note') acc[entry.bookId].notes += 1;
-                else acc[entry.bookId].bookmarks += 1;
-                acc[entry.bookId].entries.push(entry);
-                return acc;
-            }, {});
-        }, [filteredAnnotationEntries]);
-        const annotationGroups = useMemo(() => Object.values(annotationsByBook), [annotationsByBook]);
-        const annotationSummary = useMemo(() => filteredAnnotationEntries.reduce((acc, entry) => {
-            acc.total += 1;
-            if (entry.kind === 'highlight') acc.highlights += 1;
-            else if (entry.kind === 'note') acc.notes += 1;
-            else acc.bookmarks += 1;
-            return acc;
-        }, { total: 0, highlights: 0, notes: 0, bookmarks: 0 }), [filteredAnnotationEntries]);
-        const openBookIds = useMemo(() => new Set(tabs.map(t => t.bookId)), [tabs]);
-        const folderImportOverlay = useMemo(() => {
-            if (!folderImport) return null;
-
-            const total = Math.max(folderImport.total || 0, folderImport.discovered || 0, 0);
-            const imported = Math.min(folderImport.imported || 0, total || folderImport.imported || 0);
-            const metadataProcessed = Math.min(folderImport.metadataProcessed || 0, total || folderImport.metadataProcessed || 0);
-            const addedCount = Math.min(folderImport.addedCount || 0, metadataProcessed);
-            const skippedDuplicates = folderImport.skippedDuplicates || 0;
-            const failedCount = (folderImport.failedFiles || []).length;
-
-            if (folderImport.phase === 'empty') {
-                return { ...folderImport, title: 'No se encontraron libros', detail: 'La carpeta seleccionada no contiene EPUB ni PDF.', progress: 100, indeterminate: false, canCancel: false };
-            }
-
-            if (folderImport.phase === 'error') {
-                return { ...folderImport, title: 'La importacion se detuvo', detail: folderImport.error || 'Ocurrio un error inesperado durante la importacion.', progress: 100, indeterminate: false, canCancel: false };
-            }
-
-            if (folderImport.phase === 'cancelled') {
-                const skippedText = skippedDuplicates > 0 ? ` Se omitieron ${skippedDuplicates} duplicado(s).` : '';
-                return { ...folderImport, title: 'Importacion cancelada', detail: `Se procesaron ${metadataProcessed} de ${total || imported || 0} libros antes de detenerse.${skippedText}`, progress: total > 0 ? Math.round((metadataProcessed / total) * 100) : 0, indeterminate: false, canCancel: false };
-            }
-
-            if (folderImport.phase === 'done') {
-                const skippedText = skippedDuplicates > 0 ? ` Se omitieron ${skippedDuplicates} duplicado(s).` : '';
-                const failedText = failedCount > 0 ? ` ${failedCount} archivo(s) fallaron.` : '';
-                return { ...folderImport, title: failedCount > 0 ? 'Importacion completada con avisos' : 'Importacion completada', detail: `Se agregaron ${addedCount} libros${folderImport.folderName ? ` desde ${folderImport.folderName}` : ''}.${skippedText}${failedText}`, progress: 100, indeterminate: false, canCancel: false, failedCount };
-            }
-
-            if (folderImport.phase === 'metadata') {
-                return { ...folderImport, title: 'Extrayendo portadas y metadatos', detail: `${metadataProcessed} de ${total || 0} libros listos.`, progress: total > 0 ? Math.round((metadataProcessed / total) * 100) : 0, indeterminate: false, canCancel: !folderImport.isCancelling };
-            }
-
-            if (folderImport.phase === 'importing') {
-                return { ...folderImport, title: 'Importando libros en segundo plano', detail: `${imported} de ${total || 0} libros cargados desde disco.`, progress: total > 0 ? Math.round((imported / total) * 100) : 0, indeterminate: false, canCancel: !folderImport.isCancelling };
-            }
-
-            return { ...folderImport, title: 'Escaneando carpeta', detail: total > 0 ? `${total} libros detectados hasta ahora.` : 'Buscando archivos compatibles...', progress: 15, indeterminate: true, canCancel: !folderImport.isCancelling };
-        }, [folderImport]);
 
 
         // ─────────────────────────────────────────
@@ -2119,7 +2095,12 @@ const ANNOTATION_COLOR_META = {
                         view={view}
                         userProfile={userProfile}
                         achievementToast={achievementToast}
-                        onPet={() => setStats(prev => ({ ...prev, sharkyPets: (prev.sharkyPets || 0) + 1 }))}
+                        onPet={() => {
+                            setStats(prev => ({ ...prev, sharkyPets: (prev.sharkyPets || 0) + 1 }));
+                            if (addons.soundFeedback && addonConfig.soundFeedback?.sharky !== false) {
+                                sounds.sharkyChirp((addonConfig.soundFeedback?.volume || 50) / 100 * 0.15);
+                            }
+                        }}
                         setAddonConfigLive={setAddonConfigLive}
                         openBook={openBook}
                         spinBookRoulette={spinBookRoulette}
@@ -2143,7 +2124,7 @@ const ANNOTATION_COLOR_META = {
                 )}
 
                 {tutorialEnabled && !showWelcomeTutorial && activeTutorialHint && userProfile && (
-                    <div key={activeTutorialHint.id} className="fixed bottom-5 right-5 z-[670] w-full max-w-[320px] rounded-[28px] border border-white/10 bg-slate-950/95 text-white shadow-2xl backdrop-blur-xl overflow-hidden">
+                    <div key={activeTutorialHint.id} className="fixed bottom-5 right-5 z-[670] w-full max-w-[320px] rounded-[28px] border shadow-2xl backdrop-blur-xl overflow-hidden" style={{ backgroundColor: 'color-mix(in srgb, var(--surface-bg) 95%, transparent)', borderColor: 'var(--border-color)', color: 'var(--text-color)' }}>
                         <div className="absolute top-0 inset-x-0 h-[2px] bg-gradient-to-r from-sky-600 via-sky-400 to-blue-500" />
                         <div className="p-5">
                             <div className="flex items-start gap-3 mb-3">
@@ -2160,10 +2141,10 @@ const ANNOTATION_COLOR_META = {
                                     </div>
                                 </div>
                             </div>
-                            <p className="text-xs text-white/65 leading-relaxed mb-4">{activeTutorialHint.body}</p>
+                            <p className="text-xs opacity-65 leading-relaxed mb-4">{activeTutorialHint.body}</p>
                             <div className="flex items-center justify-between gap-3">
-                                <button onClick={dismissTutorialHints} className="text-[11px] font-bold text-white/40 hover:text-white/70 transition">Omitir todos</button>
-                                <button onClick={handleTutorialNext} className="rounded-2xl bg-sky-500 px-4 py-2 text-[11px] font-black text-slate-950 hover:bg-sky-400 transition">
+                                <button onClick={dismissTutorialHints} className="text-[11px] font-bold opacity-40 hover:opacity-70 transition">Omitir todos</button>
+                                <button onClick={handleTutorialNext} className="rounded-2xl px-4 py-2 text-[11px] font-black text-white transition" style={{ backgroundColor: 'var(--highlight)' }}>
                                     Entendido ✓
                                 </button>
                             </div>
@@ -2185,27 +2166,28 @@ const ANNOTATION_COLOR_META = {
                 {/* ── LIBRARY TOPBAR ── */}
                 {folderImportOverlay && (
                     <div className="fixed inset-x-0 bottom-0 z-[640] flex justify-end p-4 md:p-6 pointer-events-none">
-                        <div className="folder-import-overlay pointer-events-auto w-full max-w-md rounded-[28px] border border-white/10 bg-slate-950/92 text-white shadow-2xl backdrop-blur-xl fade-in">
+                        <div className="folder-import-overlay pointer-events-auto w-full max-w-md rounded-[28px] border shadow-2xl backdrop-blur-xl fade-in" style={{ backgroundColor: 'color-mix(in srgb, var(--surface-bg) 95%, transparent)', borderColor: 'var(--border-color)', color: 'var(--text-color)' }}>
                             <div className="p-5 md:p-6">
                                 <div className="flex items-start gap-4">
-                                    <div className="folder-import-icon flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-2xl bg-sky-500/15 text-sky-300">
+                                    <div className="folder-import-icon flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-2xl" style={{ backgroundColor: 'color-mix(in srgb, var(--highlight) 15%, transparent)', color: 'var(--highlight)' }}>
                                         <Icons.FolderPlus />
                                     </div>
                                     <div className="min-w-0 flex-1">
-                                        <p className="text-[11px] font-black uppercase tracking-[0.24em] text-sky-300/80">
+                                        <p className="text-[11px] font-black uppercase tracking-[0.24em] opacity-60" style={{ color: 'var(--highlight)' }}>
                                             {folderImportOverlay.folderName || 'Importacion'}
                                         </p>
-                                        <h3 className="mt-1 text-lg font-black leading-tight text-white">
+                                        <h3 className="mt-1 text-lg font-black leading-tight">
                                             {folderImportOverlay.title}
                                         </h3>
-                                        <p className="mt-2 text-sm text-white/70">
+                                        <p className="mt-2 text-sm opacity-70">
                                             {folderImportOverlay.detail}
                                         </p>
                                     </div>
                                     {folderImportOverlay.canCancel && (
                                         <button
                                             onClick={cancelActiveFolderImport}
-                                            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-bold text-white/85 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                                            className="rounded-xl border px-3 py-2 text-xs font-bold opacity-85 transition hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                            style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-color)' }}
                                             disabled={folderImportOverlay.isCancelling}
                                         >
                                             {folderImportOverlay.isCancelling ? 'Cancelando...' : 'Cancelar'}
@@ -2214,7 +2196,7 @@ const ANNOTATION_COLOR_META = {
                                 </div>
 
                                 <div className="mt-5">
-                                    <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-[0.16em] text-white/45">
+                                    <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-[0.16em] opacity-45">
                                         <span>{folderImportOverlay.phase === 'metadata' ? 'Metadatos' : folderImportOverlay.phase === 'importing' ? 'Importacion' : 'Estado'}</span>
                                         <span>{folderImportOverlay.progress}%</span>
                                     </div>
@@ -2227,35 +2209,30 @@ const ANNOTATION_COLOR_META = {
                                 </div>
 
                                 <div className="mt-4 grid grid-cols-4 gap-3">
-                                    <div className="rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-3">
-                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Detectados</p>
-                                        <p className="mt-2 text-lg font-black text-white">{folderImportOverlay.total || folderImportOverlay.discovered || 0}</p>
-                                    </div>
-                                    <div className="rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-3">
-                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Importados</p>
-                                        <p className="mt-2 text-lg font-black text-white">{folderImportOverlay.imported || 0}</p>
-                                    </div>
-                                    <div className="rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-3">
-                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Listos</p>
-                                        <p className="mt-2 text-lg font-black text-white">{folderImportOverlay.metadataProcessed || 0}</p>
-                                    </div>
-                                    <div className="rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-3">
-                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Omitidos</p>
-                                        <p className="mt-2 text-lg font-black text-white">{(folderImportOverlay.skippedDuplicates || 0) + (folderImportOverlay.failedCount || 0)}</p>
-                                    </div>
+                                    {[
+                                        { label: 'Detectados', value: folderImportOverlay.total || folderImportOverlay.discovered || 0 },
+                                        { label: 'Importados', value: folderImportOverlay.imported || 0 },
+                                        { label: 'Listos', value: folderImportOverlay.metadataProcessed || 0 },
+                                        { label: 'Omitidos', value: (folderImportOverlay.skippedDuplicates || 0) + (folderImportOverlay.failedCount || 0) },
+                                    ].map(stat => (
+                                        <div key={stat.label} className="rounded-2xl border bg-black/5 dark:bg-white/[0.04] px-3 py-3" style={{ borderColor: 'var(--border-color)' }}>
+                                            <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">{stat.label}</p>
+                                            <p className="mt-2 text-lg font-black">{stat.value}</p>
+                                        </div>
+                                    ))}
                                 </div>
 
                                 {(folderImportOverlay.failedCount || 0) > 0 && (
                                     <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-3">
-                                        <p className="text-[11px] font-black uppercase tracking-[0.18em] text-amber-200">Fallidos</p>
-                                        <div className="mt-2 max-h-20 overflow-y-auto text-xs text-white/70">
+                                        <p className="text-[11px] font-black uppercase tracking-[0.18em] text-amber-600 dark:text-amber-200">Fallidos</p>
+                                        <div className="mt-2 max-h-20 overflow-y-auto text-xs opacity-70">
                                             {(folderImportOverlay.failedFiles || []).slice(0, 6).map((item, index) => (
                                                 <div key={`${item.name}-${index}`} className="truncate">{item.name} — {item.reason}</div>
                                             ))}
                                         </div>
                                         <div className="mt-3 flex gap-2">
                                             <button onClick={retryFailedFolderImports} className="rounded-xl bg-amber-300 px-3 py-2 text-xs font-black text-slate-950 hover:bg-amber-200">Reintentar fallidos</button>
-                                            <button onClick={() => { setFolderImport(null); setFailedImportRetryQueue([]); }} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-bold text-white/80 hover:bg-white/10">Cerrar</button>
+                                            <button onClick={() => { setFolderImport(null); setFailedImportRetryQueue([]); }} className="rounded-xl border px-3 py-2 text-xs font-bold opacity-80 hover:opacity-100" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-color)' }}>Cerrar</button>
                                         </div>
                                     </div>
                                 )}
@@ -2266,7 +2243,7 @@ const ANNOTATION_COLOR_META = {
                 )}
 
                 {view === 'library' && (
-                    <div className="flex-shrink-0 flex items-center justify-between px-6 text-white shadow-lg z-20 h-16" style={{ backgroundColor: 'var(--topbar-bg)' }}>
+                    <div className="flex-shrink-0 flex items-center justify-between px-6 text-white shadow-lg topbar-glow z-20 h-16" style={{ backgroundColor: 'var(--topbar-bg)' }}>
                         <div className="flex items-center gap-5">
                             <button onClick={() => setSidebarOpen(true)} className="p-2 hover:bg-black/20 rounded-full transition"><Icons.Menu /></button>
                             <div className="flex items-center gap-2 cursor-pointer group" onClick={() => setCurrentFilter('all')}>
@@ -2418,476 +2395,67 @@ const ANNOTATION_COLOR_META = {
                 <AnniversaryModal anniversaryInfo={anniversaryInfo} onClose={() => setAnniversaryInfo(null)} />
 
                 {/* ── SIDEBAR ── */}
-                {sidebarOpen && (
-                    <div className="fixed inset-0 z-50 flex">
-                        <div className="w-80 h-full shadow-2xl flex flex-col slide-in-left border-r" style={{ backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)' }}>
-                            <div className="p-6 pb-4 border-b flex justify-between items-center" style={{ borderColor: 'var(--border-color)' }}>
-                                <div className="flex items-center gap-2">
-                                    <span className="text-2xl">🦈</span>
-                                    <div className="flex flex-col leading-none">
-                                        <span className="font-black text-lg tracking-tighter text-[var(--highlight)] uppercase">Shark</span>
-                                        <span className="font-black text-lg tracking-tighter text-[var(--text-color)] uppercase -mt-1">Reader</span>
-                                    </div>
-                                </div>
-                                <button onClick={() => setSidebarOpen(false)} className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-full transition"><Icons.Close /></button>
-                            </div>
-                            <div className="flex-1 overflow-y-auto py-4 px-3">
-                                <div className="px-3 mb-5 fade-in cursor-pointer" onClick={() => { setShowStreakModal(true); setSidebarOpen(false); }}>
-                                    <div className="bg-gradient-to-r from-orange-500/10 to-red-500/10 border border-orange-500/30 hover:border-orange-500/60 transition p-4 rounded-2xl flex items-center justify-between">
-                                        <div className="flex items-center gap-3">
-                                            <div className={`p-2 rounded-full ${stats.streak > 0 ? 'bg-orange-500 text-white shadow-lg streak-glow' : 'bg-gray-500/20 text-gray-500'}`}><Icons.Fire /></div>
-                                            <div>
-                                                <p className="text-[10px] font-black uppercase tracking-widest opacity-60">{t.streak}</p>
-                                                <p className={`text-xl font-black ${stats.streak > 0 ? 'text-orange-500' : 'opacity-80'}`}>{stats.streak || 0} {t.streakDays}</p>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                                {lastReadId && (
-                                    <div className="px-3 mb-5 fade-in">
-                                        <button onClick={() => { openBook(lastReadId); setSidebarOpen(false); }} className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-bold text-white shadow-md hover:shadow-lg transition" style={{ backgroundColor: 'var(--topbar-bg)' }}>
-                                            <Icons.Play /> {t.continueReading}
-                                        </button>
-                                    </div>
-                                )}
-                                <div className="space-y-1">
-                                    {[
-                                        { filter: 'all', icon: <Icons.Library />, label: t.library, count: libraryDerived.counts.all },
-                                        { filter: 'reading', icon: <span>📖</span>, label: 'Leyendo', count: libraryDerived.counts.reading },
-                                        { filter: 'unstarted', icon: <span>📚</span>, label: 'Por leer', count: libraryDerived.counts.unstarted },
-                                        { filter: 'finished', icon: <span>✅</span>, label: 'Terminados', count: libraryDerived.counts.finished },
-                                        { filter: 'favorites', icon: <Icons.Heart className="text-red-500" />, label: t.favorites, count: libraryDerived.counts.favorites },
-                                        { filter: 'recents', icon: <span>🕐</span>, label: 'Recientes', count: libraryDerived.counts.recents },
-                                    ].map(item => (
-                                        <button key={item.filter} onClick={() => { setCurrentFilter(item.filter); setView('library'); setSidebarOpen(false); }}
-                                            className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left font-semibold text-sm ${currentFilter === item.filter ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
-                                            <span className="opacity-70 text-base">{item.icon}</span> {item.label}
-                                            <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md">{item.count}</span>
-                                        </button>
-                                    ))}
-
-                                    {/* Estanterías automáticas — solo se muestran si tienen libros */}
-                                    {(libraryDerived.counts.shelfAbandoned > 0 || libraryDerived.counts.shelfAlmostDone > 0) && (
-                                        <div className="mt-2 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
-                                            <p className="text-[9px] font-black uppercase tracking-widest opacity-30 px-1 mb-1">Estanterías</p>
-                                            {[
-                                                { filter: 'shelf:abandoned', icon: '⏸', label: 'Pausados +6 meses', count: libraryDerived.counts.shelfAbandoned },
-                                                { filter: 'shelf:almostdone', icon: '🏁', label: 'Casi terminados', count: libraryDerived.counts.shelfAlmostDone },
-                                            ].filter(s => s.count > 0).map(item => (
-                                                <button key={item.filter} onClick={() => { setCurrentFilter(item.filter); setView('library'); setSidebarOpen(false); }}
-                                                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left font-semibold text-sm ${currentFilter === item.filter ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
-                                                    <span className="opacity-70 text-base">{item.icon}</span> {item.label}
-                                                    <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md">{item.count}</span>
-                                                </button>
-                                            ))}
-                                        </div>
-                                    )}
-
-                                    {/* Por Autor */}
-                                    {libraryDerived.authors.length > 0 && (() => {
-                                        const authors = libraryDerived.authors;
-                                        return (
-                                            <div>
-                                                <button onClick={() => setShowAuthorSection(p => !p)}
-                                                    className="w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left font-semibold text-sm hover:bg-black/5 dark:hover:bg-white/5">
-                                                    <span className="opacity-70 text-base">👤</span> Por Autor
-                                                    <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md">{authors.length}</span>
-                                                    <span className="text-[10px] opacity-40">{showAuthorSection ? '▲' : '▼'}</span>
-                                                </button>
-                                                {showAuthorSection && (
-                                                    <div className="ml-4 space-y-0.5 max-h-48 overflow-y-auto">
-                                                        {authors.map(author => {
-                                                            const active = filterAuthors.includes(author);
-                                                            return (
-                                                                <button key={author} onClick={() => { toggleFilterAuthor(author); setView('library'); }}
-                                                                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left text-sm ${active ? 'bg-sky-500/15 text-sky-600 dark:text-sky-300' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
-                                                                    {active && <span className="text-sky-500 font-black text-xs">✓</span>}
-                                                                    <span className="truncate flex-1 opacity-80">{author}</span>
-                                                                    <span className="text-[10px] font-bold opacity-40 flex-shrink-0">{libraryDerived.authorCounts.get(author) || 0}</span>
-                                                                </button>
-                                                            );
-                                                        })}
-                                                    </div>
-                                                )}
-                                            </div>
-                                        );
-                                    })()}
-
-                                    {libraryDerived.tags.length > 0 && (
-                                        <div>
-                                            <button onClick={() => setShowTagSection(prev => !prev)}
-                                                className="w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left font-semibold text-sm hover:bg-black/5 dark:hover:bg-white/5">
-                                                <span className="opacity-70 text-base">🏷️</span> Tags
-                                                <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md">{libraryDerived.tags.length}</span>
-                                                <span className="text-[10px] opacity-40">{showTagSection ? '▲' : '▼'}</span>
-                                            </button>
-                                            {showTagSection && (
-                                                <div className="ml-4 space-y-0.5 max-h-48 overflow-y-auto">
-                                                    {libraryDerived.tags.map(([tag, count]) => {
-                                                        const active = filterTags.includes(tag);
-                                                        return (
-                                                            <button key={tag} onClick={() => { toggleFilterTag(tag); setView('library'); }}
-                                                                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left text-sm ${active ? 'bg-purple-500/15 text-purple-600 dark:text-purple-300' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
-                                                                {active && <span className="text-purple-500 font-black text-xs">✓</span>}
-                                                                <span className="truncate flex-1 opacity-80">{tag}</span>
-                                                                <span className="text-[10px] font-bold opacity-40 flex-shrink-0">{count}</span>
-                                                            </button>
-                                                        );
-                                                    })}
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-
-                                    <div>
-                                        <button onClick={() => setShowRatingSection(prev => !prev)}
-                                            className="w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left font-semibold text-sm hover:bg-black/5 dark:hover:bg-white/5">
-                                            <span className="opacity-70 text-base">⭐</span> Valoración
-                                            <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md">
-                                                {[1, 2, 3, 4, 5].filter(rating => (libraryDerived.ratingCounts.get(rating) || 0) > 0).length}
-                                            </span>
-                                            <span className="text-[10px] opacity-40">{showRatingSection ? '▲' : '▼'}</span>
-                                        </button>
-                                        {showRatingSection && (
-                                            <div className="ml-4 space-y-0.5">
-                                                {[5, 4, 3, 2, 1].map(rating => {
-                                                    const count = libraryDerived.ratingCounts.get(rating) || 0;
-                                                    if (!count) return null;
-                                                    return (
-                                                        <button key={rating} onClick={() => { setCurrentFilter(`rating:${rating}`); setView('library'); setSidebarOpen(false); }}
-                                                            className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left text-sm ${currentFilter === `rating:${rating}` ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
-                                                            <span className="flex-1 opacity-80" style={{ color: '#f59e0b', letterSpacing: '-1px' }}>{'★'.repeat(rating)}</span>
-                                                            <span className="text-[10px] font-bold opacity-40 flex-shrink-0">{count}</span>
-                                                        </button>
-                                                    );
-                                                })}
-                                            </div>
-                                        )}
-                                    </div>
-
-
-                                    {manualCollections.length > 0 && (
-                                        <div className="mt-2 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
-                                            <div className="flex items-center justify-between px-4 mb-1">
-                                                <p className="text-[9px] font-black uppercase tracking-widest opacity-30">Colecciones</p>
-                                                <button onClick={() => createManualCollection()} className="text-[10px] font-black opacity-50 hover:opacity-100 transition">+ Nueva</button>
-                                            </div>
-                                        </div>
-                                    )}
-                                    {manualCollections.map((collection, colIdx) => (
-                                        <div key={collection.id} className={`flex items-center rounded-xl transition group ${currentFilter === `collection:${collection.id}` ? 'bg-fuchsia-500/10 text-fuchsia-600 dark:text-fuchsia-300' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
-                                            {renamingCollectionId === collection.id ? (
-                                                <input
-                                                    value={renamingCollectionValue}
-                                                    onChange={e => setRenamingCollectionValue(e.target.value)}
-                                                    onKeyDown={e => {
-                                                        if (e.key === 'Enter') renameManualCollection(collection.id, renamingCollectionValue);
-                                                        if (e.key === 'Escape') { setRenamingCollectionId(null); setRenamingCollectionValue(''); }
-                                                    }}
-                                                    onBlur={() => renameManualCollection(collection.id, renamingCollectionValue || collection.name)}
-                                                    className="flex-1 mx-3 my-1 text-sm font-bold rounded-lg px-2 py-1 outline-none border border-[var(--highlight)]"
-                                                    style={{ backgroundColor: 'var(--bg-color)', color: 'var(--text-color)' }}
-                                                    autoFocus
-                                                    onClick={e => e.stopPropagation()}
-                                                />
-                                            ) : (
-                                                <button onClick={() => { setCurrentFilter(`collection:${collection.id}`); setView('library'); setSidebarOpen(false); }} className="flex-1 flex items-center gap-2 px-3 py-2 text-left text-sm font-semibold min-w-0">
-                                                    <span className="text-base flex-shrink-0">{collection.emoji || '🗂️'}</span>
-                                                    <span className="flex-1 truncate">{collection.name}</span>
-                                                    <span className="text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md flex-shrink-0">{libraryDerived.collectionCounts.get(collection.id) || 0}</span>
-                                                </button>
-                                            )}
-                                            <div className="flex items-center opacity-0 group-hover:opacity-100 transition flex-shrink-0 pr-1 gap-0.5">
-                                                <button onClick={e => { e.stopPropagation(); moveManualCollection(collection.id, 'up'); }} disabled={colIdx === 0} className="p-1 text-xs disabled:opacity-20 hover:opacity-70 transition" title="Subir">↑</button>
-                                                <button onClick={e => { e.stopPropagation(); moveManualCollection(collection.id, 'down'); }} disabled={colIdx === manualCollections.length - 1} className="p-1 text-xs disabled:opacity-20 hover:opacity-70 transition" title="Bajar">↓</button>
-                                                <button onClick={e => { e.stopPropagation(); setRenamingCollectionId(collection.id); setRenamingCollectionValue(collection.name); }} className="p-1 text-xs hover:opacity-70 transition" title="Renombrar">✏️</button>
-                                                <button onClick={(e) => { e.stopPropagation(); removeManualCollection(collection.id); }} className="p-1 text-red-500 hover:text-red-600 transition"><Icons.Trash className="w-3.5 h-3.5" /></button>
-                                            </div>
-                                        </div>
-                                    ))}
-                                    {manualCollections.length === 0 && (
-                                        <button onClick={() => createManualCollection()} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left text-sm font-semibold hover:bg-black/5 dark:hover:bg-white/5 opacity-60 hover:opacity-100 border border-dashed border-fuchsia-500/20 mt-1">
-                                            <span className="opacity-70 text-base">🗂️</span> Crear Colección
-                                        </button>
-                                    )}
-
-                                    {customCategories.length > 0 && (
-                                        <div className="mt-2 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
-                                            <p className="text-[9px] font-black uppercase tracking-widest opacity-30 px-4 mb-1">Mis categorías</p>
-                                        </div>
-                                    )}
-                                    {customCategories.map(cat => {
-                                        const catColor = categoryColors[cat];
-                                        return (
-                                        <div key={cat} className={`flex items-center rounded-xl transition group ${currentFilter === cat ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
-                                            <button onClick={() => { setCurrentFilter(cat); setView('library'); setSidebarOpen(false); }} className="flex-1 flex items-center gap-3 px-3 py-2 text-left text-sm font-semibold">
-                                                <span className="w-2.5 h-2.5 rounded-full flex-shrink-0 border border-white/20" style={{ backgroundColor: catColor || 'var(--highlight)' }}></span>
-                                                {cat}
-                                                <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md">{libraryDerived.categoryCounts.get(cat) || 0}</span>
-                                            </button>
-                                            <input type="color" value={catColor || '#6366f1'} title="Color de categoría"
-                                                onChange={e => setCategoryColors(prev => ({ ...prev, [cat]: e.target.value }))}
-                                                className="opacity-0 group-hover:opacity-60 hover:!opacity-100 w-5 h-5 rounded cursor-pointer transition border-0 bg-transparent p-0 flex-shrink-0" />
-                                            <button onClick={e => { e.stopPropagation(); removeCategory(cat); }} className="opacity-0 group-hover:opacity-100 p-3 text-red-500 hover:text-red-600 transition"><Icons.Trash className="w-4 h-4" /></button>
-                                        </div>
-                                        );
-                                    })}
-                                    <button onClick={addNewCategory} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl transition text-left text-sm font-semibold hover:bg-black/5 dark:hover:bg-white/5 opacity-60 hover:opacity-100 border border-dashed border-gray-500/30 mt-1">
-                                        <span className="opacity-70"><Icons.Plus /></span> Añadir Categoría
-                                    </button>
-                                </div>
-                                <div className="my-5 border-t mx-3" style={{ borderColor: 'var(--border-color)' }}></div>
-
-                                {/* Vocabulario */}
-                                <div className="px-3 mb-4">
-                                    <button onClick={() => setShowVocabPanel(p => !p)} className="w-full flex items-center justify-between px-1 py-2 opacity-70 hover:opacity-100 transition">
-                                        <span className="font-black uppercase text-xs tracking-widest flex items-center gap-2">📖 Vocabulario</span>
-                                        <span className="text-xs font-bold px-2 py-0.5 bg-black/5 dark:bg-white/10 rounded-lg">{vocabulary.length}</span>
-                                    </button>
-                                    {showVocabPanel && (
-                                        <div className="mt-2">
-                                            {vocabulary.length === 0 ? (
-                                                <div className="text-center py-6 opacity-40">
-                                                    <p className="text-2xl mb-1">📖</p>
-                                                    <p className="text-xs font-medium">Selecciona palabras mientras lees para guardarlas aquí.</p>
-                                                </div>
-                                            ) : (
-                                                <>
-                                                    {vocabulary.length > 3 && (
-                                                        <div className="flex items-center gap-1.5 mb-2 px-1">
-                                                            <input
-                                                                type="text"
-                                                                value={vocabSearch}
-                                                                onChange={e => setVocabSearch(e.target.value)}
-                                                                placeholder="Buscar palabra..."
-                                                                className="flex-1 bg-black/5 dark:bg-white/5 rounded-xl px-3 py-1.5 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
-                                                                style={{ color: 'var(--text-color)' }}
-                                                            />
-                                                            {vocabSearch && (
-                                                                <button onClick={() => setVocabSearch('')} className="opacity-40 hover:opacity-100 transition text-base leading-none flex-shrink-0">×</button>
-                                                            )}
-                                                        </div>
-                                                    )}
-                                                    <div className="space-y-1.5 max-h-52 overflow-y-auto">
-                                                        {vocabulary.slice().reverse()
-                                                            .filter(v => !vocabSearch || v.word.toLowerCase().includes(vocabSearch.toLowerCase()) || v.definition.toLowerCase().includes(vocabSearch.toLowerCase()))
-                                                            .map(v => (
-                                                                <div key={v.id} className="group bg-black/5 dark:bg-white/5 rounded-xl p-3 hover:bg-black/8 dark:hover:bg-white/8 transition">
-                                                                    <div className="flex justify-between items-start">
-                                                                        <span className="font-black text-sm" style={{ color: 'var(--highlight)' }}>{v.word}</span>
-                                                                        <button onClick={() => setVocabulary(prev => prev.filter(w => w.id !== v.id))} className="opacity-0 group-hover:opacity-40 hover:!opacity-100 text-red-500 transition ml-2 flex-shrink-0"><Icons.Trash className="w-3 h-3" /></button>
-                                                                    </div>
-                                                                    <p className="text-[11px] opacity-70 mt-1 leading-relaxed">{v.definition}</p>
-                                                                    <p className="text-[9px] opacity-40 mt-1">{v.bookName} · {v.date}</p>
-                                                                </div>
-                                                            ))
-                                                        }
-                                                        {vocabulary.length > 0 && vocabulary.slice().reverse().filter(v => !vocabSearch || v.word.toLowerCase().includes(vocabSearch.toLowerCase()) || v.definition.toLowerCase().includes(vocabSearch.toLowerCase())).length === 0 && (
-                                                            <p className="text-xs opacity-40 text-center py-4">Sin resultados para "{vocabSearch}"</p>
-                                                        )}
-                                                    </div>
-                                                    <div className="flex gap-1.5 mt-2">
-                                                        <button onClick={() => {
-                                                            let md = '# 📖 Mi Vocabulario — Shark Reader\n\n';
-                                                            vocabulary.forEach(v => { md += `## ${v.word}\n${v.definition}\n\n*${v.bookName} · ${v.date}*\n\n---\n\n`; });
-                                                            const url = URL.createObjectURL(new Blob([md], { type: 'text/markdown' }));
-                                                            const a = document.createElement('a'); a.href = url; a.download = 'Mi_Vocabulario.md'; a.click(); URL.revokeObjectURL(url);
-                                                        }} className="flex-1 text-xs font-bold py-2 rounded-xl bg-black/5 dark:bg-white/5 hover:opacity-80 transition">.MD</button>
-                                                        <button onClick={() => {
-                                                            const rows = [['Palabra', 'Definición', 'Libro', 'Fecha'], ...vocabulary.map(v => [v.word, v.definition, v.bookName, v.date])];
-                                                            const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
-                                                            const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
-                                                            const a = document.createElement('a'); a.href = url; a.download = 'Mi_Vocabulario.csv'; a.click(); URL.revokeObjectURL(url);
-                                                        }} className="flex-1 text-xs font-bold py-2 rounded-xl bg-black/5 dark:bg-white/5 hover:opacity-80 transition">.CSV</button>
-                                                        <button onClick={() => {
-                                                            const url = URL.createObjectURL(new Blob([JSON.stringify(vocabulary, null, 2)], { type: 'application/json' }));
-                                                            const a = document.createElement('a'); a.href = url; a.download = 'Mi_Vocabulario.json'; a.click(); URL.revokeObjectURL(url);
-                                                        }} className="flex-1 text-xs font-bold py-2 rounded-xl bg-black/5 dark:bg-white/5 hover:opacity-80 transition">.JSON</button>
-                                                    </div>
-                                                </>
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
-
-                                <div className="px-3">
-                                    <div className="flex items-center justify-between mb-3 pl-1">
-                                        <span className="font-black uppercase text-xs tracking-widest flex items-center gap-2 opacity-50">
-                                            <Icons.Bookmark /> Anotaciones
-                                        </span>
-                                        <div className="flex gap-1">
-                                            <button onClick={() => exportAnnotations('txt', annotationBookFilter === 'all' ? {} : { bookId: annotationBookFilter })} className="text-[10px] font-black px-2 py-1 rounded-lg opacity-40 hover:opacity-100 hover:text-[var(--highlight)] transition">.TXT</button>
-                                            <button onClick={() => exportAnnotations('md', annotationBookFilter === 'all' ? {} : { bookId: annotationBookFilter })} className="text-[10px] font-black px-2 py-1 rounded-lg opacity-40 hover:opacity-100 hover:text-[var(--highlight)] transition">.MD</button>
-                                            <button onClick={() => exportAnnotations('html', annotationBookFilter === 'all' ? {} : { bookId: annotationBookFilter })} className="text-[10px] font-black px-2 py-1 rounded-lg opacity-40 hover:opacity-100 hover:text-[var(--highlight)] transition">.HTML</button>
-                                            <button onClick={() => exportAnnotations('json', annotationBookFilter === 'all' ? {} : { bookId: annotationBookFilter })} className="text-[10px] font-black px-2 py-1 rounded-lg opacity-40 hover:opacity-100 hover:text-[var(--highlight)] transition">.JSON</button>
-                                            {addons.quotePosters && <button onClick={exportQuotesAsImage} title="Exportar subrayados como imagen" className="text-[10px] font-black px-2 py-1 rounded-lg opacity-40 hover:opacity-100 hover:text-[var(--highlight)] transition">🖼️</button>}
-                                        </div>
-                                    </div>
-
-                                    <div className="mb-3 space-y-2">
-                                        <input
-                                            type="text"
-                                            value={annotationSearch}
-                                            onChange={e => setAnnotationSearch(e.target.value)}
-                                            placeholder="Buscar en notas y subrayados..."
-                                            className="w-full bg-black/5 dark:bg-white/5 rounded-xl px-3 py-2 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
-                                            style={{ color: 'var(--text-color)' }}
-                                        />
-                                        <select
-                                            value={annotationBookFilter}
-                                            onChange={e => setAnnotationBookFilter(e.target.value)}
-                                            className="w-full bg-black/5 dark:bg-white/5 rounded-xl px-3 py-2 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
-                                            style={{ color: 'var(--text-color)' }}
-                                        >
-                                            <option value="all">Toda la biblioteca</option>
-                                            {annotationBookOptions.map(option => (
-                                                <option key={option.bookId} value={option.bookId}>
-                                                    {option.bookName} ({option.total})
-                                                </option>
-                                            ))}
-                                        </select>
-                                        <div className="grid grid-cols-4 gap-2 text-center">
-                                            <div className="rounded-xl bg-black/5 dark:bg-white/5 px-2 py-2">
-                                                <p className="text-[9px] font-black uppercase tracking-widest opacity-35">Total</p>
-                                                <p className="mt-1 text-sm font-black">{annotationSummary.total}</p>
-                                            </div>
-                                            <div className="rounded-xl bg-black/5 dark:bg-white/5 px-2 py-2">
-                                                <p className="text-[9px] font-black uppercase tracking-widest opacity-35">Subr.</p>
-                                                <p className="mt-1 text-sm font-black">{annotationSummary.highlights}</p>
-                                            </div>
-                                            <div className="rounded-xl bg-black/5 dark:bg-white/5 px-2 py-2">
-                                                <p className="text-[9px] font-black uppercase tracking-widest opacity-35">Notas</p>
-                                                <p className="mt-1 text-sm font-black">{annotationSummary.notes}</p>
-                                            </div>
-                                            <div className="rounded-xl bg-black/5 dark:bg-white/5 px-2 py-2">
-                                                <p className="text-[9px] font-black uppercase tracking-widest opacity-35">Marc.</p>
-                                                <p className="mt-1 text-sm font-black">{annotationSummary.bookmarks}</p>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    {annotationGroups.length === 0 ? (
-                                        <div className="text-center py-8 opacity-40">
-                                            <p className="text-2xl mb-2">🔖</p>
-                                            <p className="text-xs font-medium">{annotationSearch || annotationBookFilter !== 'all' ? 'No hay resultados para ese filtro.' : t.noBookmarks}</p>
-                                        </div>
-                                    ) : annotationGroups.map(group => (
-                                        <div key={`annotation-${group.bookId}`} className="mb-4 fade-in">
-                                            <div className="flex items-center gap-2 mb-2 px-1">
-                                                <div className="w-1 h-4 rounded-full flex-shrink-0" style={{ backgroundColor: 'var(--highlight)' }}></div>
-                                                <button
-                                                    onClick={() => setAnnotationBookFilter(prev => prev === group.bookId ? 'all' : group.bookId)}
-                                                    className="text-[11px] font-black truncate flex-1 opacity-70 text-left hover:opacity-100 transition"
-                                                >
-                                                    {group.bookName}
-                                                </button>
-                                                <div className="flex items-center gap-1">
-                                                    <span className="text-[9px] font-bold opacity-30">{group.total}</span>
-                                                    <button
-                                                        onClick={() => exportAnnotations('md', { bookId: group.bookId })}
-                                                        className="text-[9px] font-black px-1.5 py-0.5 rounded-lg opacity-30 hover:opacity-100 hover:text-[var(--highlight)] transition"
-                                                        title="Exportar este libro"
-                                                    >
-                                                        .MD
-                                                    </button>
-                                                </div>
-                                            </div>
-
-                                            <div className="flex flex-wrap gap-1.5 px-1 mb-2">
-                                                {group.highlights > 0 && <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-black/5 dark:bg-white/5">Subrayados {group.highlights}</span>}
-                                                {group.notes > 0 && <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-black/5 dark:bg-white/5">Notas {group.notes}</span>}
-                                                {group.bookmarks > 0 && <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-black/5 dark:bg-white/5">Marcadores {group.bookmarks}</span>}
-                                            </div>
-
-                                            <div className="flex flex-col gap-1">
-                                                {group.entries.map(entry => {
-                                                    const colorMeta = ANNOTATION_COLOR_META[entry.color] || ANNOTATION_COLOR_META.yellow;
-                                                    const deleteNote = entry.kind === 'highlight'
-                                                        ? `[Subrayado] "${entry.text}${entry.rawNote.endsWith('...') ? '...' : ''}"`
-                                                        : entry.rawNote || entry.text;
-                                                    return (
-                                                        <div key={entry.id} className="group flex items-start gap-2 px-2 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition">
-                                                            <div
-                                                                className="w-0.5 rounded-full flex-shrink-0 mt-1 self-stretch"
-                                                                style={{ backgroundColor: entry.kind === 'highlight' ? colorMeta.swatch : 'var(--highlight)', minHeight: 14 }}
-                                                            />
-                                                            <button
-                                                                onClick={() => { openBook(group.bookId, entry.cfi); setSidebarOpen(false); }}
-                                                                className="flex-1 text-left min-w-0"
-                                                            >
-                                                                <div className="flex items-center gap-1.5 mb-1">
-                                                                    <span className="text-[9px] font-black uppercase tracking-widest opacity-35">
-                                                                        {entry.kind === 'highlight' ? 'Subrayado' : entry.kind === 'note' ? 'Nota' : 'Marcador'}
-                                                                    </span>
-                                                                    {entry.kind === 'highlight' && (
-                                                                        <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-full" style={{ backgroundColor: `${colorMeta.swatch}22`, color: colorMeta.swatch }}>
-                                                                            {colorMeta.label}
-                                                                        </span>
-                                                                    )}
-                                                                </div>
-                                                                <span className={`block leading-snug ${entry.kind === 'highlight' ? 'text-[11px] font-medium line-clamp-3 italic opacity-80' : 'text-[12px] font-semibold'} break-words`} style={{ color: 'var(--text-color)' }}>
-                                                                    {entry.text || 'Sin texto'}
-                                                                </span>
-                                                                <span className="text-[9px] opacity-40 font-bold">{entry.date}</span>
-                                                            </button>
-                                                            {addons.quotePosters && entry.kind === 'highlight' && (
-                                                                <button
-                                                                    onClick={() => exportSingleQuote(entry.text, group.bookName, group.bookAuthor, appliedTheme)}
-                                                                    title="Exportar como imagen"
-                                                                    className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition text-[11px] flex-shrink-0 mt-0.5"
-                                                                >
-                                                                    🖼️
-                                                                </button>
-                                                            )}
-                                                            <button
-                                                                onClick={() => toggleBookmarkInApp(group.bookId, entry.cfi, deleteNote, true)}
-                                                                className="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition text-red-400 text-base leading-none flex-shrink-0 mt-0.5"
-                                                            >
-                                                                ×
-                                                            </button>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                            <div className="p-4 border-t space-y-1.5" style={{ borderColor: 'var(--border-color)' }}>
-                                <button onClick={() => { setView('analytics'); setSidebarOpen(false); }}
-                                    className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
-                                    <span className="text-base">📊</span> Analíticas
-                                </button>
-                                {userProfile && (
-                                <button onClick={() => { setView('achievements'); setSidebarOpen(false); }}
-                                    className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
-                                    <span className="text-base">🏆</span> Logros
-                                </button>
-                                )}
-                                <button onClick={() => { setShowWorkshop(true); setSidebarOpen(false); }}
-                                    className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
-                                    <span className="text-base">🔧</span> Workshop
-                                    {Object.values(addons).filter(Boolean).length > 0 && (
-                                        <span className="ml-auto text-xs font-black px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: '#22c55e' }}>
-                                            {Object.values(addons).filter(Boolean).length} activos
-                                        </span>
-                                    )}
-                                </button>
-                                {addons.readingJournal && journalEntries.length > 0 && (
-                                    <button onClick={() => { setShowJournalModal(true); setSidebarOpen(false); }}
-                                        className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
-                                        <span className="text-base">📓</span> Reading Journal
-                                        <span className="ml-auto text-xs font-black px-2 py-0.5 rounded-full bg-black/5 dark:bg-white/10">{journalEntries.length}</span>
-                                    </button>
-                                )}
-                                <button onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }} className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition font-bold opacity-70 hover:opacity-100 text-sm">
-                                    <Icons.Settings /> {t.settings}
-                                </button>
-                            </div>
-                        </div>
-                        <div className="flex-1 bg-black/40 backdrop-blur-sm" onClick={() => setSidebarOpen(false)}></div>
-                    </div>
-                )}
+                <Sidebar
+                    open={sidebarOpen}
+                    onClose={() => setSidebarOpen(false)}
+                    stats={stats}
+                    lastReadId={lastReadId}
+                    openBook={openBook}
+                    currentFilter={currentFilter}
+                    setCurrentFilter={setCurrentFilter}
+                    setView={setView}
+                    libraryDerived={libraryDerived}
+                    filterAuthors={filterAuthors}
+                    toggleFilterAuthor={toggleFilterAuthor}
+                    showAuthorSection={showAuthorSection}
+                    setShowAuthorSection={setShowAuthorSection}
+                    filterTags={filterTags}
+                    toggleFilterTag={toggleFilterTag}
+                    showTagSection={showTagSection}
+                    setShowTagSection={setShowTagSection}
+                    showRatingSection={showRatingSection}
+                    setShowRatingSection={setShowRatingSection}
+                    manualCollections={manualCollections}
+                    createManualCollection={createManualCollection}
+                    removeManualCollection={removeManualCollection}
+                    renameManualCollection={renameManualCollection}
+                    moveManualCollection={moveManualCollection}
+                    renamingCollectionId={renamingCollectionId}
+                    setRenamingCollectionId={setRenamingCollectionId}
+                    renamingCollectionValue={renamingCollectionValue}
+                    setRenamingCollectionValue={setRenamingCollectionValue}
+                    customCategories={customCategories}
+                    categoryColors={categoryColors}
+                    setCategoryColors={setCategoryColors}
+                    addNewCategory={addNewCategory}
+                    removeCategory={removeCategory}
+                    vocabulary={vocabulary}
+                    setVocabulary={setVocabulary}
+                    showVocabPanel={showVocabPanel}
+                    setShowVocabPanel={setShowVocabPanel}
+                    vocabSearch={vocabSearch}
+                    setVocabSearch={setVocabSearch}
+                    annotationSearch={annotationSearch}
+                    setAnnotationSearch={setAnnotationSearch}
+                    annotationBookFilter={annotationBookFilter}
+                    setAnnotationBookFilter={setAnnotationBookFilter}
+                    annotationBookOptions={annotationBookOptions}
+                    annotationSummary={annotationSummary}
+                    annotationGroups={annotationGroups}
+                    exportAnnotations={exportAnnotations}
+                    exportSingleQuote={exportSingleQuote}
+                    exportQuotesAsImage={exportQuotesAsImage}
+                    addons={addons}
+                    toggleBookmarkInApp={toggleBookmarkInApp}
+                    appliedTheme={appliedTheme}
+                    journalEntries={journalEntries}
+                    userProfile={userProfile}
+                    t={t}
+                    setShowStreakModal={setShowStreakModal}
+                    setShowWorkshop={setShowWorkshop}
+                    setShowJournalModal={setShowJournalModal}
+                    setSettingsOpen={setSettingsOpen}
+                />
 
                 {/* ── MODAL RACHA ── */}
                 <StreakModal
@@ -2901,359 +2469,44 @@ const ANNOTATION_COLOR_META = {
 
                 {/* ── BIBLIOTECA ── */}
                 {view === 'library' && (
-                    <div ref={libraryScrollRef} className="flex-1 library-container w-full relative overflow-y-auto">
-
-                        {/* Vista de resultados de búsqueda */}
-                        {searchTerm && searchResultsWithMatches && (
-                            <div className="p-5 max-w-3xl mx-auto fade-in">
-                                <p className="text-xs font-black uppercase tracking-widest opacity-40 mb-4">
-                                    {searchResultsWithMatches.length} {searchResultsWithMatches.length === 1 ? 'resultado' : 'resultados'} para "{searchTerm}"
-                                </p>
-                                {searchResultsWithMatches.length === 0 ? (
-                                    <div className="text-center py-16 opacity-40">
-                                        <p className="text-5xl mb-4">🔍</p>
-                                        <p className="font-black text-lg">Sin resultados</p>
-                                        <p className="text-sm mt-2">Prueba con otro título, autor o etiqueta</p>
-                                    </div>
-                                ) : (
-                                    <div className="flex flex-col gap-2">
-                                        {searchResultsWithMatches.map(book => (
-                                            <div key={book.id}
-                                                className="flex items-center gap-4 p-4 rounded-2xl cursor-pointer transition group border border-transparent hover:border-[var(--border-color)]"
-                                                style={{ backgroundColor: 'var(--surface-bg)' }}
-                                                onClick={() => openBook(book.id)}
-                                                onContextMenu={(e) => handleContextMenu(e, book)}>
-                                                <div className="w-12 h-16 rounded-xl overflow-hidden flex-shrink-0 shadow-lg flex items-center justify-center text-white text-xs font-bold text-center bg-cover bg-center"
-                                                    style={{ backgroundImage: book.coverUrl ? `url(${book.coverUrl})` : 'none', backgroundColor: book.color }}>
-                                                    {!book.coverUrl && book.name.charAt(0)}
-                                                </div>
-                                                <div className="flex-1 min-w-0">
-                                                    <p className="font-black text-base leading-tight truncate">{book.name}</p>
-                                                    <p className="text-sm opacity-60 truncate mt-0.5">{book.author}</p>
-                                                    {book.series && <p className="text-xs opacity-40 italic mt-0.5 truncate">{book.series}{book.seriesIndex ? ` #${book.seriesIndex}` : ''}</p>}
-                                                    <div className="flex gap-1 mt-2 flex-wrap">
-                                                        {book.matchedFields.map(f => (
-                                                            <span key={f} className="text-[10px] font-black px-2 py-0.5 rounded-full text-white opacity-90" style={{ backgroundColor: 'var(--highlight)' }}>{f}</span>
-                                                        ))}
-                                                    </div>
-                                                </div>
-                                                <div className="flex flex-col items-end gap-1.5 flex-shrink-0 pr-1">
-                                                    <div className="text-[11px] font-black px-2 py-0.5 rounded-full" style={{ color: 'var(--highlight)', backgroundColor: 'color-mix(in srgb, var(--highlight) 15%, transparent)' }}>
-                                                        {book.progress || 0}%
-                                                    </div>
-                                                    {book.rating > 0 && <span className="text-xs" style={{ color: '#f59e0b', letterSpacing: '-1px' }}>{'★'.repeat(book.rating)}</span>}
-                                                    {openBookIds.has(book.id) && <span className="text-[10px] font-black text-green-400">● Abierto</span>}
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                        )}
-
-                        {/* Vista de cuadrícula normal */}
-                        {!searchTerm && (
-                            <>
-                                {displayedBooks.length === 0 && (() => {
-                                    const isSearch = !!searchTerm.trim();
-                                    const isFiltered = currentFilter !== 'all';
-                                    const isEmptyLibrary = books.filter(b => !b.loading).length === 0;
-
-                                    const configs = {
-                                        search: { emoji: '🔍', title: `Sin resultados para "${searchTerm}"`, sub: 'Prueba con el título, autor, serie o un tag del libro.', accent: '#38bdf8', sharkyMood: 'sad' },
-                                        favorites: { emoji: '❤️', title: 'Aún no tienes favoritos', sub: 'Pulsa el corazón de cualquier libro para guardarlo aquí.', accent: '#f43f5e', sharkyMood: 'sad' },
-                                        finished: { emoji: '🏁', title: 'Todavía no has terminado ningún libro', sub: '¡Sigue leyendo! Cuando termines uno aparecerá aquí.', accent: '#22c55e', sharkyMood: 'focus' },
-                                        reading: { emoji: '📖', title: 'No estás leyendo nada ahora', sub: 'Abre un libro y empezará a aparecer aquí automáticamente.', accent: '#a78bfa', sharkyMood: 'curious' },
-                                        unstarted: { emoji: '📚', title: 'Todos tus libros tienen progreso', sub: '¡Impresionante! No queda ninguno sin empezar.', accent: '#fbbf24', sharkyMood: 'happy' },
-                                        shelf: { emoji: '⏸', title: 'Esta estantería está vacía', sub: 'Nada en este filtro automático por ahora.', accent: '#fb923c', sharkyMood: 'curious' },
-                                        recents: { emoji: '🕐', title: 'Sin actividad reciente', sub: 'Los libros abiertos o añadidos recientemente aparecen aquí.', accent: '#38bdf8', sharkyMood: 'sleepy' },
-                                        filtered: { emoji: '🏷️', title: 'Sin resultados para este filtro', sub: 'Prueba a quitar alguno de los filtros activos.', accent: '#38bdf8', sharkyMood: 'curious' },
-                                        empty: { emoji: '🦈', title: '¡Bienvenido a SharkReader!', sub: 'Tu biblioteca está vacía. Añade tu primer EPUB o PDF para empezar.', accent: 'var(--highlight)', sharkyMood: 'celebrate' },
-                                    };
-
-                                    let cfg;
-                                    if (isSearch) cfg = configs.search;
-                                    else if (isEmptyLibrary) cfg = configs.empty;
-                                    else if (currentFilter === 'favorites') cfg = configs.favorites;
-                                    else if (currentFilter === 'finished') cfg = configs.finished;
-                                    else if (currentFilter === 'reading') cfg = configs.reading;
-                                    else if (currentFilter === 'unstarted') cfg = configs.unstarted;
-                                    else if (currentFilter === 'recents') cfg = configs.recents;
-                                    else if (currentFilter.startsWith('shelf:')) cfg = configs.shelf;
-                                    else if (isFiltered) cfg = configs.filtered;
-                                    else cfg = configs.empty;
-
-                                    return (
-                                        <div className="absolute inset-0 flex items-center justify-center p-6 fade-in">
-                                            <div className="max-w-md w-full flex flex-col items-center text-center px-8 py-10 rounded-[2rem]"
-                                                style={{ background: 'var(--surface-bg)', border: '1px solid var(--border-color)', boxShadow: `0 0 60px ${cfg.accent}0a` }}>
-                                                {/* Sharky + emoji badge */}
-                                                <div className="relative mb-5">
-                                                    <div className="w-20 h-20 rounded-2xl flex items-center justify-center"
-                                                        style={{ background: `${cfg.accent}15`, border: `1px solid ${cfg.accent}25` }}>
-                                                        <span className="text-4xl leading-none">{cfg.emoji}</span>
-                                                    </div>
-                                                </div>
-                                                {/* Text */}
-                                                <h2 className="text-xl font-black mb-2 leading-tight">{cfg.title}</h2>
-                                                <p className="text-sm opacity-55 leading-relaxed mb-6 max-w-xs">{cfg.sub}</p>
-                                                {/* CTAs */}
-                                                {(isEmptyLibrary || currentFilter === 'all') && !isSearch && (
-                                                    <div className="flex flex-col sm:flex-row gap-2.5 w-full justify-center">
-                                                        <button onClick={openFilePicker}
-                                                            className="flex items-center justify-center gap-2 px-6 py-3 rounded-2xl font-bold text-sm text-white transition active:scale-[0.97]"
-                                                            style={{ background: `linear-gradient(135deg, var(--highlight), var(--topbar-bg))` }}>
-                                                            <Icons.Plus /> Añadir libro
-                                                        </button>
-                                                        <button onClick={openFolderPicker}
-                                                            className="flex items-center justify-center gap-2 px-6 py-3 rounded-2xl font-bold text-sm transition active:scale-[0.97]"
-                                                            style={{ background: 'var(--bg-color)', border: '1px solid var(--border-color)' }}>
-                                                            <Icons.FolderPlus /> Añadir carpeta
-                                                        </button>
-                                                    </div>
-                                                )}
-                                                {isSearch && (
-                                                    <button onClick={() => setSearchTerm('')}
-                                                        className="px-6 py-2.5 rounded-2xl font-bold text-sm transition"
-                                                        style={{ background: 'var(--bg-color)', border: '1px solid var(--border-color)' }}>
-                                                        × Limpiar búsqueda
-                                                    </button>
-                                                )}
-                                                {isFiltered && !isSearch && !isEmptyLibrary && (
-                                                    <button onClick={() => setCurrentFilter('all')}
-                                                        className="px-6 py-2.5 rounded-2xl font-bold text-sm transition"
-                                                        style={{ background: 'var(--bg-color)', border: '1px solid var(--border-color)' }}>
-                                                        Ver todos los libros
-                                                    </button>
-                                                )}
-                                                {/* Hint for empty library */}
-                                                {isEmptyLibrary && (
-                                                    <p className="mt-4 text-[10px] opacity-35 max-w-[240px] leading-relaxed">
-                                                        Arrastra archivos .epub o .pdf directamente a esta ventana
-                                                    </p>
-                                                )}
-                                            </div>
-                                        </div>
-                                    );
-                                })()}
-                                {displayedBooks.length > 0 && libraryView === 'grid' && (
-                                    virtualLibrary.enabled ? (
-                                        <div className="virtual-library-spacer" style={{ height: virtualLibrary.totalHeight }}>
-                                            <div
-                                                className={`books-grid virtual-books-grid ${addons.netflixView ? 'netflix-grid' : ''}`}
-                                                style={{
-                                                    transform: `translateY(${virtualLibrary.top}px)`,
-                                                    gridTemplateColumns: `repeat(${virtualLibrary.columns}, minmax(0, 1fr))`,
-                                                }}>
-                                                {virtualLibrary.items.map(book => (
-                                                    <div key={book.id} draggable={!isSelecting && quickEditBookId !== book.id}
-                                                        onDragStart={e => { e.dataTransfer.setData('bookId', book.id); setDraggedBookId(book.id); }}
-                                                        onDragEnd={() => { setDraggedBookId(null); setDropTargetCat(null); }}>
-                                                        {quickEditBookId === book.id ? (
-                                                            <QuickEditCard book={book} onSave={saveQuickEdit} onCancel={() => setQuickEditBookId(null)} />
-                                                        ) : (
-                                                            <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={isSelecting ? toggleSelectBook : openBook} onContextMenu={handleContextMenu}
-                                                                isSelecting={isSelecting} isSelected={selectedBookIds.has(book.id)} onSelect={toggleSelectBook}
-                                                                onQuickEdit={setQuickEditBookId} isDynamic={!!addons.dynamicCovers} />
-                                                        )}
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    ) : (
-                                        <div className={`books-grid fade-in ${addons.netflixView ? 'netflix-grid' : ''}`}>
-                                            {displayedBooks.map(book => (
-                                                <div key={book.id} draggable={!isSelecting && quickEditBookId !== book.id}
-                                                    onDragStart={e => { e.dataTransfer.setData('bookId', book.id); setDraggedBookId(book.id); }}
-                                                    onDragEnd={() => { setDraggedBookId(null); setDropTargetCat(null); }}>
-                                                    {quickEditBookId === book.id ? (
-                                                        <QuickEditCard book={book} onSave={saveQuickEdit} onCancel={() => setQuickEditBookId(null)} />
-                                                    ) : (
-                                                        <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={isSelecting ? toggleSelectBook : openBook} onContextMenu={handleContextMenu}
-                                                            isSelecting={isSelecting} isSelected={selectedBookIds.has(book.id)} onSelect={toggleSelectBook}
-                                                            onQuickEdit={setQuickEditBookId} isDynamic={!!addons.dynamicCovers} />
-                                                    )}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )
-                                )}
-                                {displayedBooks.length > 0 && libraryView === 'series' && (() => {
-                                    const grouped = new Map();
-                                    displayedBooks.forEach(book => {
-                                        const key = book.series || '';
-                                        if (!grouped.has(key)) grouped.set(key, []);
-                                        grouped.get(key).push(book);
-                                    });
-                                    const seriesGroups = [...grouped.entries()]
-                                        .map(([name, bks]) => ({ name, books: bks.sort((a, b) => (a.seriesIndex || 0) - (b.seriesIndex || 0)) }))
-                                        .sort((a, b) => a.name ? (b.name ? a.name.localeCompare(b.name) : -1) : 1);
-                                    return (
-                                        <div className="p-4 md:p-6 space-y-8 fade-in max-w-5xl mx-auto w-full">
-                                            {seriesGroups.map(({ name, books: grpBooks }) => {
-                                                const finished = grpBooks.filter(b => b.isFinished).length;
-                                                const pct = grpBooks.length > 0 ? Math.round((finished / grpBooks.length) * 100) : 0;
-                                                const nextToRead = name ? grpBooks.filter(b => !b.isFinished && b.seriesIndex > 0).sort((a, b) => a.seriesIndex - b.seriesIndex)[0] : null;
-                                                const seriesIdxSet = new Set(grpBooks.map(b => b.seriesIndex).filter(Boolean));
-                                                const maxIdx = seriesIdxSet.size > 0 ? Math.max(...seriesIdxSet) : 0;
-                                                const gaps = name && maxIdx > 1 ? Array.from({ length: maxIdx - 1 }, (_, i) => i + 1).filter(n => !seriesIdxSet.has(n)) : [];
-                                                return (
-                                                    <div key={name || '__noseries__'}>
-                                                        <div className="flex items-center gap-3 mb-3 flex-wrap">
-                                                            {name ? (
-                                                                <>
-                                                                    <h3 className="font-black text-base" style={{ color: 'var(--text-color)' }}>{name}</h3>
-                                                                    <span className="text-xs font-bold opacity-40">{finished}/{grpBooks.length} leídos</span>
-                                                                    <div className="flex-1 h-1.5 rounded-full max-w-32" style={{ backgroundColor: 'var(--border-color)' }}>
-                                                                        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: pct === 100 ? '#22c55e' : 'var(--highlight)' }} />
-                                                                    </div>
-                                                                    {pct === 100 && <span className="text-xs font-black text-green-500">✓ Completa</span>}
-                                                                    {nextToRead && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: 'var(--highlight)' }}>📖 Siguiente: #{nextToRead.seriesIndex}</span>}
-                                                                    {gaps.length > 0 && <span className="text-[10px] font-bold text-amber-500 opacity-80">⚠ Sin #{gaps.join(', #')}</span>}
-                                                                </>
-                                                            ) : (
-                                                                <h3 className="font-black text-xs uppercase tracking-widest opacity-30">Sin serie</h3>
-                                                            )}
-                                                        </div>
-                                                        <div className="books-grid">
-                                                            {grpBooks.map(book => {
-                                                                const isNext = nextToRead?.id === book.id;
-                                                                return (
-                                                                    <div key={book.id} draggable={!isSelecting}
-                                                                        onDragStart={e => { e.dataTransfer.setData('bookId', book.id); setDraggedBookId(book.id); }}
-                                                                        onDragEnd={() => { setDraggedBookId(null); setDropTargetCat(null); }}
-                                                                        style={isNext ? { filter: 'drop-shadow(0 0 6px var(--highlight))' } : undefined}>
-                                                                        {quickEditBookId === book.id ? (
-                                                                            <QuickEditCard book={book} onSave={saveQuickEdit} onCancel={() => setQuickEditBookId(null)} />
-                                                                        ) : (
-                                                                            <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={isSelecting ? toggleSelectBook : openBook} onContextMenu={handleContextMenu}
-                                                                                isSelecting={isSelecting} isSelected={selectedBookIds.has(book.id)} onSelect={toggleSelectBook}
-                                                                                onQuickEdit={setQuickEditBookId} isDynamic={!!addons.dynamicCovers} />
-                                                                        )}
-                                                                    </div>
-                                                                );
-                                                            })}
-                                                            {gaps.length > 0 && gaps.map(gapNum => (
-                                                                <div key={`gap-${gapNum}`} className="book-container opacity-30 pointer-events-none" style={{ border: '2px dashed var(--border-color)', borderRadius: '8px' }}>
-                                                                    <div className="book-cover flex items-center justify-center" style={{ backgroundColor: 'var(--surface-bg)' }}>
-                                                                        <div className="text-center p-2">
-                                                                            <div className="text-2xl mb-1">?</div>
-                                                                            <div className="text-xs font-black opacity-60">#{gapNum}</div>
-                                                                            <div className="text-[9px] opacity-40 mt-0.5">No importado</div>
-                                                                        </div>
-                                                                    </div>
-                                                                    <div className="book-info-under"><div className="title opacity-40">Tomo #{gapNum}</div></div>
-                                                                </div>
-                                                            ))}
-                                                        </div>
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                    );
-                                })()}
-                                {displayedBooks.length > 0 && libraryView === 'list' && (
-                                    <div
-                                        className={`p-4 flex flex-col gap-2 fade-in max-w-4xl mx-auto w-full ${virtualLibrary.enabled ? 'virtual-list-spacer' : ''}`}
-                                        style={virtualLibrary.enabled ? { height: virtualLibrary.totalHeight } : undefined}>
-                                        <div
-                                            className="flex flex-col gap-2 w-full"
-                                            style={virtualLibrary.enabled ? { transform: `translateY(${virtualLibrary.top}px)` } : undefined}>
-                                        {(virtualLibrary.enabled ? virtualLibrary.items : displayedBooks).map(book => {
-                                            const statusIcon = book.isFinished ? '✅' : book.lastReadDate > 0 ? '📖' : '📚';
-                                            const listSelected = isSelecting && selectedBookIds.has(book.id);
-                                            return (
-                                                <div key={book.id}
-                                                    className="flex items-center gap-4 p-3 rounded-2xl cursor-pointer border transition group"
-                                                    style={{ backgroundColor: listSelected ? 'color-mix(in srgb, var(--highlight) 12%, var(--surface-bg))' : 'var(--surface-bg)', borderColor: listSelected ? 'var(--highlight)' : 'transparent' }}
-                                                    onClick={() => isSelecting ? toggleSelectBook(book.id) : openBook(book.id)}
-                                                    onContextMenu={e => !isSelecting && handleContextMenu(e, book)}>
-                                                    <div className="w-10 h-14 rounded-lg flex-shrink-0 bg-cover bg-center shadow-md flex items-center justify-center text-white text-xs font-bold overflow-hidden"
-                                                        style={{ backgroundImage: book.coverUrl ? `url(${book.coverUrl})` : 'none', backgroundColor: book.color }}>
-                                                        {!book.coverUrl && book.name.charAt(0)}
-                                                    </div>
-                                                    <div className="flex-1 min-w-0">
-                                                        <div className="flex items-center gap-2">
-                                                            <span className="font-bold text-sm truncate">{book.name}</span>
-                                                            {openBookIds.has(book.id) && <span className="text-[10px] font-black text-green-400 flex-shrink-0">● Abierto</span>}
-                                                        </div>
-                                                        <div className="text-xs opacity-50 truncate">{book.author}{book.series ? ` · ${book.series}${book.seriesIndex ? ` #${book.seriesIndex}` : ''}` : ''}</div>
-                                                        {book.tags && <div className="text-[10px] opacity-40 truncate mt-0.5">{book.tags}</div>}
-                                                    </div>
-                                                    <div className="flex items-center gap-3 flex-shrink-0">
-                                                        {book.rating > 0 && <span className="text-xs" style={{ color: '#f59e0b', letterSpacing: '-1px' }}>{'★'.repeat(book.rating)}</span>}
-                                                        <span className="text-[10px]">{statusIcon}</span>
-                                                        <div className="text-right">
-                                                            <div className="text-xs font-black" style={{ color: 'var(--highlight)' }}>{book.progress || 0}%</div>
-                                                            <div className="w-16 h-1 rounded-full bg-black/10 dark:bg-white/10 mt-1">
-                                                                <div className="h-full rounded-full" style={{ width: `${book.progress || 0}%`, backgroundColor: 'var(--highlight)' }} />
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                        </div>
-                                    </div>
-                                )}
-                            </>
-                        )}
-
-                        {/* ── BULK ACTION BAR ── */}
-                        {isSelecting && (
-                            <div className="fixed bottom-0 left-0 right-0 z-[200] shadow-2xl border-t" style={{ backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)' }}>
-                                <div className="max-w-4xl mx-auto px-4 py-3 flex items-center gap-2 flex-wrap">
-                                    <span className="font-black text-sm flex-shrink-0" style={{ color: 'var(--text-color)' }}>
-                                        {selectedBookIds.size} seleccionado{selectedBookIds.size !== 1 ? 's' : ''}
-                                    </span>
-                                    <button onClick={selectAll} className="text-xs font-bold px-3 py-1.5 rounded-lg transition hover:opacity-80" style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)', color: 'var(--text-color)' }}>
-                                        Todos ({displayedBooks.length})
-                                    </button>
-                                    <div className="flex-1 hidden sm:block" />
-                                    <button onClick={bulkToggleFav} disabled={!selectedBookIds.size}
-                                        className="text-xs font-bold px-3 py-1.5 rounded-xl bg-yellow-500/15 text-yellow-700 dark:text-yellow-400 hover:bg-yellow-500/25 transition disabled:opacity-40">
-                                        ❤️ Favorito
-                                    </button>
-                                    <button onClick={() => bulkMarkFinished(true)} disabled={!selectedBookIds.size}
-                                        className="text-xs font-bold px-3 py-1.5 rounded-xl bg-green-500/15 text-green-700 dark:text-green-400 hover:bg-green-500/25 transition disabled:opacity-40">
-                                        ✅ Terminado
-                                    </button>
-                                    {customCategories.length > 0 && (
-                                        <select onChange={e => { if (e.target.value) { bulkAssignCategory(e.target.value); e.target.value = ''; } }}
-                                            disabled={!selectedBookIds.size}
-                                            className="text-xs font-bold px-3 py-1.5 rounded-xl outline-none cursor-pointer disabled:opacity-40"
-                                            style={{ backgroundColor: 'var(--bg-color)', color: 'var(--text-color)', border: '1px solid var(--border-color)' }}>
-                                            <option value="">📁 Categoría…</option>
-                                            {customCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
-                                        </select>
-                                    )}
-                                    {manualCollections.length > 0 && (
-                                        <select onChange={e => { if (e.target.value) { bulkAddToCollection(e.target.value); e.target.value = ''; } }}
-                                            disabled={!selectedBookIds.size}
-                                            className="text-xs font-bold px-3 py-1.5 rounded-xl outline-none cursor-pointer disabled:opacity-40"
-                                            style={{ backgroundColor: 'var(--bg-color)', color: 'var(--text-color)', border: '1px solid var(--border-color)' }}>
-                                            <option value="">🗂️ Colección…</option>
-                                            {manualCollections.map(col => <option key={col.id} value={col.id}>{col.emoji || '🗂️'} {col.name}</option>)}
-                                        </select>
-                                    )}
-                                    <button onClick={bulkDeleteBooks} disabled={!selectedBookIds.size}
-                                        className="text-xs font-bold px-3 py-1.5 rounded-xl bg-red-500/15 text-red-700 dark:text-red-400 hover:bg-red-500/25 transition disabled:opacity-40">
-                                        🗑️ Eliminar
-                                    </button>
-                                    <button onClick={clearSelection} className="p-1.5 rounded-xl opacity-50 hover:opacity-100 transition" style={{ color: 'var(--text-color)' }}>
-                                        <Icons.Close />
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-
-                        <div className="md:hidden fixed bottom-6 right-6 flex flex-col gap-4 z-30">
-                            <button onClick={openFolderPicker} className="w-12 h-12 rounded-full flex items-center justify-center text-white shadow-xl bg-slate-700 hover:scale-110 transition-transform"><Icons.FolderPlus /></button>
-                            <button onClick={openFilePicker} className="w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl hover:scale-110 transition-transform" style={{ backgroundColor: 'var(--highlight)' }}><Icons.Plus /></button>
-                        </div>
-                    </div>
+                    <LibraryView
+                        ref={libraryScrollRef}
+                        searchTerm={searchTerm}
+                        searchResultsWithMatches={searchResultsWithMatches}
+                        displayedBooks={displayedBooks}
+                        books={books}
+                        currentFilter={currentFilter}
+                        setCurrentFilter={setCurrentFilter}
+                        setSearchTerm={setSearchTerm}
+                        openBook={openBook}
+                        handleContextMenu={handleContextMenu}
+                        openBookIds={openBookIds}
+                        openFilePicker={openFilePicker}
+                        openFolderPicker={openFolderPicker}
+                        libraryView={libraryView}
+                        virtualLibrary={virtualLibrary}
+                        addons={addons}
+                        isSelecting={isSelecting}
+                        selectedBookIds={selectedBookIds}
+                        toggleSelectBook={toggleSelectBook}
+                        selectAll={selectAll}
+                        clearSelection={clearSelection}
+                        quickEditBookId={quickEditBookId}
+                        setQuickEditBookId={setQuickEditBookId}
+                        saveQuickEdit={saveQuickEdit}
+                        draggedBookId={draggedBookId}
+                        setDraggedBookId={setDraggedBookId}
+                        dropTargetCat={dropTargetCat}
+                        setDropTargetCat={setDropTargetCat}
+                        bulkToggleFav={bulkToggleFav}
+                        bulkMarkFinished={bulkMarkFinished}
+                        bulkAssignCategory={bulkAssignCategory}
+                        bulkDeleteBooks={bulkDeleteBooks}
+                        bulkAddToCollection={bulkAddToCollection}
+                        customCategories={customCategories}
+                        manualCollections={manualCollections}
+                    />
                 )}
-
                 {/* ── CONTEXT MENU ── */}
                 {contextMenu && (
                     <div className="absolute shadow-2xl rounded-2xl py-2 z-50 text-sm border backdrop-blur-xl fade-in" style={{ top: contextMenu.y, left: contextMenu.x, backgroundColor: 'var(--surface-bg)', color: 'var(--text-color)', borderColor: 'var(--border-color)', minWidth: '220px' }}>
@@ -3294,6 +2547,9 @@ const ANNOTATION_COLOR_META = {
                         accentColor={accentColor} setAccentColor={setAccentColor}
                         tutorialEnabled={tutorialEnabled} setTutorialEnabled={setTutorialEnabled}
                         onRestartTutorial={restartTutorial}
+                        onExportDiagnostics={exportDiagnostics}
+                        onClearDiagnostics={clearDiagnostics}
+                        onExportZipBackup={exportZipBackup}
                         onDeleteAccount={deleteAccountAndData}
                         t={t}
                     />
@@ -3318,21 +2574,22 @@ const ANNOTATION_COLOR_META = {
                                 journalEntries={journalEntries}
                                 initialTab={view === 'achievements' ? 'achievements' : 'stats'}
                                 onBack={() => setView('library')}
+                                onReadingPlanSet={() => setStats(prev => prev.readingPlanSet ? prev : { ...prev, readingPlanSet: true })}
                             />
                         </Suspense>
                     </div>
                 )}
 
                 {/* ── READER ── */}
-                {view === 'reader' && currentBookData && (
+                {view === 'reader' && currentBookData && stableCurrentBookData && (
                     <div className="flex-1 flex overflow-hidden relative w-full" style={{ backgroundColor: 'var(--bg-color)' }}>
                         {/* Panel izquierdo / principal */}
                         <div className={`flex flex-col ${panelMode && rightBookData ? 'w-1/2 border-r border-white/10' : 'w-full'} overflow-hidden`}>
                             {currentBookData.type === 'epub' ? (
-                                <EpubReaderBoundary onClose={closeBook}>
+                                <EpubReaderBoundary onClose={closeBook} resetKey={currentBookData.id}>
                                     <Suspense fallback={readerLoader(`Abriendo ${currentBookData.name || 'libro'}...`)}>
                                         <EpubReader
-                                            bookData={currentBookData}
+                                            bookData={stableCurrentBookData}
                                             targetCfi={currentTargetCfi}
                                             theme={appliedTheme} t={t} lang={lang}
                                             readFlow={readFlow} readLayout={readLayout}
@@ -3347,15 +2604,15 @@ const ANNOTATION_COLOR_META = {
                                             onToggleDyslexiaMode={() => updateAddonConfig('dyslexiaMode', { readerEnabled: !addonConfig.dyslexiaMode?.readerEnabled })}
                                             onClose={closeBook}
                                             onOpenSettings={() => setSettingsOpen(true)}
-                                            onStatsUpdate={pages => setStats(prev => ({ ...prev, pagesTurned: prev.pagesTurned + pages }))}
-                                            onOpenBookInfo={() => setActiveBookModal(currentBookData)}
+                                            onStatsUpdate={handleReaderPageTurn}
+                                            onOpenBookInfo={() => setActiveBookModal(booksById.get(currentBookData.id) || currentBookData)}
                                             onSaveWord={saveWordToVocab}
                                             aiProvider={aiProvider}
                                             aiApiKey={aiApiKey}
                                             tabs={tabs}
                                             activeTabId={activeTabId}
-                                            allBooks={books}
-                                            onSwitchTab={(id) => setActiveTabId(id)}
+                                            allBooks={readerTabBooks}
+                                            onSwitchTab={switchReaderTab}
                                             onCloseTab={closeTab}
                                             onGoToLibrary={() => setView('library')}
                                             onToggleSpread={toggleSpreadLayout}
@@ -3363,30 +2620,32 @@ const ANNOTATION_COLOR_META = {
                                     </Suspense>
                                 </EpubReaderBoundary>
                             ) : (
-                                <Suspense fallback={readerLoader(`Abriendo ${currentBookData.name || 'documento'}...`)}>
-                                    <PdfReader
-                                        bookData={currentBookData}
+                                <EpubReaderBoundary onClose={closeBook} resetKey={currentBookData.id}>
+                                    <Suspense fallback={readerLoader(`Abriendo ${currentBookData.name || 'documento'}...`)}>
+                                        <PdfReader
+                                        bookData={stableCurrentBookData}
                                         theme={appliedTheme} t={t} lang={lang}
                                         isFullscreen={isFullscreen}
                                         focusMode={addons.focusMode}
                                         onClose={closeBook}
                                         onOpenSettings={() => setSettingsOpen(true)}
-                                        onOpenBookInfo={() => setActiveBookModal(currentBookData)}
+                                        onOpenBookInfo={() => setActiveBookModal(booksById.get(currentBookData.id) || currentBookData)}
                                         onPersistPdfZoom={persistPdfZoom}
                                         updateLocationAndProgress={updateBookLocation}
                                         toggleBookmark={toggleBookmarkInApp}
-                                        onStatsUpdate={pages => setStats(prev => ({ ...prev, pagesTurned: prev.pagesTurned + pages }))}
-                                        tabs={tabs} activeTabId={activeTabId} allBooks={books}
-                                        onSwitchTab={id => setActiveTabId(id)}
+                                        onStatsUpdate={handleReaderPageTurn}
+                                        tabs={tabs} activeTabId={activeTabId} allBooks={readerTabBooks}
+                                        onSwitchTab={switchReaderTab}
                                         onCloseTab={closeTab}
                                         onGoToLibrary={() => setView('library')}
-                                    />
-                                </Suspense>
+                                        />
+                                    </Suspense>
+                                </EpubReaderBoundary>
                             )}
                         </div>
 
                         {/* Panel derecho (multi-panel) */}
-                        {panelMode && rightBookData && (
+                        {panelMode && rightBookData && stableRightBookData && (
                             <div className="w-1/2 flex flex-col overflow-hidden">
                                 {/* Selector de qué tab mostrar en el panel derecho */}
                                 <div className="flex-shrink-0 flex items-center gap-1 px-2 h-9 overflow-x-auto" style={{ backgroundColor: 'rgba(0,0,0,0.4)', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
@@ -3402,9 +2661,10 @@ const ANNOTATION_COLOR_META = {
                                     <button onClick={() => { setPanelMode(false); setRightTabId(null); }} className="ml-auto px-2 text-white/40 hover:text-white transition text-lg">×</button>
                                 </div>
                                 {rightBookData.type === 'epub' ? (
-                                    <Suspense fallback={readerLoader(`Abriendo ${rightBookData.name || 'libro'}...`)}>
-                                        <EpubReader
-                                            bookData={rightBookData}
+                                    <EpubReaderBoundary onClose={() => { setPanelMode(false); setRightTabId(null); }} resetKey={rightBookData.id}>
+                                        <Suspense fallback={readerLoader(`Abriendo ${rightBookData.name || 'libro'}...`)}>
+                                            <EpubReader
+                                            bookData={stableRightBookData}
                                             targetCfi={tabTargetCfi[rightTabId] || null}
                                             theme={appliedTheme} t={t} lang={lang}
                                             readFlow={readFlow} readLayout={readLayout}
@@ -3419,29 +2679,32 @@ const ANNOTATION_COLOR_META = {
                                             onToggleDyslexiaMode={() => updateAddonConfig('dyslexiaMode', { readerEnabled: !addonConfig.dyslexiaMode?.readerEnabled })}
                                             onClose={() => { setPanelMode(false); setRightTabId(null); }}
                                             onOpenSettings={() => setSettingsOpen(true)}
-                                            onStatsUpdate={pages => setStats(prev => ({ ...prev, pagesTurned: prev.pagesTurned + pages }))}
-                                            onOpenBookInfo={() => setActiveBookModal(rightBookData)}
+                                            onStatsUpdate={handleReaderPageTurn}
+                                            onOpenBookInfo={() => setActiveBookModal(booksById.get(rightBookData.id) || rightBookData)}
                                             onSaveWord={saveWordToVocab}
                                             aiProvider={aiProvider}
                                             aiApiKey={aiApiKey}
                                             onToggleSpread={toggleSpreadLayout}
-                                        />
-                                    </Suspense>
+                                            />
+                                        </Suspense>
+                                    </EpubReaderBoundary>
                                 ) : (
-                                    <Suspense fallback={readerLoader(`Abriendo ${rightBookData.name || 'documento'}...`)}>
-                                        <PdfReader
-                                            bookData={rightBookData}
+                                    <EpubReaderBoundary onClose={() => { setPanelMode(false); setRightTabId(null); }} resetKey={rightBookData.id}>
+                                        <Suspense fallback={readerLoader(`Abriendo ${rightBookData.name || 'documento'}...`)}>
+                                            <PdfReader
+                                            bookData={stableRightBookData}
                                             theme={appliedTheme} t={t} lang={lang}
                                             isFullscreen={false}
                                             onClose={() => { setPanelMode(false); setRightTabId(null); }}
                                             onOpenSettings={() => setSettingsOpen(true)}
-                                            onOpenBookInfo={() => setActiveBookModal(rightBookData)}
+                                            onOpenBookInfo={() => setActiveBookModal(booksById.get(rightBookData.id) || rightBookData)}
                                             onPersistPdfZoom={persistPdfZoom}
                                             updateLocationAndProgress={updateBookLocation}
                                             toggleBookmark={toggleBookmarkInApp}
-                                            onStatsUpdate={pages => setStats(prev => ({ ...prev, pagesTurned: prev.pagesTurned + pages }))}
-                                        />
-                                    </Suspense>
+                                            onStatsUpdate={handleReaderPageTurn}
+                                            />
+                                        </Suspense>
+                                    </EpubReaderBoundary>
                                 )}
                             </div>
                         )}
@@ -3527,10 +2790,10 @@ const ANNOTATION_COLOR_META = {
                 {achievementToast && userProfile && (() => {
                     const r = RARITY[achievementToast.rarity];
                     return (
-                        <div className="fixed top-6 right-6 z-[9999] fade-in" style={{ animation: 'fadeInUp 0.4s ease' }}>
-                            <div className="flex items-center gap-3 px-5 py-4 rounded-2xl shadow-2xl border"
-                                style={{ backgroundColor: 'var(--surface-bg)', borderColor: r.border, minWidth: 260, maxWidth: 320 }}>
-                                <div className="text-3xl flex-shrink-0">{achievementToast.emoji}</div>
+                        <div className="fixed top-6 right-6 z-[9999]" style={{ animation: 'fadeInUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)' }}>
+                            <div className="achievement-toast-card flex items-center gap-3 px-5 py-4 rounded-2xl shadow-2xl border"
+                                style={{ backgroundColor: 'var(--surface-bg)', borderColor: r.border, minWidth: 260, maxWidth: 320, '--achievement-color': r.color }}>
+                                <div className="text-3xl flex-shrink-0" style={{ animation: 'sharkyBounce 0.6s ease' }}>{achievementToast.emoji}</div>
                                 <div className="min-w-0">
                                     <div className="flex items-center gap-2 mb-0.5">
                                         <span className="text-[9px] font-black uppercase tracking-widest" style={{ color: r.color }}>¡Logro desbloqueado!</span>
@@ -3544,12 +2807,13 @@ const ANNOTATION_COLOR_META = {
                 })()}
 
                 {noticeToast && (
-                    <div className="fixed bottom-6 left-6 z-[9998] fade-in" style={{ animation: 'fadeInUp 0.35s ease' }}>
+                    <div className="fixed bottom-6 left-6 z-[9998]" style={{ animation: 'fadeInUp 0.35s cubic-bezier(0.34, 1.56, 0.64, 1)' }}>
                         <div
-                            className="flex items-start gap-3 px-4 py-3 rounded-2xl shadow-2xl border max-w-sm"
+                            className="notice-toast-card relative overflow-hidden flex items-start gap-3 px-4 py-3 rounded-2xl shadow-2xl border max-w-sm"
                             style={{
                                 backgroundColor: 'var(--surface-bg)',
-                                borderColor: noticeToast.tone === 'warning' ? 'rgba(251,191,36,0.45)' : 'rgba(59,130,246,0.35)'
+                                borderColor: noticeToast.tone === 'warning' ? 'rgba(251,191,36,0.45)' : 'rgba(59,130,246,0.35)',
+                                '--notice-color': noticeToast.tone === 'warning' ? '#fbbf24' : noticeToast.tone === 'success' ? '#22c55e' : 'var(--highlight)',
                             }}
                         >
                             <div className="text-xl leading-none">{noticeToast.tone === 'warning' ? '⚠️' : 'ℹ️'}</div>

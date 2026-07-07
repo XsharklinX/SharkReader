@@ -1,123 +1,146 @@
-# Sistema de Addons — Workshop
+# Workshop de Addons
 
-El Workshop es un panel modal que permite activar y desactivar funciones opcionales de la aplicación sin reiniciarla. El estado de cada addon se persiste en `localStorage` bajo la clave `sharkreader_addons`.
+El Workshop permite activar funciones opcionales sin ensuciar el nucleo de SharkReader. La regla actual es: el addon declara metadata, config y capacidades en un registro central; los componentes solo consumen flags/config ya normalizados.
 
----
+## Fuente de verdad
 
-## Addons disponibles
+Archivo principal:
 
-### Activos
+```text
+src/workshopModules.js
+```
 
-| ID | Nombre | Categoría | Contexto | Descripción |
-|---|---|---|---|---|
-| `focusMode` | Modo Focus | Lectura | Lector | La barra superior desaparece tras 2.5 s de inactividad. Mover el ratón al borde superior la recupera. |
-| `autoBookmark` | Marcador Automático | Lectura | Lector | Guarda la posición actual como marcador cada vez que se cierra un libro. |
-| `dyslexiaFont` | Fuente Dislexia | Accesibilidad | Lector | Sustituye la fuente del lector EPUB por OpenDyslexic. |
-| `netflixView` | Vista Netflix | Interfaz | Biblioteca | Portadas más grandes. Hover muestra título, autor y progreso. |
-| `readingJournal` | Reading Journal | Estadísticas | Global | Registra automáticamente cada sesión de lectura con fecha, libro y progreso. |
-| `reminders` | Recordatorio Diario | Productividad | Global | Notificación del sistema si llevas más de 1 h sin abrir la app. |
-| `xray` | X-Ray | Lectura | Lector | Panel lateral con personajes, lugares y términos del libro. Permite añadir entradas por selección de texto. |
-| `smartToc` | TOC Flotante | Navegación | Lector | Tabla de contenidos flotante que indica la posición actual mientras se lee. |
+Responsabilidades:
 
-### Próximamente
+- `WORKSHOP_ADDONS`: registro publico de addons.
+- `WORKSHOP_CATEGORIES`: categorias visibles en el panel.
+- `WORKSHOP_MATURITY`: separacion entre `stable` y `experimental`.
+- `normalizeAddonState`: crea el mapa booleano por addon.
+- `normalizeAddonConfig`: fusiona defaults con datos persistidos y sanea valores.
+- `validateAddonToggle`: bloquea toggles invalidos y exige confirmacion para experimentales.
+- `migrateWorkshopData`: payload versionado para backup/import/sync.
 
-| ID | Nombre | Categoría | Descripción |
-|---|---|---|---|
-| `smartQuotes` | Citas con IA | IA | La IA detecta frases destacables y propone guardarlas como subrayados. |
-| `cloudSync` | Sync en la Nube | Datos | Sincroniza progreso, notas y marcadores entre dispositivos. |
+El panel visual vive en:
 
----
+```text
+src/WorkshopPanel.jsx
+```
 
-## Contextos de addon
+## Contrato minimo de addon
 
-| Contexto | Significado |
-|---|---|
-| `reader` | Solo tiene efecto cuando hay un libro abierto en el lector |
-| `library` | Cambia la interfaz de la biblioteca |
-| `global` | Activo en toda la aplicación |
-
----
-
-## Arquitectura del sistema
-
-### Definición de addons (`WorkshopPanel.jsx`)
+Cada addon debe tener:
 
 ```js
-const ADDONS = [
-  {
-    id: 'focusMode',
-    emoji: '🎯',
-    name: 'Modo Focus',
-    desc: '...',
-    category: 'Lectura',
-    context: 'reader',
-    status: 'active',   // 'active' | 'soon'
-  },
-  // ...
-];
+{
+  id: 'miAddon',
+  emoji: '...',
+  name: { es: 'Nombre', en: 'Name' },
+  desc: { es: 'Descripcion', en: 'Description' },
+  category: 'reading',
+  context: 'reader',
+  status: 'active',
+  defaultEnabled: false,
+  defaultConfig: {},
+  maturity: 'stable',
+  api: ['reader.location'],
+  configSchema: {},
+  lifecycle: { configurable: false, migratable: true }
+}
 ```
 
-### Estado (`App.jsx`)
+No se deben declarar addons dentro de `WorkshopPanel.jsx`.
+
+## Madurez
+
+### Stable
+
+Addon probado, con comportamiento claro y bajo riesgo. Puede activarse directamente.
+
+### Experimental
+
+Addon que toca filesystem, integraciones externas, backups, watchers o APIs que pueden cambiar. El panel pide confirmacion antes de activarlo.
+
+Actualmente experimentales:
+
+- `externalSources`
+- `watchedFolder`
+- `autoBackup`
+
+## Configuracion
+
+La config se define por addon en `ADDON_CONFIG_SCHEMA`.
+
+Tipos soportados:
+
+- `number`
+- `nullableNumber`
+- `boolean`
+- `enum`
+- `string`
+
+Ejemplo:
 
 ```js
-const [addons, setAddons] = useState(
-  () => safeParse('sharkreader_addons', {})
-);
+soundFeedback: {
+  volume: { type: 'number', min: 0, max: 100, fallback: 50 },
+  pageTurn: { type: 'boolean', fallback: true }
+}
 ```
 
-### Toggle
+Toda config persistida pasa por `normalizeAddonConfig`, asi que valores corruptos o fuera de rango vuelven a un fallback seguro.
 
-```js
-const handleAddonToggle = (id) => {
-  setAddons(prev => {
-    const next = { ...prev, [id]: !prev[id] };
-    localStorage.setItem('sharkreader_addons', JSON.stringify(next));
-    return next;
-  });
-};
-```
+## API interna minima
 
-### Consumo en componentes
+El campo `api` no carga codigo dinamico. Es un contrato documental y visual para saber que toca cada addon.
 
-Los addons se pasan como props a los componentes que los implementan:
+Ejemplos:
 
-```jsx
-<EpubReader
-  focusModeAddon={addons.focusMode}
-  dyslexiaFontAddon={addons.dyslexiaFont}
-  autoBookmarkAddon={addons.autoBookmark}
-  xrayAddon={addons.xray}
-  smartTocAddon={addons.smartToc}
-/>
-```
+- `reader.location`
+- `bookmarks.write`
+- `library.view`
+- `filesystem.read`
+- `backup.export`
+- `audio.play`
+- `ui.overlay`
 
-Cada componente aplica la lógica del addon condicionalmente según el valor booleano recibido.
+Regla: si un addon necesita una capacidad nueva, primero se anade al `api` del registro y luego se implementa en el componente o hook correspondiente.
 
----
+## Persistencia
 
-## UI del Workshop
+Estado actual:
 
-El panel se abre desde el botón del topbar (icono de llave inglesa 🔧).
+- `addons`: `{ [addonId]: boolean }`
+- `addonConfig`: `{ [addonId]: object }`
+- `workshop`: payload combinado y versionado
 
-Elementos de la UI:
-1. **Header**: título, contador de addons activos, botón de cierre.
-2. **Barra de activos**: pills de los addons habilitados con clic para desactivar.
-3. **Tabs de categoría**: filtro por categoría (Todos, Lectura, Interfaz…).
-4. **Grid de addons**: 2 columnas en desktop. Cada card muestra emoji, nombre, badge de contexto, descripción y toggle.
-5. **Nota informativa**: recuerda al usuario que los addons "En el lector" solo funcionan con un libro abierto.
+La app persiste en IndexedDB mediante `saveAppData`. Algunas claves legacy en localStorage existen solo como fallback/migracion.
 
-### Feedback visual en toggle
+## UI actual
 
-Al activar/desactivar un addon:
-- El card emite un destello con `box-shadow: 0 0 0 3px var(--highlight)`
-- Un overlay semitransparente del color de acento aparece y hace fade-out en 1.2 s
-- La clase CSS `fadeOut` se aplica vía `@keyframes fadeOut` en `main.css`
+El Workshop muestra:
 
----
+- Header con contador de activos.
+- Barra de addons activos para desactivar rapido.
+- Filtro por scope: `Todos`, `Instalados`, `Estables`, `Experimentales`.
+- Filtro por categoria.
+- Cards con contexto, madurez y capacidades API.
+- Config inline para addons configurables.
+- Fuentes externas en seccion separada.
 
-## Añadir un nuevo addon
+## Como agregar un addon
 
-1. Añadir un objeto al array `ADDONS` en `WorkshopPanel.jsx` con `status: 'active'`.
-2. Pasarlo como prop desde `App.jsx` al componente destino.
-3. Implementar la lógica condicional en el componente con `if (!addonProp) return;` o similar.
-4. Si el addon afecta estilos, añadir las clases CSS necesarias a `styles/main.css`.
+1. Agregar metadata en `WORKSHOP_ADDONS`.
+2. Definir `ADDON_MATURITY[id]`.
+3. Definir `ADDON_API[id]`.
+4. Si tiene config, agregar `defaultConfig` y `ADDON_CONFIG_SCHEMA[id]`.
+5. Implementar consumo del flag/config en el componente/hook apropiado.
+6. Si toca datos o backup, revisar `migrateWorkshopData`.
+7. Documentar comportamiento y riesgo.
+
+## Reglas de estabilidad
+
+- No meter logica funcional nueva dentro de `WorkshopPanel.jsx`.
+- No crear addons ad hoc en `App.jsx`.
+- No activar experimentales sin confirmacion del usuario.
+- No guardar config sin normalizar.
+- No tocar filesystem/red desde el renderer sin pasar por IPC/preload seguro.

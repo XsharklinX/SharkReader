@@ -243,6 +243,7 @@ export default function SharkyWidget() {
         setSharkyAIProvider,
         setSharkyAIKey,
         setSharkyChat,
+        updateSharkyBehavior,
         testSharkyAI,
         addons,
         addonConfig,
@@ -430,7 +431,7 @@ export default function SharkyWidget() {
                             <div className="sharky-menu-section">
                                 <label>{t('Visibilidad', 'Visibility')}</label>
                                 <div className="sharky-chip-row">
-                                    {['always', 'library', 'reader', 'events'].map(mode => (
+                                    {['always', 'library', 'reader', 'events', 'hidden'].map(mode => (
                                         <button
                                             key={mode}
                                             className={sharkyVisibility === mode ? 'active' : ''}
@@ -439,7 +440,47 @@ export default function SharkyWidget() {
                                             {mode === 'always' ? t('Siempre', 'Always') :
                                                 mode === 'library' ? t('Biblioteca', 'Library') :
                                                 mode === 'reader' ? t('Lector', 'Reader') :
-                                                t('Eventos', 'Events')}
+                                                mode === 'events' ? t('Eventos', 'Events') :
+                                                t('Oculto', 'Hidden')}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="sharky-menu-section">
+                                <label>{t('Presencia', 'Presence')}</label>
+                                <div className="sharky-chip-row">
+                                    {[
+                                        ['normal', t('Normal', 'Normal')],
+                                        ['reduced', t('Ligera', 'Reduced')],
+                                        ['important', t('Solo hitos', 'Milestones')],
+                                    ].map(([mode, label]) => (
+                                        <button
+                                            key={mode}
+                                            className={(sharkyConfig.eventFrequency || 'reduced') === mode ? 'active' : ''}
+                                            onClick={() => updateSharkyBehavior({ eventFrequency: mode })}
+                                        >
+                                            {label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="sharky-menu-section">
+                                <label>{t('Eventos útiles', 'Useful events')}</label>
+                                <div className="sharky-toggle-list">
+                                    {[
+                                        ['showContextTips', t('Consejos contextuales', 'Context tips')],
+                                        ['milestoneReactions', t('Reacciones a hitos', 'Milestone reactions')],
+                                        ['showSessionSummary', t('Resumen de sesión', 'Session summary')],
+                                    ].map(([key, label]) => (
+                                        <button
+                                            key={key}
+                                            className={sharkyConfig[key] !== false ? 'active' : ''}
+                                            onClick={() => updateSharkyBehavior({ [key]: sharkyConfig[key] === false })}
+                                        >
+                                            <span>{label}</span>
+                                            <b>{sharkyConfig[key] !== false ? 'ON' : 'OFF'}</b>
                                         </button>
                                     ))}
                                 </div>

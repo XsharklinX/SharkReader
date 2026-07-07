@@ -39,18 +39,23 @@ async function extractPdfText(file) {
     const pdfjsLib = await import('pdfjs-dist');
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    let combined = '';
-    const pages = Math.min(pdf.numPages || 0, MAX_PDF_PAGES);
-    for (let pageIndex = 1; pageIndex <= pages; pageIndex += 1) {
-        if (combined.length >= MAX_INDEX_CHARS) break;
-        try {
-            const page = await pdf.getPage(pageIndex);
-            const textContent = await page.getTextContent();
-            const pageText = (textContent.items || []).map(item => item?.str || '').join(' ');
-            combined += ` ${pageText}`;
-        } catch (_) {}
+    try {
+        let combined = '';
+        const pages = Math.min(pdf.numPages || 0, MAX_PDF_PAGES);
+        for (let pageIndex = 1; pageIndex <= pages; pageIndex += 1) {
+            if (combined.length >= MAX_INDEX_CHARS) break;
+            try {
+                const page = await pdf.getPage(pageIndex);
+                const textContent = await page.getTextContent();
+                const pageText = (textContent.items || []).map(item => item?.str || '').join(' ');
+                combined += ` ${pageText}`;
+                try { page.cleanup?.(); } catch (_) {}
+            } catch (_) {}
+        }
+        return clampText(normalizeText(combined));
+    } finally {
+        try { await pdf.destroy(); } catch (_) {}
     }
-    return clampText(normalizeText(combined));
 }
 
 export async function buildBookContentIndex(book) {

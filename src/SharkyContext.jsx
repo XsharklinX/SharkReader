@@ -23,6 +23,24 @@ const resolveAIConfig = (cfg = {}, globalProvider, globalKey) => ({
     apiKey: cfg.aiKey || globalKey || '',
 });
 
+const SHARKY_EVENT_RULES = {
+    bookOpened: { priority: 'low', cooldownMs: 10 * 60 * 1000, expression: 'curious', emote: 'idea' },
+    readingTip: { priority: 'low', cooldownMs: 20 * 60 * 1000, expression: 'curious', emote: 'idea' },
+    milestone: { priority: 'medium', cooldownMs: 90 * 1000, expression: 'happy', emote: 'star' },
+    sessionSummary: { priority: 'medium', cooldownMs: 2 * 60 * 1000, expression: 'happy', emote: 'star' },
+    bookFinished: { priority: 'high', cooldownMs: 0, expression: 'laugh', emote: 'star' },
+    streak: { priority: 'high', cooldownMs: 0, expression: 'happy', emote: 'star' },
+    streakLost: { priority: 'high', cooldownMs: 0, expression: 'sad', emote: 'sad' },
+    achievement: { priority: 'high', cooldownMs: 0, expression: 'happy', emote: 'star' },
+    anniversary: { priority: 'medium', cooldownMs: 0, expression: 'curious', emote: 'idea' },
+};
+
+const EVENT_FREQUENCY_PRIORITY = {
+    normal: new Set(['low', 'medium', 'high']),
+    reduced: new Set(['medium', 'high']),
+    important: new Set(['high']),
+};
+
 export const useSharky = () => {
     const ctx = useContext(SharkyContext);
     if (!ctx) throw new Error('useSharky must be used inside SharkyProvider');
@@ -134,6 +152,36 @@ export const SharkyProvider = ({
     const aiRequestInFlightRef = useRef(false);
     const streakMilestonesNotifiedRef = useRef(new Set());
     const sharkyReactionTimerRef = useRef(null);
+    const sharkyTimeoutsRef = useRef(new Set());
+    const sharkyEventCooldownsRef = useRef(new Map());
+    const isMountedRef = useRef(true);
+
+    const scheduleSharkyTimeout = useCallback((callback, delay) => {
+        const timer = window.setTimeout(() => {
+            sharkyTimeoutsRef.current.delete(timer);
+            if (isMountedRef.current) callback();
+        }, delay);
+        sharkyTimeoutsRef.current.add(timer);
+        return timer;
+    }, []);
+
+    const clearMoodEventAfter = useCallback((delay, expected = null) => {
+        scheduleSharkyTimeout(() => {
+            setSharkyMoodEvent(prev => (expected === null || prev === expected ? null : prev));
+        }, delay);
+    }, [scheduleSharkyTimeout]);
+
+    useEffect(() => () => {
+        isMountedRef.current = false;
+        if (sharkyReactionTimerRef.current) {
+            window.clearTimeout(sharkyReactionTimerRef.current);
+            sharkyReactionTimerRef.current = null;
+        }
+        sharkyTimeoutsRef.current.forEach(timer => window.clearTimeout(timer));
+        sharkyTimeoutsRef.current.clear();
+        aiRequestInFlightRef.current = false;
+        if (actionsRef?.current) actionsRef.current = null;
+    }, [actionsRef]);
 
     const queueSharkyReaction = useCallback((expression = 'neutral', {
         emote = 'none',
@@ -147,13 +195,47 @@ export const SharkyProvider = ({
         setSharkyExpression(expression);
         setSharkyEmote(emote);
         setSharkyHeart(heart);
-        sharkyReactionTimerRef.current = window.setTimeout(() => {
+        sharkyReactionTimerRef.current = scheduleSharkyTimeout(() => {
             setSharkyExpression('neutral');
             setSharkyEmote('none');
             setSharkyHeart(false);
             sharkyReactionTimerRef.current = null;
         }, duration);
-    }, []);
+    }, [scheduleSharkyTimeout]);
+
+    const emitSharkyEvent = useCallback((eventType, {
+        message,
+        duration,
+        expression,
+        emote,
+        celebration = null,
+        force = false,
+    } = {}) => {
+        if (!addons.sharkyMascot || !userProfile || !message) return false;
+        const cfg = addonConfig.sharkyMascot || {};
+        const personality = cfg.personality || 'friendly';
+        if (personality === 'silent' && !force) return false;
+
+        const rule = SHARKY_EVENT_RULES[eventType] || { priority: 'low', cooldownMs: 60000 };
+        const frequency = cfg.eventFrequency || 'reduced';
+        const allowed = EVENT_FREQUENCY_PRIORITY[frequency] || EVENT_FREQUENCY_PRIORITY.reduced;
+        if (!force && !allowed.has(rule.priority)) return false;
+
+        const now = Date.now();
+        const cooldownKey = `${eventType}:${message}`;
+        const lastAt = sharkyEventCooldownsRef.current.get(cooldownKey) || 0;
+        if (!force && rule.cooldownMs > 0 && now - lastAt < rule.cooldownMs) return false;
+        sharkyEventCooldownsRef.current.set(cooldownKey, now);
+
+        setSharkyMoodEvent(message);
+        if (celebration) setSharkyCelebration(celebration);
+        queueSharkyReaction(expression || rule.expression || 'neutral', {
+            emote: emote || rule.emote || 'none',
+            duration: Math.min(5000, Math.max(1800, duration || 2800)),
+        });
+        clearMoodEventAfter(duration || (rule.priority === 'high' ? 5000 : 3600), message);
+        return true;
+    }, [addonConfig.sharkyMascot, addons.sharkyMascot, clearMoodEventAfter, queueSharkyReaction, userProfile]);
 
     // ── Persistencia del chat ──
     useEffect(() => {
@@ -260,10 +342,11 @@ export const SharkyProvider = ({
             reply = getScriptedResponse(intent, ctx);
         }
 
-        await new Promise(r => setTimeout(r, delay));
+        await new Promise(r => scheduleSharkyTimeout(r, delay));
+        if (!isMountedRef.current) return;
         setChatMessages(prev => [...prev, { role: 'sharky', text: reply, ts: Date.now() }]);
         setSharkyTyping(false);
-    }, [addonConfig.sharkyMascot, books, buildChatCtx, chatMessages, dailyGoalMins, globalAiApiKey, globalAiProvider, lang, readerLevel, sharkyTyping, stats]);
+    }, [addonConfig.sharkyMascot, books, buildChatCtx, chatMessages, dailyGoalMins, globalAiApiKey, globalAiProvider, lang, readerLevel, scheduleSharkyTimeout, sharkyTyping, stats]);
 
     // ── Chat: comandos especiales (hablar del libro, resumen, quiz, similares) ──
     const sendSpecialCommand = useCallback(async (type) => {
@@ -323,10 +406,11 @@ export const SharkyProvider = ({
             reply = fallbacks[type]?.[l] || null;
         }
 
-        await new Promise(r => setTimeout(r, delay));
+        await new Promise(r => scheduleSharkyTimeout(r, delay));
+        if (!isMountedRef.current) return;
         if (reply) setChatMessages(prev => [...prev, { role: 'sharky', text: reply, ts: Date.now() }]);
         setSharkyTyping(false);
-    }, [addonConfig.sharkyMascot, books, booksById, buildChatCtx, dailyGoalMins, globalAiApiKey, globalAiProvider, lang, lastReadId, readerLevel, sharkyTyping, stats]);
+    }, [addonConfig.sharkyMascot, books, booksById, buildChatCtx, dailyGoalMins, globalAiApiKey, globalAiProvider, lang, lastReadId, readerLevel, scheduleSharkyTimeout, sharkyTyping, stats]);
 
     const clearChat = useCallback(() => {
         setChatMessages([]);
@@ -356,8 +440,9 @@ export const SharkyProvider = ({
                 prompt: buildSystemPrompt({ lang, personality, books, stats, readerLevel, dailyGoalMins }) + '\n\nWrite a single short encouraging message (max 12 words). No quotes. Output only the message.',
             });
             if (msg) {
+                if (!isMountedRef.current) return false;
                 setSharkyMoodEvent(msg);
-                window.setTimeout(() => setSharkyMoodEvent(prev => (prev === msg ? null : prev)), 4000);
+                clearMoodEventAfter(4000, msg);
                 return true;
             }
         } catch (err) {
@@ -366,7 +451,7 @@ export const SharkyProvider = ({
             aiRequestInFlightRef.current = false;
         }
         return false;
-    }, [addonConfig.sharkyMascot, books, dailyGoalMins, globalAiApiKey, globalAiProvider, lang, readerLevel, stats]);
+    }, [addonConfig.sharkyMascot, books, clearMoodEventAfter, dailyGoalMins, globalAiApiKey, globalAiProvider, lang, readerLevel, stats]);
 
     // ── Efecto: modo concentración ──
     useEffect(() => {
@@ -376,18 +461,19 @@ export const SharkyProvider = ({
             const lines = getLines(personality, lang);
             const msg = pickRandom(lines.focus);
             setSharkyMoodEvent(msg);
-            const timer = setTimeout(() => setSharkyMoodEvent(null), 2600);
+            const timer = scheduleSharkyTimeout(() => setSharkyMoodEvent(null), 2600);
             return () => clearTimeout(timer);
         }
-    }, [addons.sharkyMascot, lang, userProfile, view]);
+    }, [addons.sharkyMascot, lang, scheduleSharkyTimeout, userProfile, view]);
 
     // ── Efecto: nuevo logro ──
     useEffect(() => {
         if (!addons.sharkyMascot || !userProfile || !achievementToast) return;
-        setSharkyMoodEvent(lang === 'en' ? `New achievement: ${achievementToast.name}` : `Nuevo logro: ${achievementToast.name}`);
-        const timer = setTimeout(() => setSharkyMoodEvent(null), 3600);
-        return () => clearTimeout(timer);
-    }, [achievementToast, addons.sharkyMascot, lang, userProfile]);
+        emitSharkyEvent('achievement', {
+            message: lang === 'en' ? `New achievement: ${achievementToast.name}` : `Nuevo logro: ${achievementToast.name}`,
+            force: true,
+        });
+    }, [achievementToast, addons.sharkyMascot, emitSharkyEvent, lang, userProfile]);
 
     // ── Efecto: mensajes periódicos ──
     useEffect(() => {
@@ -401,12 +487,12 @@ export const SharkyProvider = ({
                 const lines = getLines(personality, lang);
                 const line = pickRandom(lines.ambient);
                 setSharkyMoodEvent(line);
-                window.setTimeout(() => setSharkyMoodEvent(prev => (prev === line ? null : prev)), 4000);
+                clearMoodEventAfter(4000, line);
             }
         };
         const timer = setInterval(tick, 45000);
         return () => clearInterval(timer);
-    }, [addonConfig.sharkyMascot?.personality, addonConfig.sharkyMascot?.aiEnabled, addonConfig.sharkyMascot?.aiKey, addonConfig.sharkyMascot?.aiProvider, addons.sharkyMascot, fetchAndShowAIMessage, lang, sharkyChatOpen, sharkyOpen, userProfile, view]);
+    }, [addonConfig.sharkyMascot?.personality, addonConfig.sharkyMascot?.aiEnabled, addonConfig.sharkyMascot?.aiKey, addonConfig.sharkyMascot?.aiProvider, addons.sharkyMascot, clearMoodEventAfter, fetchAndShowAIMessage, lang, sharkyChatOpen, sharkyOpen, userProfile, view]);
 
     // ── Drag & click ──
     const moveSharkyMascot = useCallback((event) => {
@@ -461,20 +547,20 @@ export const SharkyProvider = ({
         setSharkyHeart(true);
         setSharkyMoodEvent(lang === 'en' ? `${name} liked that.` : `${name} recibió una caricia.`);
         onPet?.();
-        window.setTimeout(() => setSharkyHeart(false), 1200);
-        window.setTimeout(() => setSharkyExpression('neutral'), 2300);
-        window.setTimeout(() => setSharkyMoodEvent(null), 3200);
-    }, [addonConfig.sharkyMascot?.name, lang]);
+        scheduleSharkyTimeout(() => setSharkyHeart(false), 1200);
+        scheduleSharkyTimeout(() => setSharkyExpression('neutral'), 2300);
+        scheduleSharkyTimeout(() => setSharkyMoodEvent(null), 3200);
+    }, [addonConfig.sharkyMascot?.name, lang, onPet, scheduleSharkyTimeout]);
 
     const sharkyContinueReading = useCallback(() => {
         if (!lastReadId) {
             setSharkyMoodEvent(lang === 'en' ? 'No recent book found.' : 'No hay lectura reciente.');
-            setTimeout(() => setSharkyMoodEvent(null), 2400);
+            scheduleSharkyTimeout(() => setSharkyMoodEvent(null), 2400);
             return;
         }
         setSharkyOpen(false);
         openBook(lastReadId);
-    }, [lang, lastReadId, openBook]);
+    }, [lang, lastReadId, openBook, scheduleSharkyTimeout]);
 
     const sharkyOpenAchievements = useCallback(() => {
         setSharkyOpen(false);
@@ -527,6 +613,10 @@ export const SharkyProvider = ({
         if (!chatEnabled) setSharkyChatOpen(false);
     }, [updateAddonConfig]);
 
+    const updateSharkyBehavior = useCallback((patch) => {
+        updateAddonConfig('sharkyMascot', patch);
+    }, [updateAddonConfig]);
+
     const testSharkyAI = useCallback(async () => {
         const cfg = addonConfig.sharkyMascot || {};
         const resolvedAI = resolveAIConfig(cfg, globalAiProvider, globalAiApiKey);
@@ -539,31 +629,34 @@ export const SharkyProvider = ({
                 prompt: buildSystemPrompt({ lang, personality: cfg.personality || 'friendly', books, stats, readerLevel, dailyGoalMins }) + '\n\nWrite a single short test greeting (max 10 words). No quotes.',
             });
             if (msg) {
+                if (!isMountedRef.current) return;
                 setAiTestStatus('ok');
                 setSharkyMoodEvent(msg);
-                window.setTimeout(() => setSharkyMoodEvent(null), 5000);
+                clearMoodEventAfter(5000, msg);
             } else {
                 setAiTestStatus('error:Sin respuesta');
             }
         } catch (err) {
             setAiTestStatus('error:' + (err?.message || 'Error desconocido'));
         }
-    }, [addonConfig.sharkyMascot, books, dailyGoalMins, globalAiApiKey, globalAiProvider, lang, readerLevel, stats]);
+    }, [addonConfig.sharkyMascot, books, clearMoodEventAfter, dailyGoalMins, globalAiApiKey, globalAiProvider, lang, readerLevel, stats]);
 
     // ── Métodos imperativos ──
     const notifyMilestone = useCallback((bookId, mark, bookName, previousProgress, nextProgress) => {
         if (!addons.sharkyMascot) return;
+        if (addonConfig.sharkyMascot?.milestoneReactions === false) return;
         const key = `${bookId}:${mark}`;
         if (previousProgress >= mark || nextProgress < mark || sharkyMilestonesRef.current.has(key)) return;
         sharkyMilestonesRef.current.add(key);
-        setSharkyMoodEvent(mark === 100
-            ? (lang === 'en' ? `Finished: ${bookName}` : `Terminado: ${bookName}`)
-            : (lang === 'en' ? `${mark}% reached in ${bookName}` : `${mark}% alcanzado en ${bookName}`));
-        setTimeout(() => setSharkyMoodEvent(null), 3600);
-        if (mark === 100) {
-            setSharkyCelebration({ title: lang === 'en' ? 'Book finished' : 'Libro terminado', bookName });
-        }
-    }, [addons.sharkyMascot, lang]);
+        emitSharkyEvent(mark === 100 ? 'bookFinished' : 'milestone', {
+            message: mark === 100
+                ? (lang === 'en' ? `Finished: ${bookName}` : `Terminado: ${bookName}`)
+                : (lang === 'en' ? `${mark}% reached in ${bookName}` : `${mark}% alcanzado en ${bookName}`),
+            duration: mark === 100 ? 5000 : 3600,
+            force: mark === 100,
+            celebration: mark === 100 ? { title: lang === 'en' ? 'Book finished' : 'Libro terminado', bookName } : null,
+        });
+    }, [addonConfig.sharkyMascot?.milestoneReactions, addons.sharkyMascot, emitSharkyEvent, lang]);
 
     const notifyBookFinished = useCallback((bookName, minutes) => {
         if (!addons.sharkyMascot) return;
@@ -573,8 +666,8 @@ export const SharkyProvider = ({
             detail: minutes > 0 ? (lang === 'en' ? `${minutes} min read` : `${minutes} min leídos`) : undefined,
         });
         setSharkyMoodEvent(lang === 'en' ? `Finished: ${bookName}` : `Terminado: ${bookName}`);
-        setTimeout(() => setSharkyMoodEvent(null), 4200);
-    }, [addons.sharkyMascot, lang]);
+        clearMoodEventAfter(4200);
+    }, [addons.sharkyMascot, clearMoodEventAfter, lang]);
 
     const notifySessionEnd = useCallback(({ bookName, sessionMins, startProgress, endProgress, progressDelta }) => {
         if (!addons.sharkyMascot) return;
@@ -585,8 +678,8 @@ export const SharkyProvider = ({
         const msg = fn?.({ bookName, sessionMins, endProgress, progressDelta });
         if (!msg) return;
         setSharkyMoodEvent(msg);
-        setTimeout(() => setSharkyMoodEvent(null), sessionMins >= 20 ? 5000 : 4000);
-    }, [addons.sharkyMascot, addonConfig.sharkyMascot, lang]);
+        clearMoodEventAfter(sessionMins >= 20 ? 5000 : 4000, msg);
+    }, [addons.sharkyMascot, addonConfig.sharkyMascot, clearMoodEventAfter, lang]);
 
     const notifyBookOpened = useCallback(({ bookName, progress, lastReadDate, isNew, hour }) => {
         if (!addons.sharkyMascot) return;
@@ -598,8 +691,8 @@ export const SharkyProvider = ({
         const msg = fn?.({ bookName, progress, daysSinceRead, isNew, hour });
         if (!msg) return;
         setSharkyMoodEvent(msg);
-        setTimeout(() => setSharkyMoodEvent(null), 3500);
-    }, [addons.sharkyMascot, addonConfig.sharkyMascot, lang]);
+        clearMoodEventAfter(3500, msg);
+    }, [addons.sharkyMascot, addonConfig.sharkyMascot, clearMoodEventAfter, lang]);
 
     const notifyStreakMilestone = useCallback((streak) => {
         if (!addons.sharkyMascot) return;
@@ -610,8 +703,8 @@ export const SharkyProvider = ({
         const l = lang === 'en' ? 'en' : 'es';
         const msg = l === 'es' ? `¡${hit} días seguidos leyendo! Racha épica.` : `${hit} days reading streak! Epic.`;
         setSharkyMoodEvent(msg);
-        setTimeout(() => setSharkyMoodEvent(null), 5000);
-    }, [addons.sharkyMascot, lang]);
+        clearMoodEventAfter(5000, msg);
+    }, [addons.sharkyMascot, clearMoodEventAfter, lang]);
 
     const notifyStreakLost = useCallback((streak) => {
         if (!addons.sharkyMascot) return;
@@ -620,8 +713,8 @@ export const SharkyProvider = ({
             ? `Racha de ${streak} días perdida... ¡No te rindas, puedes volver a empezar!`
             : `${streak}-day streak lost... Don't give up, start again!`;
         setSharkyMoodEvent(msg);
-        setTimeout(() => setSharkyMoodEvent(null), 5000);
-    }, [addons.sharkyMascot, lang]);
+        clearMoodEventAfter(5000, msg);
+    }, [addons.sharkyMascot, clearMoodEventAfter, lang]);
 
     const notifyNextInSeries = useCallback(({ seriesName, nextBookName }) => {
         if (!addons.sharkyMascot) return;
@@ -630,8 +723,8 @@ export const SharkyProvider = ({
             ? `¡Libro terminado! El siguiente en "${seriesName}" es "${nextBookName}".`
             : `Book finished! Next in "${seriesName}" is "${nextBookName}".`;
         setSharkyMoodEvent(msg);
-        setTimeout(() => setSharkyMoodEvent(null), 5000);
-    }, [addons.sharkyMascot, lang]);
+        clearMoodEventAfter(5000, msg);
+    }, [addons.sharkyMascot, clearMoodEventAfter, lang]);
 
     const notifyBookAnniversary = useCallback(({ bookName, dateStarted }) => {
         if (!addons.sharkyMascot || !dateStarted) return;
@@ -644,8 +737,93 @@ export const SharkyProvider = ({
         else if (daysSince === 30) msg = l === 'es' ? `Un mes desde que empezaste "${bookName}".` : `One month since you started "${bookName}".`;
         if (!msg) return;
         setSharkyMoodEvent(msg);
-        setTimeout(() => setSharkyMoodEvent(null), 4500);
-    }, [addons.sharkyMascot, lang]);
+        clearMoodEventAfter(4500, msg);
+    }, [addons.sharkyMascot, clearMoodEventAfter, lang]);
+
+    const notifyBookFinishedFormal = useCallback((bookName, minutes) => {
+        if (!addons.sharkyMascot) return;
+        emitSharkyEvent('bookFinished', {
+            message: lang === 'en' ? `Finished: ${bookName}` : `Terminado: ${bookName}`,
+            duration: 5000,
+            force: true,
+            celebration: {
+                title: lang === 'en' ? 'Book finished' : 'Libro terminado',
+                bookName,
+                detail: minutes > 0 ? (lang === 'en' ? `${minutes} min read` : `${minutes} min leídos`) : undefined,
+            },
+        });
+    }, [addons.sharkyMascot, emitSharkyEvent, lang]);
+
+    const notifySessionEndFormal = useCallback(({ bookName, sessionMins, startProgress, endProgress, progressDelta }) => {
+        if (!addons.sharkyMascot || addonConfig.sharkyMascot?.showSessionSummary === false) return;
+        const cfg = addonConfig.sharkyMascot || {};
+        const personality = cfg.personality || 'friendly';
+        const l = lang === 'en' ? 'en' : 'es';
+        const fn = SESSION_END[l]?.[personality];
+        const msg = fn?.({ bookName, sessionMins, endProgress, progressDelta });
+        if (!msg) return;
+        const safeMinutes = Math.max(0, Math.round(sessionMins || 0));
+        const safeDelta = Math.max(0, Math.round(progressDelta || 0));
+        emitSharkyEvent('sessionSummary', {
+            message: msg,
+            duration: safeMinutes >= 20 ? 5000 : 4000,
+            celebration: safeMinutes >= 10 || safeDelta >= 5 ? {
+                title: lang === 'en' ? 'Session summary' : 'Resumen de sesión',
+                bookName,
+                detail: `${safeMinutes} min · +${safeDelta}%`,
+            } : null,
+        });
+    }, [addonConfig.sharkyMascot, addons.sharkyMascot, emitSharkyEvent, lang]);
+
+    const notifyBookOpenedFormal = useCallback(({ bookName, progress, lastReadDate, isNew, hour }) => {
+        if (!addons.sharkyMascot || addonConfig.sharkyMascot?.showContextTips === false) return;
+        const cfg = addonConfig.sharkyMascot || {};
+        const personality = cfg.personality || 'friendly';
+        const l = lang === 'en' ? 'en' : 'es';
+        const daysSinceRead = lastReadDate ? Math.floor((Date.now() - lastReadDate) / 86400000) : 0;
+        const fn = BOOK_OPENED[l]?.[personality];
+        const msg = fn?.({ bookName, progress, daysSinceRead, isNew, hour });
+        if (!msg) return;
+        emitSharkyEvent('bookOpened', { message: msg, duration: 3200 });
+    }, [addonConfig.sharkyMascot, addons.sharkyMascot, emitSharkyEvent, lang]);
+
+    const notifyStreakMilestoneFormal = useCallback((streak) => {
+        if (!addons.sharkyMascot) return;
+        const milestones = [7, 14, 30, 60, 100, 365];
+        const hit = milestones.find(m => streak >= m && !streakMilestonesNotifiedRef.current.has(m));
+        if (!hit) return;
+        streakMilestonesNotifiedRef.current.add(hit);
+        const msg = lang === 'en' ? `${hit} days reading streak! Epic.` : `¡${hit} días seguidos leyendo! Racha épica.`;
+        emitSharkyEvent('streak', { message: msg, duration: 5000, force: true });
+    }, [addons.sharkyMascot, emitSharkyEvent, lang]);
+
+    const notifyStreakLostFormal = useCallback((streak) => {
+        if (!addons.sharkyMascot) return;
+        const msg = lang === 'en'
+            ? `${streak}-day streak lost... Don't give up, start again!`
+            : `Racha de ${streak} días perdida... puedes volver a empezar.`;
+        emitSharkyEvent('streakLost', { message: msg, duration: 5000, force: true });
+    }, [addons.sharkyMascot, emitSharkyEvent, lang]);
+
+    const notifyNextInSeriesFormal = useCallback(({ seriesName, nextBookName }) => {
+        if (!addons.sharkyMascot) return;
+        const msg = lang === 'en'
+            ? `Book finished. Next in "${seriesName}": "${nextBookName}".`
+            : `Libro terminado. Siguiente en "${seriesName}": "${nextBookName}".`;
+        emitSharkyEvent('bookFinished', { message: msg, duration: 5000, force: true });
+    }, [addons.sharkyMascot, emitSharkyEvent, lang]);
+
+    const notifyBookAnniversaryFormal = useCallback(({ bookName, dateStarted }) => {
+        if (!addons.sharkyMascot || !dateStarted) return;
+        const daysSince = Math.floor((Date.now() - dateStarted) / 86400000);
+        if (daysSince !== 365 && daysSince !== 180 && daysSince !== 30) return;
+        let msg = null;
+        if (daysSince === 365) msg = lang === 'en' ? `One year ago you opened "${bookName}".` : `Hace un año abriste "${bookName}".`;
+        else if (daysSince === 180) msg = lang === 'en' ? `6 months with "${bookName}". How is it going?` : `6 meses con "${bookName}". ¿Cómo va?`;
+        else if (daysSince === 30) msg = lang === 'en' ? `One month since you started "${bookName}".` : `Un mes desde que empezaste "${bookName}".`;
+        if (!msg) return;
+        emitSharkyEvent('anniversary', { message: msg, duration: 4500 });
+    }, [addons.sharkyMascot, emitSharkyEvent, lang]);
 
     // ── Cosméticos ──
     const unlockedCosmetics = useMemo(() => [
@@ -660,15 +838,26 @@ export const SharkyProvider = ({
     const sharkyConfig = addonConfig.sharkyMascot || {};
     const sharkyVisibility = sharkyConfig.visibility || 'always';
     const shouldShowSharky =
+        sharkyVisibility !== 'hidden' && (
         sharkyVisibility === 'always' ||
         (sharkyVisibility === 'library' && view === 'library') ||
         (sharkyVisibility === 'reader' && view === 'reader') ||
-        (sharkyVisibility === 'events' && !!sharkyMoodEvent);
+        (sharkyVisibility === 'events' && (!!sharkyMoodEvent || !!sharkyCelebration))
+        );
 
     useEffect(() => {
         if (!actionsRef) return;
-        actionsRef.current = { notifyMilestone, notifyBookFinished, notifySessionEnd, notifyBookOpened, notifyStreakMilestone, notifyBookAnniversary, notifyNextInSeries, notifyStreakLost };
-    }, [actionsRef, notifyMilestone, notifyBookFinished, notifySessionEnd, notifyBookOpened, notifyStreakMilestone, notifyBookAnniversary, notifyNextInSeries, notifyStreakLost]);
+        actionsRef.current = {
+            notifyMilestone,
+            notifyBookFinished: notifyBookFinishedFormal,
+            notifySessionEnd: notifySessionEndFormal,
+            notifyBookOpened: notifyBookOpenedFormal,
+            notifyStreakMilestone: notifyStreakMilestoneFormal,
+            notifyBookAnniversary: notifyBookAnniversaryFormal,
+            notifyNextInSeries: notifyNextInSeriesFormal,
+            notifyStreakLost: notifyStreakLostFormal,
+        };
+    }, [actionsRef, notifyMilestone, notifyBookFinishedFormal, notifySessionEndFormal, notifyBookOpenedFormal, notifyStreakMilestoneFormal, notifyBookAnniversaryFormal, notifyNextInSeriesFormal, notifyStreakLostFormal]);
 
     const value = {
         sharkyOpen, setSharkyOpen,
@@ -704,6 +893,7 @@ export const SharkyProvider = ({
         setSharkyAIProvider,
         setSharkyAIKey,
         setSharkyChat,
+        updateSharkyBehavior,
         testSharkyAI,
         addons,
         addonConfig,

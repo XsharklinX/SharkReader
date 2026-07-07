@@ -300,7 +300,7 @@ export const initDB = () => {
 };
 
 export const saveBookToDB = async (bookRecord) => {
-    if (!bookRecord?.id) return;
+    if (!bookRecord?.id) return false;
     try {
         const db = await initDB();
         if (Object.prototype.hasOwnProperty.call(bookRecord, 'file')) {
@@ -310,13 +310,15 @@ export const saveBookToDB = async (bookRecord) => {
         } else {
             await patchBookRecords(db, [bookRecord]);
         }
+        return true;
     } catch (error) {
         console.error('saveBookToDB', error);
+        return false;
     }
 };
 
 export const saveBooksToDB = async (bookRecords) => {
-    if (!Array.isArray(bookRecords)) return;
+    if (!Array.isArray(bookRecords)) return false;
     try {
         const db = await initDB();
         const hasFilePayloads = bookRecords.some(record => Object.prototype.hasOwnProperty.call(record || {}, 'file'));
@@ -327,8 +329,10 @@ export const saveBooksToDB = async (bookRecords) => {
         } else {
             await patchBookRecords(db, bookRecords);
         }
+        return true;
     } catch (error) {
         console.error('saveBooksToDB', error);
+        return false;
     }
 };
 
@@ -415,8 +419,10 @@ export const saveSetting = async (key, value) => {
     try {
         const db = await initDB();
         await putIntoStore(db, SETTINGS_STORE, { key, value });
+        return true;
     } catch (error) {
         console.error('saveSetting', error);
+        return false;
     }
 };
 
@@ -438,8 +444,10 @@ export const saveCache = async (key, value) => {
     try {
         const db = await initDB();
         await putIntoStore(db, CACHE_STORE, { key, value });
+        return true;
     } catch (error) {
         console.error('saveCache', error);
+        return false;
     }
 };
 
@@ -513,19 +521,35 @@ const clearStoresInDb = async (db, storeNames) => {
 };
 
 export const resetAllAppData = async () => {
+    let primaryCleared = true;
     try {
         const db = await initDB();
         await clearStoresInDb(db, [BOOKS_STORE, FILES_STORE, SETTINGS_STORE, CACHE_STORE, LEGACY_APPDATA_STORE]);
         try { db.close(); } catch (_) {}
     } catch (error) {
+        primaryCleared = false;
         console.error('[SharkReader] Error limpiando la base principal:', error);
     }
 
     _dbPromise = null;
-    await Promise.all([
+    const deleted = await Promise.all([
         deleteDatabaseByName(LEGACY_DB_NAME),
         deleteDatabaseByName('SharkLocationsCache'),
     ]);
+    return primaryCleared && deleted.every(Boolean);
+};
+
+export const resetAllAppDataVerified = async ({ retries = 1 } = {}) => {
+    let lastCounts = {};
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+        await resetAllAppData();
+        lastCounts = await getAppDataCounts();
+        const hasResidualData = Object.values(lastCounts).some(count => Number(count) > 0);
+        if (!hasResidualData) return { ok: true, counts: lastCounts, attempts: attempt + 1 };
+        console.warn('[SharkReader] Reset incompleto; reintentando limpieza.', { attempt: attempt + 1, counts: lastCounts });
+        _dbPromise = null;
+    }
+    return { ok: false, counts: lastCounts, attempts: retries + 1 };
 };
 
 export const fileToBase64 = (blob) => new Promise((resolve) => {

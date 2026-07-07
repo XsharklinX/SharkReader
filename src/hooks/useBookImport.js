@@ -30,6 +30,7 @@ export function useBookImport({
     const folderImportProcessingRef = useRef(false);
     const activeFolderImportIdRef = useRef(null);
     const cancelFolderImportRef = useRef(false);
+    const overlayDismissTimerRef = useRef(null);
 
     const resolveImportEntryToFile = useCallback(async (entry) => {
         if (!entry) return null;
@@ -240,13 +241,30 @@ export function useBookImport({
                     setFailedImportRetryQueue(next.failedFiles || []);
                     return next;
                 }
-                setTimeout(() => {
+                clearTimeout(overlayDismissTimerRef.current);
+                overlayDismissTimerRef.current = setTimeout(() => {
                     setFolderImport(current => current?.sessionId === next.sessionId ? null : current);
+                    overlayDismissTimerRef.current = null;
                 }, next.phase === 'done' ? 1400 : 1800);
             }
             return next;
         });
     }, []);
+
+    const clearImportRuntime = useCallback(() => {
+        cancelFolderImportRef.current = true;
+        folderImportQueueRef.current = [];
+        folderImportProcessingRef.current = false;
+        activeFolderImportIdRef.current = null;
+        clearTimeout(overlayDismissTimerRef.current);
+        overlayDismissTimerRef.current = null;
+    }, []);
+
+    const resetImportState = useCallback(() => {
+        clearImportRuntime();
+        setFolderImport(null);
+        setFailedImportRetryQueue([]);
+    }, [clearImportRuntime]);
 
     const pumpFolderImportQueue = useCallback(async () => {
         if (folderImportProcessingRef.current) return;
@@ -350,16 +368,19 @@ export function useBookImport({
         cancelFolderImportRef.current = true;
         folderImportQueueRef.current = [];
         setFolderImport(prev => prev && prev.sessionId === sessionId ? { ...prev, isCancelling: true } : prev);
+        finishFolderImportOverlay(prev => prev && prev.sessionId === sessionId ? {
+            ...prev,
+            phase: 'cancelled',
+            scanFinished: true,
+            isCancelling: false,
+        } : prev);
 
         if (window.electronAPI?.cancelFolderImport) {
-            await window.electronAPI.cancelFolderImport(sessionId);
-        }
-        if (!folderImportProcessingRef.current) {
-            finishFolderImportOverlay(prev => prev && prev.sessionId === sessionId ? {
-                ...prev,
-                phase: 'cancelled',
-                scanFinished: true,
-            } : prev);
+            try {
+                await window.electronAPI.cancelFolderImport(sessionId);
+            } catch (error) {
+                console.warn('[SharkReader] No se pudo cancelar la importacion en main process:', error);
+            }
         }
     }, [finishFolderImportOverlay]);
 
@@ -572,7 +593,7 @@ export function useBookImport({
     const openFolderPicker = async () => {
         if (window.electronAPI?.startFolderImport) {
             const session = await window.electronAPI.startFolderImport();
-            beginFolderImportSession(session);
+            if (session?.sessionId) beginFolderImportSession(session);
             return;
         }
         if (window.electronAPI?.pickBookFolder) {
@@ -617,6 +638,10 @@ export function useBookImport({
         setExternalCatalogState(prev => ({ ...prev, importingId: null }));
     }, [bookPayloadsToFiles, externalCatalogState.catalog, processFiles, setExternalCatalogState]);
 
+    useEffect(() => () => {
+        clearImportRuntime();
+    }, [clearImportRuntime]);
+
     return {
         isDragging,
         setIsDragging,
@@ -635,5 +660,6 @@ export function useBookImport({
         importExternalCatalogEntry,
         cancelActiveFolderImport,
         retryFailedFolderImports,
+        resetImportState,
     };
 }

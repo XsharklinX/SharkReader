@@ -1,8 +1,9 @@
-import { useEffect, startTransition } from 'react';
+import { useEffect, useRef, startTransition } from 'react';
 import { checkNewAchievements } from '../achievements';
 import { updateBookInList } from '../bookModel';
 import { saveAppData } from '../db';
 import { applyReadingMinute } from '../readingProgress';
+import { sounds } from '../sounds';
 
 export function useReadingSession({
     view,
@@ -29,6 +30,27 @@ export function useReadingSession({
     activeBookIdRef,
     sharkyActionsRef,
 }) {
+    const timeoutsRef = useRef(new Set());
+    const achievementToastTimerRef = useRef(null);
+
+    const schedule = (callback, delay) => {
+        const timer = setTimeout(() => {
+            timeoutsRef.current.delete(timer);
+            callback();
+        }, delay);
+        timeoutsRef.current.add(timer);
+        return timer;
+    };
+
+    useEffect(() => () => {
+        timeoutsRef.current.forEach(timer => clearTimeout(timer));
+        timeoutsRef.current.clear();
+        if (achievementToastTimerRef.current) {
+            clearTimeout(achievementToastTimerRef.current);
+            achievementToastTimerRef.current = null;
+        }
+    }, []);
+
     // Reading timer + streak + per-book minutes (fires every 60s while reading)
     useEffect(() => {
         let interval;
@@ -56,10 +78,16 @@ export function useReadingSession({
                     });
                 }
                 if (newStreak !== null) {
-                    setTimeout(() => sharkyActionsRef?.current?.notifyStreakMilestone(newStreak), 200);
+                    schedule(() => sharkyActionsRef?.current?.notifyStreakMilestone(newStreak), 200);
+                    if (addons.soundFeedback && addonConfig.soundFeedback?.streaks !== false) {
+                        sounds.streakMilestone(addonConfig.soundFeedback?.volume / 100 * 0.3);
+                    }
                 }
                 if (lostStreak !== null) {
-                    setTimeout(() => sharkyActionsRef?.current?.notifyStreakLost?.(lostStreak), 300);
+                    schedule(() => sharkyActionsRef?.current?.notifyStreakLost?.(lostStreak), 300);
+                    if (addons.soundFeedback && addonConfig.soundFeedback?.streaks !== false) {
+                        sounds.streakLost(addonConfig.soundFeedback?.volume / 100 * 0.2);
+                    }
                 }
             }, 60000);
         }
@@ -101,7 +129,7 @@ export function useReadingSession({
         });
 
         setAnniversaryInfo({ name: bk.name, days: daysSince, readingMinutes: bk.readingMinutes || 0 });
-        setTimeout(() => sharkyActionsRef?.current?.notifyBookAnniversary({ bookName: bk.name, dateStarted: bk.dateStarted }), 1500);
+        schedule(() => sharkyActionsRef?.current?.notifyBookAnniversary({ bookName: bk.name, dateStarted: bk.dateStarted }), 1500);
     }, [lastReadId, booksById]); // eslint-disable-line
 
     // Achievement check when reading state changes
@@ -116,7 +144,17 @@ export function useReadingSession({
         setAchievements(updated);
         saveAppData('achievements', updated);
         setAchievementToast(newOnes[0]);
-        setTimeout(() => setAchievementToast(null), 4000);
+        if (achievementToastTimerRef.current) {
+            clearTimeout(achievementToastTimerRef.current);
+            timeoutsRef.current.delete(achievementToastTimerRef.current);
+        }
+        if (addons.soundFeedback && addonConfig.soundFeedback?.achievements !== false) {
+            sounds.achievement(addonConfig.soundFeedback?.volume / 100 * 0.3);
+        }
+        achievementToastTimerRef.current = schedule(() => {
+            setAchievementToast(null);
+            achievementToastTimerRef.current = null;
+        }, 4000);
     }, [stats, books, vocabulary, addons]); // eslint-disable-line
 
     // Redirect away from achievements page if no profile

@@ -14,6 +14,12 @@ export class EpubReaderBoundary extends React.Component {
         console.error('[EpubReaderBoundary]', error, info);
     }
 
+    componentDidUpdate(prevProps) {
+        if (this.state.error && prevProps.resetKey !== this.props.resetKey) {
+            this.setState({ error: null });
+        }
+    }
+
     render() {
         if (!this.state.error) return this.props.children;
 

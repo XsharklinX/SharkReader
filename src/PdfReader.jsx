@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { Icons } from './icons';
@@ -64,6 +64,9 @@ const PdfReader = ({
     const pdfRef = useRef(null);
     const renderTaskRef = useRef(null);
     const renderTaskRef2 = useRef(null);
+    const selectionTimerRef = useRef(null);
+    const wheelTimeout = useRef(null);
+    const lastTrackedPageRef = useRef(null);
 
     const [totalPages, setTotalPages] = useState(0);
     const [currentPage, setCurrentPage] = useState(1);
@@ -83,6 +86,7 @@ const PdfReader = ({
     const [showSearch, setShowSearch] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState([]);
+    const [searchActiveIndex, setSearchActiveIndex] = useState(-1);
     const [isSearching, setIsSearching] = useState(false);
     const searchInputRef = useRef(null);
 
@@ -90,18 +94,33 @@ const PdfReader = ({
     const [highlightPopup, setHighlightPopup] = useState(null); // { x, y, text, rects, pageNum }
     const [showAnnotationsPanel, setShowAnnotationsPanel] = useState(false);
     const [annotationSearch, setAnnotationSearch] = useState('');
+    const [annotationKindFilter, setAnnotationKindFilter] = useState('all');
+    const [annotationColorFilter, setAnnotationColorFilter] = useState('all');
 
     // v3.4 — dark mode (invierte el canvas) + outline/TOC
     const [pdfDark, setPdfDark] = useState(false);
     const [outline, setOutline] = useState([]);
     const [showOutline, setShowOutline] = useState(false);
+    const [outlineSearch, setOutlineSearch] = useState('');
     const canvasFilter = pdfDark ? 'invert(1) hue-rotate(180deg)' : 'none';
+
+    useEffect(() => () => {
+        clearTimeout(focusHideTimer.current);
+        clearTimeout(selectionTimerRef.current);
+        clearTimeout(wheelTimeout.current);
+        try { renderTaskRef.current?.cancel?.(); } catch (_) {}
+        try { renderTaskRef2.current?.cancel?.(); } catch (_) {}
+        try { pdfRef.current?.destroy?.(); } catch (_) {}
+        renderTaskRef.current = null;
+        renderTaskRef2.current = null;
+        pdfRef.current = null;
+    }, []);
 
     // Exporta las anotaciones del PDF como Markdown (ordenadas por página).
     const exportPdfAnnotations = () => {
         const items = (bookData.bookmarks || []).map(b => {
             if (b.kind === 'highlight') { try { const d = JSON.parse(b.note); return { page: d.pageNum, kind: 'Subrayado', text: d.text }; } catch { return null; } }
-            return { page: parseInt(b.cfi) || 0, kind: b.kind === 'note' ? 'Nota' : 'Marcador', text: b.note || '' };
+            return { page: parseInt(b.cfi, 10) || 0, kind: b.kind === 'note' ? 'Nota' : 'Marcador', text: b.note || '' };
         }).filter(Boolean).sort((a, z) => a.page - z.page);
         if (!items.length) return;
         const today = new Date().toISOString().slice(0, 10);
@@ -150,6 +169,7 @@ const PdfReader = ({
 
     useEffect(() => {
         setScale(bookData.pdfScale || 1.2);
+        lastTrackedPageRef.current = null;
     }, [bookData.id, bookData.pdfScale]);
 
     useEffect(() => {
@@ -162,17 +182,22 @@ const PdfReader = ({
     // Load PDF
     useEffect(() => {
         let isMounted = true;
+        let loadingTask = null;
         setIsLoading(true);
         setPdfError(null);
+        setOutline([]);
+        try { pdfRef.current?.destroy?.(); } catch (_) {}
+        pdfRef.current = null;
         const load = async () => {
             try {
                 let data = bookData.file;
                 if (data instanceof Blob) data = await data.arrayBuffer();
-                const pdf = await pdfjsLib.getDocument({ data }).promise;
+                loadingTask = pdfjsLib.getDocument({ data });
+                const pdf = await loadingTask.promise;
                 if (!isMounted) return;
                 pdfRef.current = pdf;
                 setTotalPages(pdf.numPages);
-                const savedPage = bookData.lastLocation ? parseInt(bookData.lastLocation) || 1 : 1;
+                const savedPage = bookData.lastLocation ? parseInt(bookData.lastLocation, 10) || 1 : 1;
                 const startPage = Math.min(Math.max(1, savedPage), pdf.numPages);
                 setCurrentPage(startPage);
                 setInputPage(String(startPage));
@@ -203,7 +228,10 @@ const PdfReader = ({
             }
         };
         load();
-        return () => { isMounted = false; };
+        return () => {
+            isMounted = false;
+            try { loadingTask?.destroy?.(); } catch (_) {}
+        };
     }, [bookData.file]);
 
     // Helper: render a single page onto a canvas + text layer
@@ -264,13 +292,20 @@ const PdfReader = ({
                 canvasRef2.current.width = 0;
             }
             if (!isMounted) return;
-            const pct = Math.round((currentPage / totalPages) * 100);
-            updateLocationAndProgress(bookData.id, String(currentPage), pct);
-            onStatsUpdate && onStatsUpdate(1);
+            if (lastTrackedPageRef.current !== currentPage) {
+                lastTrackedPageRef.current = currentPage;
+                const pct = Math.round((currentPage / totalPages) * 100);
+                updateLocationAndProgress(bookData.id, String(currentPage), pct);
+                onStatsUpdate && onStatsUpdate(1);
+            }
             setInputPage(String(currentPage));
         };
         doRender();
-        return () => { isMounted = false; };
+        return () => {
+            isMounted = false;
+            try { renderTaskRef.current?.cancel?.(); } catch (_) {}
+            try { renderTaskRef2.current?.cancel?.(); } catch (_) {}
+        };
     }, [pdfRef.current, currentPage, scale, totalPages, isLoading, dualPage]);
 
     const goTo = useCallback((n) => {
@@ -295,7 +330,6 @@ const PdfReader = ({
         return () => document.removeEventListener('keydown', onKey);
     }, [prevPage, nextPage]);
 
-    const wheelTimeout = useRef(null);
     const handleWheel = (e) => {
         if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
@@ -312,29 +346,52 @@ const PdfReader = ({
 
     // Search across all pages
     const runSearch = async (query) => {
-        if (!pdfRef.current || !query.trim()) { setSearchResults([]); return; }
+        if (!pdfRef.current || !query.trim()) { setSearchResults([]); setSearchActiveIndex(-1); return; }
         setIsSearching(true);
         const results = [];
         try {
+            const needle = query.trim();
+            const lowerNeedle = needle.toLowerCase();
             for (let p = 1; p <= pdfRef.current.numPages; p++) {
                 const page = await pdfRef.current.getPage(p);
-                const tc = await page.getTextContent();
-                const pageText = tc.items.map(i => i.str).join(' ');
-                const q = query.toLowerCase();
-                const idx = pageText.toLowerCase().indexOf(q);
-                if (idx !== -1) {
-                    const start = Math.max(0, idx - 60);
-                    const excerpt = pageText.slice(start, idx + query.length + 60);
-                    results.push({ page: p, excerpt });
+                try {
+                    const tc = await page.getTextContent();
+                    const pageText = tc.items.map(i => i.str).join(' ');
+                    const lowerText = pageText.toLowerCase();
+                    let idx = lowerText.indexOf(lowerNeedle);
+                    while (idx !== -1 && results.length < 80) {
+                        const start = Math.max(0, idx - 60);
+                        const excerpt = pageText.slice(start, idx + needle.length + 60);
+                        results.push({ page: p, excerpt, index: idx });
+                        idx = lowerText.indexOf(lowerNeedle, idx + lowerNeedle.length);
+                    }
+                } finally {
+                    page.cleanup?.();
                 }
-                if (results.length >= 40) break;
+                if (results.length >= 80) break;
             }
         } catch (err) {
             console.warn('[SharkReader] PDF search failed:', err);
         }
         setSearchResults(results);
+        setSearchActiveIndex(results.length > 0 ? 0 : -1);
         setIsSearching(false);
     };
+
+    const jumpToSearchIndex = useCallback((index) => {
+        const result = searchResults[index];
+        if (!result) return;
+        setSearchActiveIndex(index);
+        goTo(result.page);
+    }, [goTo, searchResults]);
+
+    const moveSearchResult = useCallback((direction) => {
+        if (!searchResults.length) return;
+        const next = searchActiveIndex < 0
+            ? 0
+            : (searchActiveIndex + direction + searchResults.length) % searchResults.length;
+        jumpToSearchIndex(next);
+    }, [jumpToSearchIndex, searchActiveIndex, searchResults.length]);
 
     useEffect(() => {
         if (showSearch && searchInputRef.current) searchInputRef.current.focus();
@@ -358,7 +415,8 @@ const PdfReader = ({
     };
 
     const handleTextMouseUp = useCallback((e, pageNum, pageWrapEl) => {
-        setTimeout(() => {
+        clearTimeout(selectionTimerRef.current);
+        selectionTimerRef.current = setTimeout(() => {
             const sel = window.getSelection();
             if (!sel || sel.isCollapsed || !sel.rangeCount) return;
             const selText = sel.toString().trim();
@@ -376,6 +434,7 @@ const PdfReader = ({
             if (!rects.length) return;
             const last = clientRects[clientRects.length - 1];
             setHighlightPopup({ x: last.left + last.width / 2, y: last.bottom, text: selText, rects, pageNum });
+            selectionTimerRef.current = null;
         }, 10);
     }, []);
 
@@ -391,6 +450,40 @@ const PdfReader = ({
     const deleteHighlight = useCallback((hlId) => {
         toggleBookmark(bookData.id, hlId, null, true, { kind: 'highlight' });
     }, [bookData.id, toggleBookmark]);
+
+    const pdfAnnotations = useMemo(() => {
+        return (bookData.bookmarks || [])
+            .map(b => {
+                if (b.kind === 'highlight') {
+                    try { const data = JSON.parse(b.note); return { ...b, _page: data.pageNum, _data: data, _kind: 'highlight', _text: data.text || '' }; } catch { return null; }
+                }
+                const kind = b.kind === 'note' ? 'note' : 'bookmark';
+                return { ...b, _page: parseInt(b.cfi, 10) || 0, _kind: kind, _text: b.note || '' };
+            })
+            .filter(Boolean)
+            .sort((a, z) => a._page - z._page);
+    }, [bookData.bookmarks]);
+
+    const pdfAnnotationStats = useMemo(() => {
+        return pdfAnnotations.reduce((acc, item) => {
+            acc.total += 1;
+            acc[item._kind] = (acc[item._kind] || 0) + 1;
+            if (item._kind === 'highlight') acc.colors[item._data.color] = (acc.colors[item._data.color] || 0) + 1;
+            return acc;
+        }, { total: 0, highlight: 0, note: 0, bookmark: 0, colors: {} });
+    }, [pdfAnnotations]);
+
+    const filteredPdfAnnotations = useMemo(() => {
+        const q = annotationSearch.trim().toLowerCase();
+        return pdfAnnotations.filter(item => {
+            if (annotationKindFilter !== 'all' && item._kind !== annotationKindFilter) return false;
+            if (annotationColorFilter !== 'all' && item._kind === 'highlight' && item._data.color !== annotationColorFilter) return false;
+            if (annotationColorFilter !== 'all' && item._kind !== 'highlight') return false;
+            if (!q) return true;
+            return [item._text, item.note, item._kind, item._page].filter(Boolean)
+                .some(value => String(value).toLowerCase().includes(q));
+        });
+    }, [annotationColorFilter, annotationKindFilter, annotationSearch, pdfAnnotations]);
 
     const pct = totalPages > 0 ? Math.round((currentPage / totalPages) * 100) : 0;
     const estimatedRemainingText = (() => {
@@ -474,8 +567,8 @@ const PdfReader = ({
                             <div className="flex items-center gap-1 bg-black/20 rounded-xl px-2 py-1">
                                 <input type="text" value={inputPage}
                                     onChange={e => setInputPage(e.target.value)}
-                                    onKeyDown={e => { if (e.key === 'Enter') { const n = parseInt(inputPage); if (!isNaN(n)) goTo(n); } }}
-                                    onBlur={() => { const n = parseInt(inputPage); if (!isNaN(n)) goTo(n); else setInputPage(String(currentPage)); }}
+                                    onKeyDown={e => { if (e.key === 'Enter') { const n = parseInt(inputPage, 10); if (!isNaN(n)) goTo(n); } }}
+                                    onBlur={() => { const n = parseInt(inputPage, 10); if (!isNaN(n)) goTo(n); else setInputPage(String(currentPage)); }}
                                     className="w-10 bg-transparent text-center text-xs font-black outline-none" />
                                 <span className="text-xs opacity-60">/ {totalPages}</span>
                             </div>
@@ -608,11 +701,21 @@ const PdfReader = ({
                         <span className="font-black text-sm" style={{ color: 'var(--text-color)' }}>Índice</span>
                         <button onClick={() => setShowOutline(false)} className="p-1 opacity-50 hover:opacity-100 transition"><Icons.Close /></button>
                     </div>
+                    <div className="px-3 pt-2.5 pb-1 flex-shrink-0">
+                        <div className="flex items-center gap-1.5 bg-black/5 dark:bg-white/5 rounded-lg px-2 py-1.5">
+                            <Icons.Search className="w-3 h-3 opacity-40 flex-shrink-0" />
+                            <input type="text" value={outlineSearch} onChange={e => setOutlineSearch(e.target.value)}
+                                placeholder="Buscar en indice..." className="bg-transparent outline-none text-xs flex-1 min-w-0" style={{ color: 'var(--text-color)' }} />
+                            {outlineSearch && <button onClick={() => setOutlineSearch('')} className="opacity-40 hover:opacity-100 text-xs leading-none">×</button>}
+                        </div>
+                    </div>
                     <div className="flex-1 overflow-y-auto p-2" style={{ maxHeight: '460px', overscrollBehavior: 'contain' }}>
-                        {outline.map((it, i) => (
-                            <button key={i} onClick={() => { if (it.page) { goTo(it.page); setShowOutline(false); } }}
+                        {outline
+                            .filter(it => !outlineSearch.trim() || it.title?.toLowerCase().includes(outlineSearch.trim().toLowerCase()) || String(it.page || '').includes(outlineSearch.trim()))
+                            .map((it, i) => (
+                            <button key={`${it.title}-${i}`} onClick={() => { if (it.page) { goTo(it.page); setShowOutline(false); setOutlineSearch(''); } }}
                                 disabled={!it.page}
-                                className="w-full text-left rounded-lg px-2 py-1.5 text-xs hover:bg-black/5 dark:hover:bg-white/5 transition disabled:opacity-40 flex items-center gap-2"
+                                className={`w-full text-left rounded-lg px-2 py-1.5 text-xs hover:bg-black/5 dark:hover:bg-white/5 transition disabled:opacity-40 flex items-center gap-2 ${it.page === currentPage ? 'bg-[var(--highlight)]/15 font-black' : ''}`}
                                 style={{ paddingLeft: `${8 + it.depth * 14}px`, color: 'var(--text-color)' }}>
                                 <span className="flex-1 truncate opacity-80">{it.title}</span>
                                 {it.page && <span className="text-[10px] font-black opacity-40 flex-shrink-0">{it.page}</span>}
@@ -631,14 +734,24 @@ const PdfReader = ({
                             <Icons.Search />
                             <input ref={searchInputRef} type="text" placeholder="Buscar en el PDF..." value={searchQuery}
                                 onChange={e => setSearchQuery(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && runSearch(searchQuery)}
+                                onKeyDown={e => {
+                                    if (e.key !== 'Enter') return;
+                                    if (searchResults.length > 0) moveSearchResult(e.shiftKey ? -1 : 1);
+                                    else runSearch(searchQuery);
+                                }}
                                 className="flex-1 bg-transparent outline-none text-sm font-medium"
                                 style={{ color: 'var(--text-color)' }} />
                         </div>
                         <button onClick={() => runSearch(searchQuery)}
                             className="px-3 py-2 rounded-xl text-white text-xs font-black"
                             style={{ backgroundColor: 'var(--highlight)' }}>Ir</button>
-                        <button onClick={() => { setShowSearch(false); setSearchResults([]); setSearchQuery(''); }}
+                        {searchResults.length > 0 && (
+                            <div className="flex items-center gap-1">
+                                <button onClick={() => moveSearchResult(-1)} className="px-2 py-2 rounded-xl text-xs font-black bg-black/5 dark:bg-white/5 hover:opacity-80">↑</button>
+                                <button onClick={() => moveSearchResult(1)} className="px-2 py-2 rounded-xl text-xs font-black bg-black/5 dark:bg-white/5 hover:opacity-80">↓</button>
+                            </div>
+                        )}
+                        <button onClick={() => { setShowSearch(false); setSearchResults([]); setSearchQuery(''); setSearchActiveIndex(-1); }}
                             className="p-2 opacity-50 hover:opacity-100"><Icons.Close /></button>
                     </div>
                     <div className="flex-1 overflow-y-auto" style={{ maxHeight: '400px' }}>
@@ -657,11 +770,11 @@ const PdfReader = ({
                         {!isSearching && searchResults.length > 0 && (
                             <div className="p-2">
                                 <p className="text-[10px] font-black uppercase opacity-40 tracking-widest px-3 py-2">
-                                    {searchResults.length}{searchResults.length >= 40 ? '+' : ''} resultados
+                                    {searchActiveIndex >= 0 ? `${searchActiveIndex + 1} / ` : ''}{searchResults.length}{searchResults.length >= 80 ? '+' : ''} resultados
                                 </p>
                                 {searchResults.map((r, i) => (
-                                    <button key={i} onClick={() => { goTo(r.page); setShowSearch(false); }}
-                                        className="w-full text-left px-3 py-3 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition mb-1">
+                                    <button key={i} onClick={() => jumpToSearchIndex(i)}
+                                        className={`w-full text-left px-3 py-3 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition mb-1 ${searchActiveIndex === i ? 'ring-1 ring-[var(--highlight)]' : ''}`}>
                                         <span className="text-[10px] font-black opacity-40 block mb-1">Pág. {r.page}</span>
                                         <p className="text-xs leading-relaxed font-medium opacity-80 line-clamp-2"
                                             dangerouslySetInnerHTML={{
@@ -715,8 +828,37 @@ const PdfReader = ({
                             <button onClick={() => setShowAnnotationsPanel(false)} className="p-1 opacity-50 hover:opacity-100 transition"><Icons.Close /></button>
                         </div>
                     </div>
-                    {(bookData.bookmarks || []).length > 0 && (
-                        <div className="px-3 pt-2.5 pb-1 flex-shrink-0">
+                    {pdfAnnotationStats.total > 0 && (
+                        <div className="px-3 pt-2.5 pb-1 flex-shrink-0 space-y-2">
+                            <div className="grid grid-cols-4 gap-1">
+                                {[
+                                    ['all', 'Todo', pdfAnnotationStats.total],
+                                    ['highlight', 'Subr.', pdfAnnotationStats.highlight],
+                                    ['note', 'Notas', pdfAnnotationStats.note],
+                                    ['bookmark', 'Marks', pdfAnnotationStats.bookmark],
+                                ].map(([id, label, count]) => (
+                                    <button key={id} onClick={() => setAnnotationKindFilter(id)}
+                                        className={`rounded-lg px-2 py-1 text-[10px] font-black transition ${annotationKindFilter === id ? 'bg-[var(--highlight)] text-white' : 'bg-black/5 dark:bg-white/5 opacity-70 hover:opacity-100'}`}>
+                                        {label} {count || 0}
+                                    </button>
+                                ))}
+                            </div>
+                            {pdfAnnotationStats.highlight > 0 && (
+                                <div className="flex items-center gap-1">
+                                    <button onClick={() => setAnnotationColorFilter('all')}
+                                        className={`rounded-lg px-2 py-1 text-[10px] font-black transition ${annotationColorFilter === 'all' ? 'bg-[var(--highlight)] text-white' : 'bg-black/5 dark:bg-white/5 opacity-70 hover:opacity-100'}`}>
+                                        Colores
+                                    </button>
+                                    {Object.entries(HIGHLIGHT_COLORS).map(([id, bg]) => (
+                                        <button key={id} onClick={() => setAnnotationColorFilter(id)}
+                                            title={`${id} (${pdfAnnotationStats.colors[id] || 0})`}
+                                            className={`h-6 min-w-6 rounded-lg border px-1 text-[9px] font-black transition ${annotationColorFilter === id ? 'scale-105 border-white' : 'border-transparent opacity-80 hover:opacity-100'}`}
+                                            style={{ background: bg }}>
+                                            {pdfAnnotationStats.colors[id] || 0}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
                             <div className="flex items-center gap-1.5 bg-black/5 dark:bg-white/5 rounded-lg px-2 py-1.5">
                                 <Icons.Search className="w-3 h-3 opacity-40 flex-shrink-0" />
                                 <input type="text" value={annotationSearch} onChange={e => setAnnotationSearch(e.target.value)}
@@ -727,37 +869,27 @@ const PdfReader = ({
                     )}
                     <div className="flex-1 overflow-y-auto p-2" style={{ maxHeight: '420px', overscrollBehavior: 'contain' }}>
                         {(() => {
-                            const q = annotationSearch.trim().toLowerCase();
-                            const items = (bookData.bookmarks || [])
-                                .map(b => {
-                                    if (b.kind === 'highlight') {
-                                        try { const d = JSON.parse(b.note); return { ...b, _page: d.pageNum, _data: d }; } catch { return null; }
-                                    }
-                                    return { ...b, _page: parseInt(b.cfi) || 0 };
-                                })
-                                .filter(Boolean)
-                                .filter(b => !q || (b.kind === 'highlight' ? (b._data.text || '') : (b.note || '')).toLowerCase().includes(q))
-                                .sort((a, z) => a._page - z._page);
+                            const items = filteredPdfAnnotations;
                             if (!items.length) return (
-                                <p className="p-6 text-sm opacity-40 text-center font-medium">{q ? `Sin resultados para “${annotationSearch}”.` : 'Sin anotaciones todavía.'}</p>
+                                <p className="p-6 text-sm opacity-40 text-center font-medium">{annotationSearch.trim() ? `Sin resultados para "${annotationSearch}".` : 'Sin anotaciones todavia.'}</p>
                             );
                             return items.map((b, i) => (
                                 <div key={i} className="rounded-xl px-3 py-2.5 mb-1 group hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
                                     onClick={() => goTo(b._page)}>
                                     <div className="flex items-start gap-2">
-                                        {b.kind === 'highlight' && (
+                                        {b._kind === 'highlight' && (
                                             <span className="mt-0.5 w-3 h-3 rounded-sm flex-shrink-0"
                                                 style={{ background: HIGHLIGHT_COLORS[b._data.color] || HIGHLIGHT_COLORS.yellow }} />
                                         )}
-                                        {b.kind === 'note' && <span className="text-sm flex-shrink-0">📝</span>}
-                                        {!b.kind && <span className="text-sm flex-shrink-0">🔖</span>}
+                                        {b._kind === 'note' && <span className="text-sm flex-shrink-0">N</span>}
+                                        {b._kind === 'bookmark' && <span className="text-sm flex-shrink-0">B</span>}
                                         <div className="flex-1 min-w-0">
                                             <span className="text-[10px] font-black opacity-40 block mb-0.5">Pág. {b._page}</span>
                                             <p className="text-xs font-medium opacity-80 line-clamp-2">
-                                                {b.kind === 'highlight' ? b._data.text : (b.note || `Página ${b._page}`)}
+                                                {b._kind === 'highlight' ? b._data.text : (b.note || `Pagina ${b._page}`)}
                                             </p>
                                         </div>
-                                        {b.kind === 'highlight' && (
+                                        {b._kind === 'highlight' && (
                                             <button onClick={(e) => { e.stopPropagation(); deleteHighlight(b._data.id); }}
                                                 className="opacity-0 group-hover:opacity-40 hover:!opacity-100 p-1 transition flex-shrink-0">
                                                 <Icons.Close />

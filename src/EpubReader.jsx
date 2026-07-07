@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import ePub from 'epubjs';
 import { Icons } from './icons';
 import { getCachedLocations, setCachedLocations } from './locationsCache';
-import EpubReaderSettings from './EpubReaderSettings';
+import EpubReaderSettings, { READING_PRESETS } from './EpubReaderSettings';
 
 function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme }) {
     const fontStack =
@@ -23,11 +23,21 @@ function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg
     if (hyphenation) pExtras.push('hyphens:auto !important;-webkit-hyphens:auto !important');
     if (paragraphSpacing > 0) pExtras.push(`margin-bottom:${paragraphSpacing}em !important`);
     const lines = [
+        `@font-face { font-family:"OpenDyslexic"; src:url("https://cdn.jsdelivr.net/npm/opendyslexic@1.0.3/OpenDyslexic-Regular.otf") format("opentype"); font-weight:400; font-style:normal; font-display:swap; }`,
         `html { font-size:${fontSize}% !important; }`,
-        `body { font-size:1rem !important; padding-left:${marginPx}px !important; padding-right:${marginPx}px !important; ${bgRule} }`,
+        `html,body { box-sizing:border-box !important; }`,
+        `*,*::before,*::after { box-sizing:inherit !important; }`,
+        `body { font-size:1rem !important; margin:0 !important; padding-left:${marginPx}px !important; padding-right:${marginPx}px !important; ${bgRule} }`,
         `html,body,p,span,div,li,blockquote,td,th,a,em,strong,h1,h2,h3,h4,h5,h6,cite,q,small { font-family:${fontStack} !important; }`,
         `p,li,blockquote,div { line-height:${lineHeight} !important; font-kerning:normal !important; font-feature-settings:"kern" 1,"liga" 1,"calt" 1 !important; ${pExtras.join(' ')} }`,
     ];
+    if (fontFamily === 'OpenDyslexic') {
+        lines.push(
+            `body { word-spacing:0.12em !important; }`,
+            `p,li,blockquote { text-align:left !important; letter-spacing:${Math.max(letterSpacing || 0, 0.055)}em !important; margin-bottom:${Math.max(paragraphSpacing || 0, 0.45)}em !important; }`,
+            `p,li,blockquote,div,span { text-rendering:optimizeLegibility !important; }`,
+        );
+    }
     // Override hardcoded EPUB backgrounds/colors that break dark and sepia themes
     if (theme === 'dark') {
         lines.push(
@@ -73,6 +83,16 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const autoScrollRafRef = useRef(null);         // rAF id for auto-scroll
         const autoScrollLastTsRef = useRef(0);
         const currentPercentRef = useRef(bookData.progress || 0);
+        const readerTimeoutsRef = useRef(new Set());
+
+        const scheduleReaderTimeout = useCallback((callback, delay) => {
+            const timer = setTimeout(() => {
+                readerTimeoutsRef.current.delete(timer);
+                callback();
+            }, delay);
+            readerTimeoutsRef.current.add(timer);
+            return timer;
+        }, []);
 
         const _bookFontKey = `sr_font_${bookData.id}`;
         const _savedFont = (() => { try { const r = localStorage.getItem(_bookFontKey); return r ? JSON.parse(r) : null; } catch { return null; } })();
@@ -93,6 +113,8 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const [toc, setToc] = useState([]);
         const [copiedAnnotations, setCopiedAnnotations] = useState(false);
         const [annotationSearch, setAnnotationSearch] = useState('');
+        const [annotationKindFilter, setAnnotationKindFilter] = useState('all');
+        const [annotationColorFilter, setAnnotationColorFilter] = useState('all');
         const [showToolbar, setShowToolbar] = useState(true);
         const [showToc, setShowToc] = useState(false);
         const [showFontMenu, setShowFontMenu] = useState(false);
@@ -105,6 +127,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const [showSearch, setShowSearch] = useState(false);
         const [searchQuery, setSearchQuery] = useState('');
         const [searchResults, setSearchResults] = useState([]);
+        const [searchActiveIndex, setSearchActiveIndex] = useState(-1);
         const [isSearching, setIsSearching] = useState(false);
         const searchInputRef = useRef(null);
         const [showAnnotationsPanel, setShowAnnotationsPanel] = useState(false);
@@ -137,6 +160,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const chapterHintTimerRef = useRef(null);
         const [tocCollapsed, setTocCollapsed] = useState(false);
         const [tocSearch, setTocSearch] = useState('');
+        const [tocActiveHref, setTocActiveHref] = useState('');
 
         // Typography — defaults are all "off" so we never override the book's own CSS
         const [textJustify, setTextJustify] = useState(_savedFont?.textJustify ?? false);
@@ -180,9 +204,49 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             });
         }, [bookData.bookmarks]);
 
+        const annotationStats = useMemo(() => {
+            return currentAnnotations.reduce((acc, item) => {
+                acc.total += 1;
+                acc[item.kind] = (acc[item.kind] || 0) + 1;
+                if (item.kind === 'highlight') {
+                    acc.colors[item.color] = (acc.colors[item.color] || 0) + 1;
+                }
+                return acc;
+            }, { total: 0, highlight: 0, note: 0, bookmark: 0, colors: {} });
+        }, [currentAnnotations]);
 
-        // Cleanup chapter hint timer on unmount
-        useEffect(() => () => clearTimeout(chapterHintTimerRef.current), []);
+        const filteredAnnotations = useMemo(() => {
+            const q = annotationSearch.trim().toLowerCase();
+            return currentAnnotations.filter(entry => {
+                if (annotationKindFilter !== 'all' && entry.kind !== annotationKindFilter) return false;
+                if (annotationColorFilter !== 'all' && entry.color !== annotationColorFilter) return false;
+                if (!q) return true;
+                const label = entry.kind === 'highlight'
+                    ? (HIGHLIGHT_PRESETS[entry.color]?.label || '')
+                    : entry.kind === 'note' ? 'nota' : 'marcador';
+                return [entry.preview, entry.note, label, entry.date]
+                    .filter(Boolean)
+                    .some(value => String(value).toLowerCase().includes(q));
+            });
+        }, [annotationColorFilter, annotationKindFilter, annotationSearch, currentAnnotations]);
+
+        const flattenTocItems = useCallback((items = [], depth = 0, output = []) => {
+            items.forEach(item => {
+                output.push({ ...item, depth });
+                if (item.subitems?.length) flattenTocItems(item.subitems, depth + 1, output);
+            });
+            return output;
+        }, []);
+
+        const flatToc = useMemo(() => flattenTocItems(toc), [flattenTocItems, toc]);
+
+
+        // Cleanup reader timers on unmount
+        useEffect(() => () => {
+            clearTimeout(chapterHintTimerRef.current);
+            readerTimeoutsRef.current.forEach(timer => clearTimeout(timer));
+            readerTimeoutsRef.current.clear();
+        }, []);
 
         // Block page-turn wheel while any panel/overlay is open
         const anyPanelOpenRef = useRef(false);
@@ -227,17 +291,19 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         useEffect(() => {
             if (!dyslexiaAddon) return;
             if (dyslexiaModeActive && !dyslexiaPreviousRef.current) {
-                dyslexiaPreviousRef.current = { fontFamily, lineHeight, letterSpacing, paragraphSpacing, textJustify };
+                dyslexiaPreviousRef.current = { fontFamily, fontSize, lineHeight, letterSpacing, paragraphSpacing, textJustify };
                 setFontFamily('OpenDyslexic');
+                setFontSize(prev => Math.max(prev, 118));
                 setLineHeight(prev => Math.max(prev, 1.8));
-                setLetterSpacing(prev => Math.max(prev, 0.05));
-                setParagraphSpacing(prev => Math.max(prev, 0.35));
+                setLetterSpacing(prev => Math.max(prev, 0.055));
+                setParagraphSpacing(prev => Math.max(prev, 0.45));
                 setTextJustify(false);
             }
             if (!dyslexiaModeActive && dyslexiaPreviousRef.current) {
                 const previous = dyslexiaPreviousRef.current;
                 dyslexiaPreviousRef.current = null;
                 setFontFamily(previous.fontFamily);
+                setFontSize(previous.fontSize);
                 setLineHeight(previous.lineHeight);
                 setLetterSpacing(previous.letterSpacing);
                 setParagraphSpacing(previous.paragraphSpacing);
@@ -284,13 +350,13 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             const exitMs = pt === 'slide' ? 150 : pt === 'rise' ? 140 : pt === 'curl' ? 180 : pt === 'cover' ? 80 : 130;
             const enterMs = pt === 'zoom' ? 240 : pt === 'fade' ? 220 : pt === 'curl' ? 300 : pt === 'cover' ? 320 : 260;
             el.classList.add(exitClass);
-            setTimeout(() => {
+            scheduleReaderTimeout(() => {
                 action();
                 el.classList.remove(exitClass);
                 el.classList.add(enterClass);
-                setTimeout(() => el.classList.remove(enterClass), enterMs);
+                scheduleReaderTimeout(() => el.classList.remove(enterClass), enterMs);
             }, exitMs);
-        }, []);
+        }, [scheduleReaderTimeout]);
 
         const prevPage = useCallback(() => {
             if (renditionRef.current && readFlow === 'paginated') {
@@ -509,7 +575,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                             'cursor': 'help',
                                         });
                                         // Tooltip nativo en el elemento de anotación creado por epub.js
-                                        setTimeout(() => {
+                                        scheduleReaderTimeout(() => {
                                             try {
                                                 rendition.getContents().forEach(c => {
                                                     c.document?.querySelectorAll('.shark-note-mark')?.forEach(el => { if (!el.getAttribute('title')) el.setAttribute('title', noteText); });
@@ -538,7 +604,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     }
                     // Restaurar scroll exacto en modo continuo
                     if (savedScrollPct !== null && readFlow === 'scrolled-doc') {
-                        setTimeout(() => {
+                        scheduleReaderTimeout(() => {
                             if (viewerRef.current) {
                                 const el = viewerRef.current;
                                 el.scrollTop = savedScrollPct * (el.scrollHeight - el.clientHeight);
@@ -601,6 +667,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             }
                             // O(1) chapter lookup via pre-built Map (was O(n) recursive traversal)
                             const spineHref = spineItem?.href?.split('#')[0];
+                            if (spineHref) setTocActiveHref(spineHref);
                             const ch = spineHref ? tocMapRef.current.get(spineHref) : null;
                             if (ch) {
                                 setCurrentChapterTitle(ch);
@@ -674,7 +741,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     bookRef.current = null;
                 }
             };
-        }, [bookData.file, readFlow, readLayout]);
+        }, [bookData.file, readFlow, readLayout, scheduleReaderTimeout]);
 
         useEffect(() => {
             if (!isReady || !renditionRef.current) return;
@@ -753,6 +820,18 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     console.warn('[SharkReader] force re-display fallback failed:', e);
                 }
             }
+
+            if (readFlow === 'paginated') {
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        try {
+                            renditionRef.current?.resize?.();
+                        } catch (e) {
+                            console.warn('[SharkReader] paginated style relayout failed:', e);
+                        }
+                    });
+                });
+            }
         }, [fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme, isReady, readFlow]);
 
         useEffect(() => {
@@ -778,7 +857,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 if (readFlow !== 'paginated') return;
                 if (anyPanelOpenRef.current) return;
                 if (wheelTimeout) return;
-                wheelTimeout = setTimeout(() => { wheelTimeout = null; }, 300);
+                wheelTimeout = scheduleReaderTimeout(() => { wheelTimeout = null; }, 300);
                 const delta = e.deltaY || (e.detail && e.detail.deltaY);
                 if (delta > 0) nextPage(); else if (delta < 0) prevPage();
             };
@@ -809,7 +888,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 window.removeEventListener('epub-wheel', handleUniversalWheel);
                 if (wheelTimeout) clearTimeout(wheelTimeout);
             };
-        }, [readFlow, prevPage, nextPage]);
+        }, [readFlow, prevPage, nextPage, scheduleReaderTimeout]);
 
         // Auto-scroll — requestAnimationFrame (smooth 60fps, replaces jittery setInterval)
         useEffect(() => {
@@ -839,7 +918,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
         const SEARCH_LIMIT = 50;
         const runSearch = async (query) => {
-            if (!bookRef.current || !query.trim()) { setSearchResults([]); return; }
+            if (!bookRef.current || !query.trim()) { setSearchResults([]); setSearchActiveIndex(-1); return; }
             setIsSearching(true);
             try {
                 const book = bookRef.current;
@@ -856,14 +935,36 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     allResults._truncated = true;
                 }
                 setSearchResults(allResults);
+                setSearchActiveIndex(allResults.length > 0 ? 0 : -1);
             } catch (e) {
                 setSearchResults([]);
+                setSearchActiveIndex(-1);
             }
             setIsSearching(false);
         };
 
+        const jumpToSearchIndex = useCallback((index) => {
+            const result = searchResults[index];
+            if (!result?.cfi || !renditionRef.current) return;
+            setSearchActiveIndex(index);
+            renditionRef.current.display(result.cfi).catch(() => {});
+        }, [searchResults]);
+
+        const moveSearchResult = useCallback((direction) => {
+            if (!searchResults.length) return;
+            const next = searchActiveIndex < 0
+                ? 0
+                : (searchActiveIndex + direction + searchResults.length) % searchResults.length;
+            jumpToSearchIndex(next);
+        }, [jumpToSearchIndex, searchActiveIndex, searchResults.length]);
+
         const handleSearchKey = (e) => {
-            if (e.key === 'Enter') runSearch(searchQuery);
+            if (e.key !== 'Enter') return;
+            if (searchResults.length > 0) {
+                moveSearchResult(e.shiftKey ? -1 : 1);
+            } else {
+                runSearch(searchQuery);
+            }
         };
 
         const jumpToResult = (cfi) => {
@@ -981,7 +1082,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             try {
                 await navigator.clipboard.writeText(buildObsidianMarkdown());
                 setCopiedAnnotations(true);
-                setTimeout(() => setCopiedAnnotations(false), 1500);
+                scheduleReaderTimeout(() => setCopiedAnnotations(false), 1500);
             } catch (_) {}
         };
 
@@ -997,7 +1098,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 setPendingBookmarkType(type);
                 setBookmarkNote(type === 'note' ? '' : `Página ~${currentPercent}%`);
                 setPendingBookmarkCfi(cfi);
-                setTimeout(() => bookmarkNoteInputRef.current && bookmarkNoteInputRef.current.focus(), 50);
+                scheduleReaderTimeout(() => bookmarkNoteInputRef.current && bookmarkNoteInputRef.current.focus(), 50);
             }
         };
 
@@ -1018,6 +1119,21 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 setPendingBookmarkType('bookmark');
             }
         };
+
+        const applyReadingPreset = useCallback((presetId) => {
+            const preset = READING_PRESETS.find(item => item.id === presetId);
+            if (!preset) return;
+            const values = preset.values || {};
+            if (values.fontFamily) setFontFamily(values.fontFamily);
+            if (values.lineHeight != null) setLineHeight(values.lineHeight);
+            if (values.pageMargins != null) setPageMargins(values.pageMargins);
+            if (values.letterSpacing != null) setLetterSpacing(values.letterSpacing);
+            if (values.paragraphSpacing != null) setParagraphSpacing(values.paragraphSpacing);
+            if (values.textJustify != null) setTextJustify(values.textJustify);
+            if (values.firstLineIndent != null) setFirstLineIndent(values.firstLineIndent);
+            if (values.hyphenation != null) setHyphenation(values.hyphenation);
+            if (values.columnWidth) setColumnWidth(values.columnWidth);
+        }, []);
 
         const toggleFullscreen = () => {
             if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => { });
@@ -1063,6 +1179,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 letterSpacing={letterSpacing} setLetterSpacing={setLetterSpacing}
                 paragraphSpacing={paragraphSpacing} setParagraphSpacing={setParagraphSpacing}
                 columnWidth={columnWidth} setColumnWidth={setColumnWidth}
+                applyReadingPreset={applyReadingPreset}
             />
         );
 
@@ -1096,9 +1213,9 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             return (
                 <button
                     onClick={onToggleDyslexiaMode}
-                    className={`p-1.5 rounded-xl transition text-xs font-black ${dyslexiaModeActive ? 'bg-cyan-400 text-slate-950' : 'hover:bg-white/15'}`}
+                    className={`px-2 py-1.5 rounded-xl transition text-xs font-black ${dyslexiaModeActive ? 'bg-cyan-400 text-slate-950' : 'hover:bg-white/15'}`}
                     title={lang === 'en' ? 'Toggle dyslexia mode' : 'Activar/desactivar modo dislexia'}>
-                    <span style={{ fontFamily: 'serif', letterSpacing: '-0.03em' }}>Aa</span>
+                    <span style={{ fontFamily: 'OpenDyslexic, Arial, sans-serif', letterSpacing: '0.02em' }}>Dx</span>
                 </button>
             );
         };
@@ -1106,6 +1223,8 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const TocItem = ({ item, depth = 0 }) => {
             const [open, setOpen] = useState(depth === 0);
             const hasSubs = item.subitems && item.subitems.length > 0;
+            const hrefKey = item.href?.split('#')[0] || '';
+            const isActive = hrefKey && hrefKey === tocActiveHref;
             return (
                 <div>
                     <div className="flex items-center" style={{ paddingLeft: `${depth * 12}px` }}>
@@ -1116,7 +1235,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             </button>
                         )}
                         <button onClick={() => jumpToToc(item.href)}
-                            className={`flex-1 text-left text-xs py-1.5 px-2 hover:bg-[var(--highlight)]/20 font-medium rounded-lg transition truncate ${!hasSubs ? 'ml-5' : ''}`}>
+                            className={`flex-1 text-left text-xs py-1.5 px-2 hover:bg-[var(--highlight)]/20 rounded-lg transition truncate ${!hasSubs ? 'ml-5' : ''} ${isActive ? 'bg-[var(--highlight)] text-white font-black' : 'font-medium'}`}>
                             {item.label}
                         </button>
                     </div>
@@ -1424,6 +1543,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                         style={{
                             maxWidth: maxWidthStr,
                             margin: '0 auto',
+                            boxSizing: 'border-box',
                             overflowY: readFlow === 'scrolled-doc' ? 'auto' : 'hidden',
                             paddingLeft: `${pageMargins}px`,
                             paddingRight: `${pageMargins}px`,
@@ -1463,18 +1583,49 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                         <div className="flex items-center justify-between gap-2 p-3 border-b" style={{ borderColor: 'var(--border-color)' }}>
                             <div>
                                 <p className="text-[10px] font-black uppercase tracking-[0.22em] opacity-45">?ndice</p>
-                                <p className="text-sm font-black">{toc.length} secciones</p>
+                                <p className="text-sm font-black">{flatToc.length} secciones</p>
                             </div>
                             <button onClick={() => setShowToc(false)} className="p-2 opacity-50 hover:opacity-100 transition">
                                 <Icons.Close />
                             </button>
                         </div>
+                        {flatToc.length > 0 && (
+                            <div className="px-3 pt-2.5 pb-1">
+                                <div className="flex items-center gap-1.5 bg-black/5 dark:bg-white/5 rounded-lg px-2 py-1.5">
+                                    <Icons.Search className="w-3 h-3 opacity-40 flex-shrink-0" />
+                                    <input
+                                        type="text"
+                                        value={tocSearch}
+                                        onChange={e => setTocSearch(e.target.value)}
+                                        placeholder="Buscar capitulo..."
+                                        className="bg-transparent outline-none text-xs flex-1 min-w-0"
+                                        style={{ color: 'var(--text-color)' }}
+                                    />
+                                    {tocSearch && <button onClick={() => setTocSearch('')} className="opacity-40 hover:opacity-100 text-xs leading-none">×</button>}
+                                </div>
+                            </div>
+                        )}
                         <div className="flex-1 overflow-y-auto p-3 space-y-1">
                             {toc.length === 0 ? (
                                 <div className="rounded-2xl border border-dashed border-black/10 dark:border-white/10 p-4 text-sm opacity-60">
                                     No hay ?ndice disponible en este libro.
                                 </div>
-                            ) : toc.map((item, i) => <TocItem key={i} item={item} depth={0} />)}
+                            ) : tocSearch.trim() ? (() => {
+                                const q = tocSearch.trim().toLowerCase();
+                                const results = flatToc.filter(item => item.label?.toLowerCase().includes(q));
+                                if (!results.length) return <div className="rounded-2xl border border-dashed border-black/10 dark:border-white/10 p-4 text-sm opacity-50">Sin resultados.</div>;
+                                return results.map((item, i) => {
+                                    const hrefKey = item.href?.split('#')[0] || '';
+                                    const isActive = hrefKey && hrefKey === tocActiveHref;
+                                    return (
+                                        <button key={`${item.href}-${i}`} onClick={() => { jumpToToc(item.href); setTocSearch(''); }}
+                                            className={`w-full text-left text-xs py-2 px-2 rounded-lg transition truncate ${isActive ? 'bg-[var(--highlight)] text-white font-black' : 'hover:bg-[var(--highlight)]/20 font-medium'}`}
+                                            style={{ paddingLeft: `${8 + item.depth * 14}px` }}>
+                                            {item.label}
+                                        </button>
+                                    );
+                                });
+                            })() : toc.map((item, i) => <TocItem key={i} item={item} depth={0} />)}
                         </div>
                     </div>
                 )}
@@ -1490,7 +1641,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                         <div className="flex items-center justify-between gap-2 p-3 border-b" style={{ borderColor: 'var(--border-color)' }}>
                             <div>
                                 <p className="text-[10px] font-black uppercase tracking-[0.22em] opacity-45">Anotaciones</p>
-                                <p className="text-sm font-black">{currentAnnotations.length} en este libro</p>
+                                <p className="text-sm font-black">{annotationStats.total} en este libro</p>
                             </div>
                             <div className="flex items-center gap-1">
                                 {currentAnnotations.length > 0 && (
@@ -1512,7 +1663,36 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             </div>
                         </div>
                         {currentAnnotations.length > 0 && (
-                            <div className="px-3 pt-2.5 pb-1">
+                            <div className="px-3 pt-2.5 pb-1 space-y-2">
+                                <div className="grid grid-cols-4 gap-1">
+                                    {[
+                                        ['all', 'Todo', annotationStats.total],
+                                        ['highlight', 'Subr.', annotationStats.highlight],
+                                        ['note', 'Notas', annotationStats.note],
+                                        ['bookmark', 'Marks', annotationStats.bookmark],
+                                    ].map(([id, label, count]) => (
+                                        <button key={id} onClick={() => setAnnotationKindFilter(id)}
+                                            className={`rounded-lg px-2 py-1 text-[10px] font-black transition ${annotationKindFilter === id ? 'bg-[var(--highlight)] text-white' : 'bg-black/5 dark:bg-white/5 opacity-70 hover:opacity-100'}`}>
+                                            {label} {count || 0}
+                                        </button>
+                                    ))}
+                                </div>
+                                {annotationStats.highlight > 0 && (
+                                    <div className="flex items-center gap-1">
+                                        <button onClick={() => setAnnotationColorFilter('all')}
+                                            className={`rounded-lg px-2 py-1 text-[10px] font-black transition ${annotationColorFilter === 'all' ? 'bg-[var(--highlight)] text-white' : 'bg-black/5 dark:bg-white/5 opacity-70 hover:opacity-100'}`}>
+                                            Colores
+                                        </button>
+                                        {Object.entries(HIGHLIGHT_PRESETS).map(([id, preset]) => (
+                                            <button key={id} onClick={() => setAnnotationColorFilter(id)}
+                                                title={`${preset.label} (${annotationStats.colors[id] || 0})`}
+                                                className={`h-6 min-w-6 rounded-lg border px-1 text-[9px] font-black transition ${annotationColorFilter === id ? 'scale-105 border-white' : 'border-transparent opacity-80 hover:opacity-100'}`}
+                                                style={{ backgroundColor: preset.fill.replace(/0\.\d+\)/, '0.8)') }}>
+                                                {annotationStats.colors[id] || 0}
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
                                 <div className="flex items-center gap-1.5 bg-black/5 dark:bg-white/5 rounded-lg px-2 py-1.5">
                                     <Icons.Search className="w-3 h-3 opacity-40 flex-shrink-0" />
                                     <input
@@ -1533,10 +1713,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                     Todavía no hay anotaciones en este libro.
                                 </div>
                             ) : (() => {
-                                const q = annotationSearch.trim().toLowerCase();
-                                const filtered = q
-                                    ? currentAnnotations.filter(e => (e.preview || '').toLowerCase().includes(q) || (e.kind === 'highlight' ? (HIGHLIGHT_PRESETS[e.color]?.label || '') : e.kind === 'note' ? 'nota' : 'marcador').toLowerCase().includes(q))
-                                    : currentAnnotations;
+                                const filtered = filteredAnnotations;
                                 if (!filtered.length) {
                                     return <div className="rounded-2xl border border-dashed border-black/10 dark:border-white/10 p-4 text-sm opacity-50">Sin resultados para “{annotationSearch}”.</div>;
                                 }
@@ -1627,7 +1804,13 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                 style={{ backgroundColor: 'var(--highlight)' }}>
                                 Ir
                             </button>
-                            <button onClick={() => { setShowSearch(false); setSearchResults([]); setSearchQuery(''); }}
+                            {searchResults.length > 0 && (
+                                <div className="flex items-center gap-1">
+                                    <button onClick={() => moveSearchResult(-1)} className="px-2 py-2 rounded-xl text-xs font-black bg-black/5 dark:bg-white/5 hover:opacity-80">↑</button>
+                                    <button onClick={() => moveSearchResult(1)} className="px-2 py-2 rounded-xl text-xs font-black bg-black/5 dark:bg-white/5 hover:opacity-80">↓</button>
+                                </div>
+                            )}
+                            <button onClick={() => { setShowSearch(false); setSearchResults([]); setSearchQuery(''); setSearchActiveIndex(-1); }}
                                 className="p-2 opacity-50 hover:opacity-100 transition">
                                 <Icons.Close />
                             </button>
@@ -1649,14 +1832,14 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             {!isSearching && searchResults.length > 0 && (
                                 <div className="p-2">
                                     <p className="text-[10px] font-black uppercase opacity-40 tracking-widest px-3 py-2">
-                                        {searchResults.length}{searchResults._truncated ? '+ (límite alcanzado)' : ''} resultados
+                                        {searchActiveIndex >= 0 ? `${searchActiveIndex + 1} / ` : ''}{searchResults.length}{searchResults._truncated ? '+ (limite alcanzado)' : ''} resultados
                                     </p>
                                     {searchResults._truncated && (
                                         <p className="text-[10px] px-3 pb-2 opacity-50">Mostrando los primeros 50 resultados. Usa un término más específico para ver todos.</p>
                                     )}
                                     {searchResults.map((result, i) => (
                                         <button key={i} onClick={() => jumpToResult(result.cfi)}
-                                            className="w-full text-left px-3 py-3 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition mb-1">
+                                            className={`w-full text-left px-3 py-3 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition mb-1 ${searchActiveIndex === i ? 'ring-1 ring-[var(--highlight)]' : ''}`}>
                                             <p className="text-xs leading-relaxed font-medium opacity-80 line-clamp-3"
                                                 dangerouslySetInnerHTML={{
                                                     __html: result.excerpt.replace(

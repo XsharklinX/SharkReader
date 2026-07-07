@@ -10,6 +10,33 @@ export const FONTS = [
     { id: 'OpenDyslexic', label: 'OpenDyslexic', desc: 'Para dislexia' },
 ];
 
+export const READING_PRESETS = [
+    {
+        id: 'balanced',
+        label: 'Equilibrado',
+        desc: 'Cómodo para novelas largas',
+        values: { fontFamily: 'Lora', lineHeight: 1.7, pageMargins: 24, letterSpacing: 0, paragraphSpacing: 0.3, textJustify: true, firstLineIndent: false, hyphenation: true, columnWidth: 'normal' },
+    },
+    {
+        id: 'focus',
+        label: 'Enfoque',
+        desc: 'Más aire y menos fatiga',
+        values: { fontFamily: 'Merriweather', lineHeight: 1.85, pageMargins: 34, letterSpacing: 0.01, paragraphSpacing: 0.5, textJustify: false, firstLineIndent: false, hyphenation: false, columnWidth: 'narrow' },
+    },
+    {
+        id: 'dense',
+        label: 'Compacto',
+        desc: 'Más texto por pantalla',
+        values: { fontFamily: 'Georgia', lineHeight: 1.45, pageMargins: 14, letterSpacing: 0, paragraphSpacing: 0, textJustify: true, firstLineIndent: true, hyphenation: true, columnWidth: 'wide' },
+    },
+    {
+        id: 'access',
+        label: 'Accesible',
+        desc: 'Espaciado y contraste lector',
+        values: { fontFamily: 'OpenDyslexic', lineHeight: 1.95, pageMargins: 36, letterSpacing: 0.04, paragraphSpacing: 0.7, textJustify: false, firstLineIndent: false, hyphenation: false, columnWidth: 'normal' },
+    },
+];
+
 export default function EpubReaderSettings({
     dock,
     showFontMenu, setShowFontMenu,
@@ -24,6 +51,7 @@ export default function EpubReaderSettings({
     letterSpacing, setLetterSpacing,
     paragraphSpacing, setParagraphSpacing,
     columnWidth, setColumnWidth,
+    applyReadingPreset,
 }) {
     return (
         <div className="relative" onClick={e => e.stopPropagation()}>
@@ -34,6 +62,17 @@ export default function EpubReaderSettings({
             >Aa</button>
             {showFontMenu && (
                 <div className={dock ? "dock-popup active" : "topbar-popup active"} style={{ minWidth: '260px', maxHeight: '480px', overflowY: 'auto' }} onWheel={e => e.stopPropagation()}>
+                    <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-2">Presets de lectura</p>
+                    <div className="grid grid-cols-2 gap-1 mb-3">
+                        {READING_PRESETS.map(preset => (
+                            <button key={preset.id} onClick={() => applyReadingPreset?.(preset.id)}
+                                className="text-left px-2 py-2 rounded-lg text-xs font-bold transition leading-tight hover:bg-black/5 dark:hover:bg-white/10">
+                                <span>{preset.label}</span>
+                                <span className="block text-[9px] opacity-60 font-normal">{preset.desc}</span>
+                            </button>
+                        ))}
+                    </div>
+                    <div className="border-t my-2" style={{ borderColor: 'rgba(128,128,128,0.2)' }}></div>
                     <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-2">Fuente</p>
                     <div className="grid grid-cols-2 gap-1 mb-3">
                         {FONTS.map(f => (
