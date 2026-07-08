@@ -283,7 +283,7 @@
   <div class="stats-grid">
     <div class="stat-item fade-up"><div class="stat-number" style="color:#38bdf8;font-size:28px;letter-spacing:0">EPUB+PDF</div><div class="stat-label">Formatos soportados</div></div>
     <div class="stat-item fade-up"><div class="stat-number" style="color:#a78bfa">60</div><div class="stat-label">Logros desbloqueables</div></div>
-    <div class="stat-item fade-up"><div class="stat-number" style="color:#34d399">16</div><div class="stat-label">Addons en Workshop</div></div>
+    <div class="stat-item fade-up"><div class="stat-number" style="color:#34d399">18</div><div class="stat-label">Addons en Workshop</div></div>
     <div class="stat-item fade-up"><div class="stat-number" style="color:#fbbf24">∞</div><div class="stat-label">Gratis para siempre</div></div>
   </div>
 </div>
@@ -319,7 +319,7 @@
     <div class="feature-card c5 fade-up">
       <div class="feature-icon" style="background:rgba(249,115,22,.12)">📚</div>
       <h3>Biblioteca inteligente</h3>
-      <p>Importa desde Goodreads CSV, fetch de portadas en OpenLibrary, estanterías automáticas, series con gap detection y colecciones personalizadas.</p>
+      <p>Fetch de portadas y metadata desde OpenLibrary, estanterías automáticas ("Pausados", "Casi terminados"), series con detección de huecos y colecciones personalizadas con emoji.</p>
     </div>
     <div class="feature-card c6 fade-up">
       <div class="feature-icon" style="background:rgba(244,63,94,.12)">🔗</div>
@@ -419,22 +419,38 @@
   <div class="cl-list-wrap">
     <div class="cl-item fade-up">
       <div class="cl-header">
-        <span class="cl-version">v3.6.0</span>
-        <span class="cl-date">Mayo 2026</span>
+        <span class="cl-version">v3.7.x</span>
+        <span class="cl-date">Julio 2026</span>
         <span class="cl-tag latest">Última versión</span>
+      </div>
+      <ul class="cl-feats">
+        <li>Onboarding tipo libro con animación de paso de página y 7 capítulos</li>
+        <li>Sonido de feedback: 7 sonidos sintetizados para logros, niveles, rachas y más</li>
+        <li>Presets de Workshop: activa una combinación de addons de un solo clic</li>
+        <li>Presets tipográficos EPUB: Equilibrado, Enfoque, Compacto y Accesible</li>
+        <li>Modo dislexia mejorado: inyecta OpenDyslexic dentro del EPUB</li>
+        <li>Sharky con sistema formal de eventos, prioridad y presencia configurable</li>
+        <li>Workshop con iconografía propia y filtros por madurez (estable / experimental)</li>
+        <li>Animaciones de logro con shimmer y barra de progreso por rareza</li>
+      </ul>
+    </div>
+    <div class="cl-item fade-up">
+      <div class="cl-header">
+        <span class="cl-version">v3.6.0</span>
+        <span class="cl-date">Julio 2026</span>
       </div>
       <ul class="cl-feats">
         <li>Onboarding rediseñado con animaciones y acento de color por paso</li>
         <li>Resumen Anual estilo Wrapped: 7 slides con tus estadísticas del año</li>
-        <li>60 logros desbloqueables (+24 nuevos: series, niveles XP, Goodreads, Obsidian…)</li>
-        <li>Estados vacíos diseñados para 9 contextos distintos de la biblioteca</li>
+        <li>60 logros desbloqueables con sistema de rarezas completo</li>
+        <li>Hardening completo: persistencia defensiva, reset verificado, CSP en producción</li>
+        <li>Rendimiento: indexado bajo demanda, virtualización de búsqueda, renders estabilizados</li>
       </ul>
     </div>
     <div class="cl-item fade-up">
       <div class="cl-header"><span class="cl-version">v3.5.0</span><span class="cl-date">Mayo 2026</span></div>
       <ul class="cl-feats">
         <li>Fetch de portadas y metadata desde OpenLibrary (sin registro)</li>
-        <li>Importar biblioteca completa desde Goodreads CSV</li>
         <li>Estanterías automáticas: "Pausados +6 meses" y "Casi terminados"</li>
         <li>Plan de lectura con fecha objetivo y cálculo de ritmo diario</li>
       </ul>
@@ -506,10 +522,10 @@
     </div>
     <div class="faq-item fade-up">
       <div class="faq-q" onclick="toggleFaq(this)">
-        <span>¿Puedo importar mis libros de Goodreads?</span>
+        <span>¿Puedo completar la metadata de mis libros automáticamente?</span>
         <em class="faq-icon">+</em>
       </div>
-      <div class="faq-a">Sí. Desde la biblioteca, el botón <strong>"GR"</strong> en la barra superior acepta el CSV de exportación de Goodreads. Importa título, autor, rating, estado (leído/por leer), fechas y portadas automáticamente desde OpenLibrary usando el ISBN. El proceso detecta duplicados y no sobreescribe libros que ya tengas.</div>
+      <div class="faq-a">Sí. Desde el menú contextual de cualquier libro (clic derecho), puedes usar <strong>"Buscar info (OpenLibrary)"</strong> para obtener la portada, descripción, año de publicación e ISBN de forma automática. Solo rellena campos vacíos y nunca sobreescribe lo que ya tienes.</div>
     </div>
     <div class="faq-item fade-up">
       <div class="faq-q" onclick="toggleFaq(this)">

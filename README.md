@@ -1,264 +1,324 @@
-# SharkReader
+# SharkReader 🦈
 
-**SharkReader** is a desktop reading app for Windows focused on EPUB/PDF libraries, metadata management, reading progress, customization, achievements and local-first data ownership.
+<div align="center">
 
-It is built with **Electron**, **React** and **Vite**, and is designed to work both as an installer and as a portable app.
+[![Última versión](https://img.shields.io/github/v/release/XsharklinX/SharkReader?color=38bdf8&label=versi%C3%B3n&style=flat-square)](https://github.com/XsharklinX/SharkReader/releases/latest)
+[![Descargas totales](https://img.shields.io/github/downloads/XsharklinX/SharkReader/total?color=22c55e&label=descargas&style=flat-square)](https://github.com/XsharklinX/SharkReader/releases)
+[![Licencia ISC](https://img.shields.io/github/license/XsharklinX/SharkReader?color=a78bfa&label=licencia&style=flat-square)](LICENSE)
+[![Plataforma](https://img.shields.io/badge/Windows-10%20%2F%2011-0078d4?style=flat-square&logo=windows)](https://github.com/XsharklinX/SharkReader/releases/latest)
+[![Tests](https://img.shields.io/badge/tests-70%2F70-22c55e?style=flat-square)](#desarrollo)
 
-![SharkReader](icon.png)
+**Lector de EPUB y PDF para Windows. Local-first, gratuito, sin cuenta, sin nube.**
 
-## Features
+[⬇ Descargar](#instalación) · [Ver características](#qué-hace) · [Captura](#capturas) · [Desarrolladores](#para-desarrolladores) · [Roadmap](#roadmap)
 
-### Library Management
+</div>
 
-- Import individual books or complete folders.
-- Supports `.epub`, `.pdf` and `.mobi` files.
-- Duplicate detection when importing books or folders.
-- Grid and list views.
-- Search by title, author, series, tags and metadata.
-- Sort by recent reading, title, author, progress, rating, date added and series.
-- Organize books by categories.
-- Track pending, reading and finished books.
-- Virtualized library rendering for better performance with large collections.
+---
 
-### Reading Experience
+<div align="center">
+  <img src="docs/assets/screen-library.png" alt="Biblioteca de SharkReader" width="800" style="border-radius:12px">
+</div>
 
-- EPUB reader with tabs.
-- PDF reader integration.
-- Reading progress tracking.
-- Bookmarks and personal notes.
-- Reading statistics.
-- Focus mode.
-- Reading journal.
-- Daily goals and yearly goals.
-- Custom reading layout, theme and visual preferences.
+---
 
-### Metadata and Covers
+## Por qué existe esto
 
-- Automatic EPUB metadata extraction.
-- Cover extraction and persistence.
-- Manual metadata editor.
-- Edit title, author, series, series index, publisher, tags, description and notes.
-- Replace book covers manually.
-- Restore original metadata.
+Casi todos los lectores de escritorio tienen algún problema grave: son de pago, requieren cuenta, mandan tus datos a servidores externos, o simplemente no están bien hechos. SharkReader surgió como respuesta a eso.
 
-### Import Flow
+Es una app que funciona sin internet, guarda todo en tu dispositivo, y está pensada para quien lee en serio: subrayados, notas, analíticas, metas, logros. Sin suscripciones ni trucos.
 
-- Folder import session with progress feedback.
-- Import phases for scanning, importing and metadata processing.
-- Cancel import sessions.
-- Retry failed files.
-- Summary of duplicated and failed books.
-- Non-blocking duplicate alerts.
+---
 
-### Profiles, Achievements and Stats
+## Qué hace
 
-- Local user profile.
-- Reading achievements.
-- Achievements only activate when a profile exists.
-- Reading streaks.
-- Reading time analytics.
-- Vocabulary list.
-- Full reset of account and local data.
+### 📖 Lector EPUB
 
-### Workshop and External Sources
+- Subrayados en 4 colores con notas al margen, visibles directamente en el texto
+- Dark mode universal: neutraliza EPUBs con fondos hardcodeados, sin importar el CSS del libro
+- Tipografía completamente personalizable por libro: fuente, tamaño, interlineado, márgenes, justificación, sangría, espacio entre letras, separación silábica y espaciado entre párrafos
+- TOC flotante con búsqueda integrada en todos los niveles del índice
+- Presets tipográficos: Equilibrado, Enfoque, Compacto, Accesible — con un clic
+- Modo foco completo: oculta barra, progreso y zonas de navegación. Solo el texto
+- Modo dislexia: inyecta OpenDyslexic dentro del iframe del EPUB con ajustes de espaciado automáticos
+- Doble página, scroll continuo o paginado, búsqueda interna con navegación ←→
+- Panel de anotaciones filtrable por tipo (subrayado / nota / marcador) y por color
+- Export a Obsidian: `.md` con frontmatter YAML y anotaciones agrupadas por capítulo
+- Auto-bookmark al cerrar cada tab; diccionario en línea; TTS; vocabulario exportable
 
-- Modular Workshop system.
-- Addons with state and configuration.
-- Initial OPDS and Calibre catalog support.
-- External sources are opt-in and user-configured.
-- Safe import prompts for external catalog entries.
-- Network limits, timeouts and validation for external downloads.
+### 📄 Lector PDF
 
-### Sync and Backup
+- Highlights multicolor con coordenadas porcentuales (sobreviven cualquier zoom)
+- TOC/outline del PDF con búsqueda por título o página, resaltado de página activa
+- Búsqueda de texto con hasta 80 resultados por consulta, navegación anterior/siguiente
+- Dark mode: `invert + hue-rotate` en el canvas, sin afectar los overlays de subrayado
+- Zoom con `Ctrl +`, `Ctrl -`, `Ctrl 0` y rueda del ratón; persiste entre sesiones
+- Panel de anotaciones filtrable por tipo y color; export → Markdown con frontmatter YAML
 
-- Export and import app data.
-- Folder-based sync file.
-- Safer sync merge for progress and metadata.
-- Separate timestamps for:
-  - `progressUpdatedAt`
-  - `metadataUpdatedAt`
-  - `updatedAt`
-- Deduplication during sync by ID, path and normalized title/author.
+### 📚 Biblioteca
 
-### Security and Privacy
+- Importación individual, por carpeta o desde fuentes OPDS/Calibre externas
+- Fetch de portada y metadata desde OpenLibrary (sin registro, sin clave de API)
+- Multi-select con acciones en masa: favorito, terminado, categoría, colección, eliminar
+- Edición rápida inline: nombre, autor, tags y rating sin abrir ningún modal
+- Vista por serie con detección de huecos, badge "Siguiente #N" y "✓ Completa"
+- Colecciones manuales con emoji, rename inline, reorder y portadas dinámicas
+- Estanterías automáticas: "Pausados +6 meses" y "Casi terminados ≥80%"
+- Filtros combinados por tag y autor (multi-select) con pills activas y × para limpiar
+- Búsqueda global con índice de contenido (busca dentro del texto del EPUB/PDF)
+- Virtualización para bibliotecas grandes; renders estabilizados para el lector
 
-- Local-first app.
-- Your library and reading data are stored locally.
-- Electron `webSecurity` is enabled.
-- Insecure content is disabled.
-- EPUB scripted content is disabled.
-- External downloads are validated before import.
-- Local/private network catalog access requires explicit permission.
+### 🏆 Gamificación y estadísticas
 
-## Screenshots
+- 60 logros clasificados en 4 rarezas: común, raro, épico y legendario
+- Sistema de XP con 7 niveles: Aprendiz → Curioso → Lector → Devorador → Bibliófilo → Sabio → Leyenda
+- Rachas diarias con racha máxima histórica y notificación de pérdida
+- Analíticas: heatmap anual, gráfica días/semanas/meses, Top 5 libros, log por hora
+- Metas diaria, semanal y mensual con barra de progreso en tiempo real
+- Plan de lectura con fecha objetivo y cálculo automático de ritmo necesario
+- Resumen Anual estilo Wrapped: 7 slides animados con tus estadísticas del año
+- Diario de lectura: log de sesiones con libro, tiempo y fecha, exportable a Markdown
 
-Screenshots will be added soon.
+### 🔧 Workshop y addons
 
-## Installation
+18 addons modulares, cada uno con su configuración propia:
 
-### Recommended: Installer
+| Addon | Qué hace |
+|---|---|
+| 🔊 Sonido de feedback | Sonidos sintetizados al lograr hitos, pasar página, subir de nivel |
+| 🦈 Sharky | Mascota pixelart con cosméticos desbloqueables por XP |
+| ⭐ Nivel XP | Sistema de XP por lectura con nombres de nivel |
+| 🎯 Modo foco | Oculta la UI durante la lectura |
+| 📰 Modo dislexia | Fuente OpenDyslexic dentro del EPUB |
+| 🍅 Pomodoro | Timer de sesión en el lector |
+| 📓 Diario de lectura | Log de sesiones exportable |
+| 🎲 Ruleta de libro | Elige un libro al azar con filtros por tag/favoritos |
+| 📂 Carpeta vigilada | Importación automática de una carpeta |
+| 🔖 Auto-bookmark | Guarda posición al cerrar el tab |
+| 🔔 Recordatorios | Notificación nativa si no lees hoy |
+| 📑 TOC inteligente | TOC flotante con búsqueda |
+| ✨ Portadas dinámicas | Efectos por estado: glow favorito, pulse leyendo |
+| 📺 Vista Netflix | Grid de portadas grande, estilo visual alternativo |
+| 🌐 Fuentes externas | Catálogos OPDS / Calibre |
+| 💾 Auto-backup | Copia de seguridad periódica automática |
+| 📖 Modo lectura | Indicadores de contexto visual |
+| 🔍 Búsqueda de contenido | Índice de texto completo del libro |
 
-1. Go to the [Releases](https://github.com/XsharklinX/SharkReader/releases) page.
-2. Download the latest `SharkReader Setup x.x.x.exe`.
-3. Run the installer.
-4. Launch SharkReader from the Start Menu or desktop shortcut.
+**Presets de Workshop:** tres configuraciones de un clic para empezar sin perderse entre 18 opciones:
+- 🎯 **Lector enfocado** — Focus mode, auto-bookmark, TOC inteligente, sonido de feedback
+- 📚 **Coleccionista** — Portadas dinámicas, vista Netflix, carpeta vigilada, diario
+- 🏆 **Gamer** — Sistema XP, Sharky, sonido, ruleta, portadas dinámicas
 
-### Portable Version
+### 🦈 Sharky
 
-1. Go to the [Releases](https://github.com/XsharklinX/SharkReader/releases) page.
-2. Download `SharkReader-Portable-x.x.x.exe`.
-3. Run it directly.
+Mascota de pixel art que vive en una esquina de la pantalla. Tiene sprites emocionales (feliz, curioso, dormido, sorprendido…), emotes animados y cosméticos (corona, gorra, gafas, bufanda) que se desbloquean por nivel de XP.
 
-The portable version does not require installation.
+Reacciona a eventos reales: abrir un libro, alcanzar hitos de progreso (25%, 50%, 75%, 100%), terminar un libro, logros, rachas, pérdida de racha y aniversarios de lectura. Configurable: puedes ajustar su presencia (Normal / Ligera / Solo hitos) o silenciarlo completamente.
 
-## Windows SmartScreen Notice
+### 🔒 Privacidad y datos
 
-Windows may show a SmartScreen warning because the app is not currently signed with a commercial code-signing certificate.
+- **Local-first**: todo se guarda en IndexedDB en tu dispositivo. Cero servidores propios
+- CSP estricto en producción; `webSecurity` habilitado; scripts embebidos en EPUB desactivados
+- Export/import de todos tus datos en un JSON portátil con merge inteligente
+- Sync automático a carpeta local (OneDrive, Dropbox, cualquier carpeta compartida)
+- Auto-updater vía GitHub Releases (verificable y reversible)
 
-If you downloaded SharkReader from the official GitHub releases page, you can choose:
+---
 
-1. `More info`
-2. `Run anyway`
+## Capturas
 
-Commercial code signing may be added in a future release.
+| Biblioteca | Analíticas |
+|---|---|
+| ![Biblioteca](docs/assets/screen-library.png) | ![Analíticas](docs/assets/screen-analytics.png) |
 
-## Supported Formats
+![Logros](docs/assets/screen-achievements.png)
 
-| Format | Library | Reader |
-| --- | --- | --- |
-| EPUB | Yes | Yes |
-| PDF | Yes | Yes |
-| MOBI | Yes | Not yet |
+---
 
-MOBI files can currently be imported and organized in the library, but the internal reader does not support MOBI reading yet.
+## Instalación
 
-## Development
+### Opción A: Instalador (recomendado)
 
-### Requirements
+1. Ve a la página de [Releases](https://github.com/XsharklinX/SharkReader/releases/latest)
+2. Descarga el archivo `SharkReader-Setup-x.x.x.exe`
+3. Ejecútalo e instala normalmente
+4. Abre SharkReader desde el menú de inicio o el acceso directo del escritorio
 
-- Windows 10 or newer
-- Node.js
-- pnpm
+### Opción B: Versión portable
 
-This project uses `pnpm`. Avoid mixing `npm` and `pnpm` in the same checkout.
+1. Descarga `SharkReader-Portable-x.x.x.exe` desde [Releases](https://github.com/XsharklinX/SharkReader/releases/latest)
+2. Ejecútalo directamente desde cualquier carpeta o unidad USB
 
-### Install Dependencies
+### Nota sobre Windows SmartScreen
+
+Windows puede mostrar una advertencia azul porque la app no tiene certificado de firma de código (un trámite que cuesta ~200€/año). Si descargaste desde los Releases oficiales de este repositorio, la app es segura. Para instalarla: **Más información → Ejecutar de todas formas**.
+
+El código fuente está disponible aquí para quien quiera verificarlo.
+
+---
+
+## Formatos soportados
+
+| Formato | Biblioteca | Lector |
+|---|---|---|
+| EPUB 2 / EPUB 3 | ✅ | ✅ |
+| PDF | ✅ | ✅ |
+
+---
+
+## Para desarrolladores
+
+### Requisitos
+
+- Windows 10 o superior
+- Node.js 20+
+- pnpm 8+
+
+Este proyecto usa `pnpm`. No mezcles `npm` y `pnpm` en el mismo checkout.
+
+### Instalar dependencias
 
 ```powershell
 pnpm install
 ```
 
-### Run in Development
-
-```powershell
-pnpm dev
-```
-
-or:
+### Desarrollo (Electron + HMR)
 
 ```powershell
 pnpm start
 ```
 
-The development server runs on:
+o bien:
 
-```text
-http://127.0.0.1:5173
+```powershell
+pnpm dev
 ```
 
-### Build Renderer Only
+El renderer corre en `http://127.0.0.1:5173` con Hot Module Replacement.
+
+### Compilar solo el renderer
 
 ```powershell
 pnpm build:renderer
 ```
 
-### Build Installer and Portable App
+### Compilar el instalador y la versión portable
 
 ```powershell
 pnpm build
 ```
 
-Generated builds are placed in:
+Los archivos generados quedan en `dist/`.
 
-```text
-dist/
+### Tests
+
+```powershell
+pnpm test
 ```
 
-## Project Structure
+70 tests unitarios cubriendo la lógica pura de:
+- `src/bookModel.test.js` — modelo de libro, hidratación, deduplicación (35 tests)
+- `src/backupMerge.test.js` — merge de backups, bookmarks, minutesByDay (15 tests)
+- `src/readingProgress.test.js` — lógica de rachas, XP y niveles (20 tests)
 
-```text
+---
+
+## Estructura del proyecto
+
+```
 SharkReader/
-├─ main.js                 # Electron main process
-├─ preload.js              # Secure IPC bridge
-├─ src/
-│  ├─ App.jsx              # Main app shell
-│  ├─ EpubReader.jsx       # EPUB reader
-│  ├─ PdfReader.jsx        # PDF reader
-│  ├─ db.js                # IndexedDB persistence layer
-│  ├─ bookModel.js         # Book model, hydration and deduplication helpers
-│  ├─ backupMerge.js       # Backup and sync merge helpers
-│  └─ workshopModules.js   # Workshop addon definitions
-├─ styles/
-├─ public/
-├─ Docs/
-└─ package.json
+├── main.js                    # Proceso principal de Electron
+├── preload.js                 # Puente IPC seguro (contextBridge)
+├── src/
+│   ├── App.jsx                # Shell principal (~2600 líneas)
+│   ├── EpubReader.jsx         # Lector EPUB (epub.js)
+│   ├── PdfReader.jsx          # Lector PDF (pdfjs-dist)
+│   ├── AnalyticsView.jsx      # Pantalla de estadísticas y logros
+│   ├── WorkshopPanel.jsx      # Panel de addons con presets
+│   ├── SettingsPanel.jsx      # Configuración, backup, diagnóstico
+│   ├── Sidebar.jsx            # Panel lateral de la biblioteca
+│   ├── LibraryView.jsx        # Grid / lista / series de la biblioteca
+│   ├── BookCard.jsx           # Tarjeta de libro
+│   ├── QuickEditCard.jsx      # Edición rápida inline
+│   ├── SharkyContext.jsx      # Estado y lógica de la mascota
+│   ├── SharkyWidget.jsx       # JSX de Sharky
+│   ├── YearWrapped.jsx        # Resumen anual (Wrapped)
+│   ├── sounds.js              # Sonidos sintetizados vía Web Audio API
+│   ├── db.js                  # IndexedDB v6 (5 stores)
+│   ├── bookModel.js           # Modelo de libro, hidratación y deduplicación
+│   ├── backupMerge.js         # Merge inteligente de backups
+│   ├── achievements.js        # Definición de los 60 logros
+│   ├── workshopModules.js     # Registro de los 18 addons
+│   ├── readingProgress.js     # Lógica pura de rachas y XP (testeable)
+│   ├── translations.js        # i18n ES/EN
+│   └── hooks/
+│       ├── useLibrary.js      # Filtros, búsqueda y virtualización
+│       ├── useBookImport.js   # Importación individual y por carpeta
+│       ├── useBookActions.js  # CRUD de libros (favorito, borrar, editar…)
+│       ├── useReadingSession.js # Timer, rachas, logros en sesión
+│       ├── useStats.js        # Estado y persistencia de estadísticas
+│       ├── useAchievements.js # Estado de logros y toasts
+│       └── useUI.js           # Estado de modales, sidebar y toasts
+├── styles/
+│   └── main.css               # Estilos globales, temas dark/light/sepia
+├── public/
+│   └── preloader.js           # Script de precarga (cumple CSP)
+├── docs/
+│   ├── index.html             # Landing page (GitHub Pages)
+│   ├── assets/                # Capturas de pantalla
+│   └── *.md                   # Documentación técnica
+└── package.json
 ```
 
-## Data Storage
+### Persistencia de datos
 
-SharkReader stores data locally using IndexedDB.
+SharkReader usa IndexedDB v6 con 5 stores:
 
-Current storage model:
+| Store | Contenido |
+|---|---|
+| `books` | Metadata y progreso de cada libro |
+| `files` | Archivos EPUB/PDF importados |
+| `settings` | Configuración del usuario, addons y perfil |
+| `cache` | Índice de contenido de búsqueda |
+| `legacy_appData` | Compatibilidad con versiones anteriores |
 
-- `books`: lightweight book metadata and progress.
-- `files`: imported book files.
-- `settings`: user settings and profile data.
-- `cache`: internal cache data.
+Cada store se puede exportar/importar individualmente. El merge de backups resuelve conflictos por `updatedAt`, `progressUpdatedAt` y `metadataUpdatedAt` por separado.
 
-This avoids rewriting heavy book files every time progress or metadata changes.
-
-## Documentation
-
-Additional technical documentation is available in the [`Docs`](Docs) folder:
-
-- Architecture
-- Data layer
-- Build and deploy
-- IPC Electron
-- EPUB internals
-- Workshop addons
-- Roadmap and hardening notes
+---
 
 ## Roadmap
 
-Planned improvements:
+| Versión | Criterio de salida |
+|---|---|
+| **v3.7** (en progreso) | Lector premium: temas custom, presets guardables, progreso por capítulo |
+| **v3.8** | Gamificación 2.0: retos de lectura, resumen semanal, comparativa de libros |
+| **v3.9** | Sync y datos: ZIP completo con archivos, sync automático al cerrar, system tray |
+| **v4.0** | Publicable: accesibilidad AA, firma de código, onboarding v2 |
 
-- Full MOBI reader support.
-- More advanced OPDS and Calibre support.
-- Authentication for private catalog sources.
-- Smarter collections and saved filters.
-- Batch metadata editing.
-- More robust multi-device sync.
-- Optional auto-update.
-- Commercial code signing.
+El roadmap completo con detalles de implementación está en [`docs/roadmap-hardening.md`](docs/roadmap-hardening.md).
 
-## Contributing
+---
 
-Issues and suggestions are welcome.
+## Contribuir
 
-If you want to contribute:
+Si quieres reportar un bug o sugerir una funcionalidad, abre un [issue](https://github.com/XsharklinX/SharkReader/issues). Para contribuir con código:
 
-1. Fork the repository.
-2. Create a feature branch.
-3. Use `pnpm install`.
-4. Run `pnpm dev` during development.
-5. Verify with `pnpm build:renderer`.
-6. Open a pull request.
+1. Haz un fork del repositorio
+2. Crea una rama para tu cambio: `git checkout -b mi-mejora`
+3. Instala dependencias: `pnpm install`
+4. Desarrolla con `pnpm dev`
+5. Verifica que compila: `pnpm build:renderer`
+6. Pasa los tests: `pnpm test`
+7. Abre un pull request
 
-## License
-
-License information will be added before the first public stable release.
+---
 
 ## Disclaimer
 
-SharkReader does not distribute books. External catalog support is intended for personal libraries, public-domain sources, Calibre servers and content the user has the right to access.
+SharkReader no distribuye libros. El soporte de fuentes externas (OPDS, Calibre) está pensado para bibliotecas personales, fuentes de dominio público y contenido al que el usuario tiene acceso legal.
+
+---
+
+## Licencia
+
+[ISC](LICENSE) · Desarrollado por **David Bonilla**
