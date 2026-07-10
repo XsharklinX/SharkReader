@@ -47,6 +47,8 @@ import { buildBookContentExcerpt, buildBookContentIndex, CONTENT_INDEX_CACHE_PRE
 import Sidebar from './Sidebar';
 import LibraryView from './LibraryView';
 import { sounds } from './sounds';
+import { TipToast } from './TipToast';
+import { TIPS } from './tips';
 
 const EpubReader = lazy(() => import('./EpubReader'));
 const PdfReader = lazy(() => import('./PdfReader'));
@@ -242,6 +244,9 @@ const splitBookTags = (value) => String(value || '')
         // ── LOGROS / WORKSHOP / ANALYTICS ──
         const [achievements, setAchievements] = useState({});
         const [achievementToast, setAchievementToast] = useState(null);
+        const [activeTip, setActiveTip] = useState(null);
+        const isReaderActiveRef = useRef(false);
+        const showingOnboardingRef = useRef(false);
         const [addons, setAddons] = useState({});
         const [addonConfig, setAddonConfig] = useState(() => normalizeAddonConfig({}));
         const [externalSources, setExternalSources] = useState(DEFAULT_EXTERNAL_SOURCES);
@@ -271,6 +276,24 @@ const splitBookTags = (value) => String(value || '')
             });
             return readerLevelFromXp(xp, addonConfig.levelSystem?.xpPerLevel || 100);
         }, [addonConfig.levelSystem?.xpPerLevel, books, stats.timeRead]);
+
+        // Sonido de subida de nivel: readerLevel es un useMemo, así que detectamos
+        // el cruce de nivel comparando contra el valor anterior tras la hidratación.
+        const prevReaderLevelRef = useRef(null);
+        useEffect(() => {
+            if (!isStateHydrated) return;
+            if (prevReaderLevelRef.current === null) {
+                prevReaderLevelRef.current = readerLevel.level;
+                return;
+            }
+            if (readerLevel.level > prevReaderLevelRef.current && addons.levelSystem) {
+                if (addons.soundFeedback && addonConfig.soundFeedback?.achievements !== false) {
+                    sounds.levelUp((addonConfig.soundFeedback?.volume ?? 100) / 100 * 0.25);
+                }
+                sharkyActionsRef?.current?.notifyLevelUp?.(readerLevel.level);
+            }
+            prevReaderLevelRef.current = readerLevel.level;
+        }, [readerLevel.level, isStateHydrated, addons.levelSystem, addons.soundFeedback, addonConfig.soundFeedback]);
 
         const bookPayloadsToFiles = useCallback((payloads = []) => {
             return payloads.map(payload => {
@@ -467,6 +490,48 @@ const splitBookTags = (value) => String(value || '')
         useEffect(() => {
             libraryScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
         }, [currentFilter, filterTags.length, filterAuthors.length]);
+
+        // ── ¿SABÍAS QUE? — refs de estado en el momento de disparo ──
+        useEffect(() => { isReaderActiveRef.current = activeTabId !== null; }, [activeTabId]);
+        useEffect(() => { showingOnboardingRef.current = showWelcomeTutorial; }, [showWelcomeTutorial]);
+
+        // ── ¿SABÍAS QUE? — scheduling de tips ──
+        useEffect(() => {
+            if (!isStateHydrated) return;
+
+            const sessions = parseInt(localStorage.getItem('sr_tip_sessions') || '0', 10) + 1;
+            localStorage.setItem('sr_tip_sessions', String(sessions));
+
+            const isNewUser = sessions <= 5;
+            const FIRST_DELAY = isNewUser ? 25000 : 55000;
+            const REPEAT_DELAY = isNewUser ? 8 * 60000 : 15 * 60000;
+            const MAX_TIPS = 3;
+            let shown = 0;
+
+            function pickTip() {
+                const seenIds = JSON.parse(localStorage.getItem('sr_tips_seen') || '[]');
+                const unseen = TIPS.filter(t => !seenIds.includes(t.id));
+                const pool = unseen.length > 0 ? unseen : TIPS;
+                const tip = pool[Math.floor(Math.random() * pool.length)];
+                localStorage.setItem('sr_tips_seen', JSON.stringify(
+                    unseen.length > 0 ? [...seenIds, tip.id] : [tip.id]
+                ));
+                return tip;
+            }
+
+            function tryShowTip() {
+                if (shown >= MAX_TIPS) return;
+                if (isReaderActiveRef.current) return;
+                if (showingOnboardingRef.current) return;
+                setActiveTip(pickTip());
+                shown++;
+            }
+
+            const t1 = setTimeout(tryShowTip, FIRST_DELAY);
+            const t2 = setInterval(tryShowTip, REPEAT_DELAY);
+
+            return () => { clearTimeout(t1); clearInterval(t2); };
+        }, [isStateHydrated]);
 
         useEffect(() => {
             document.body.className = `theme-${appliedTheme}`;
@@ -2805,6 +2870,13 @@ const splitBookTags = (value) => String(value || '')
                         </div>
                     );
                 })()}
+
+                {/* ── ¿SABÍAS QUE? TIP TOAST ── */}
+                {activeTip && !activeTabId && (
+                    <div className="fixed bottom-6 right-6 z-[9997]">
+                        <TipToast tip={activeTip} onClose={() => setActiveTip(null)} />
+                    </div>
+                )}
 
                 {noticeToast && (
                     <div className="fixed bottom-6 left-6 z-[9998]" style={{ animation: 'fadeInUp 0.35s cubic-bezier(0.34, 1.56, 0.64, 1)' }}>

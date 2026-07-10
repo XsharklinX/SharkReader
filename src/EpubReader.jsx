@@ -5,7 +5,7 @@ import { Icons } from './icons';
 import { getCachedLocations, setCachedLocations } from './locationsCache';
 import EpubReaderSettings, { READING_PRESETS } from './EpubReaderSettings';
 
-function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme }) {
+function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg, customText, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme }) {
     const fontStack =
         fontFamily === 'Georgia' ? 'Georgia,"Times New Roman",serif' :
         fontFamily === 'Lora' ? '"Lora",Georgia,serif' :
@@ -50,6 +50,10 @@ function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg
             `div,section,aside,article,blockquote,figure,table,thead,tbody,tr,td,th,header,footer,nav,main,dl,dt,dd { background-color:transparent !important; border-color:rgba(69,26,3,0.2) !important; }`,
             `p,span,li,cite,q,figcaption,small,h1,h2,h3,h4,h5,h6,strong,b,em,i { color:#451a03 !important; }`,
         );
+    }
+    // Color de texto personalizado — va al final para ganar a las reglas del tema
+    if (customText) {
+        lines.push(`p,span,li,cite,q,figcaption,small,h1,h2,h3,h4,h5,h6,strong,b,em,i,u,s,sub,sup,div,td,th,dt,dd,blockquote { color:${customText} !important; }`);
     }
     return lines.join('\n');
 }
@@ -100,8 +104,31 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const [fontFamily, setFontFamily] = useState(_savedFont?.fontFamily ?? 'Inter');
         const [lineHeight, setLineHeight] = useState(_savedFont?.lineHeight ?? 1.6);
         const [pageMargins, setPageMargins] = useState(_savedFont?.pageMargins ?? 20);
-        const [customBg, setCustomBg] = useState('');
+        const [customBg, setCustomBg] = useState(_savedFont?.customBg ?? '');
+        const [customText, setCustomText] = useState(_savedFont?.customText ?? '');
         const [currentCfi, setCurrentCfi] = useState('');
+        // Progreso dentro del capítulo (páginas de la sección actual, solo paginado)
+        const [chapterPage, setChapterPage] = useState(0);
+        const [chapterTotal, setChapterTotal] = useState(0);
+        // Historial de posiciones: pila de CFIs previos a saltos (TOC, búsqueda, anotaciones)
+        const historyRef = useRef([]);
+        const [historyCount, setHistoryCount] = useState(0);
+        // Imagen de cita
+        const [quotePrompt, setQuotePrompt] = useState(null);   // { text, x, y } popup flotante
+        const [quoteModal, setQuoteModal] = useState(null);      // { text } modal con canvas
+        const quoteCanvasRef = useRef(null);
+        // Lectura en voz alta (TTS)
+        const [showTtsPanel, setShowTtsPanel] = useState(false);
+        const [ttsStatus, setTtsStatus] = useState('idle');      // idle | playing | paused
+        const [ttsRate, setTtsRate] = useState(() => { const r = parseFloat(localStorage.getItem('sr_tts_rate')); return Number.isFinite(r) ? r : 1; });
+        const [ttsVoiceURI, setTtsVoiceURI] = useState(() => { try { return localStorage.getItem('sr_tts_voice') || ''; } catch { return ''; } });
+        const [ttsVoices, setTtsVoices] = useState([]);
+        const ttsQueueRef = useRef([]);
+        const ttsIndexRef = useRef(0);
+        const ttsActiveRef = useRef(false);
+        const ttsUttRef = useRef(null);
+        const ttsRateRef = useRef(ttsRate);
+        const ttsVoiceRef = useRef(ttsVoiceURI);
         const [isLoading, setIsLoading] = useState(true);
         const [isReady, setIsReady] = useState(false);
         const [epubError, setEpubError] = useState(null);
@@ -122,7 +149,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const [brightness, setBrightness] = useState(100);
         const [dictionaryPopup, setDictionaryPopup] = useState(null);
         const dictCacheRef = useRef({});
-        const stylesRef = useRef({ fontFamily: 'Inter', fontSize: 110, lineHeight: 1.6, pageMargins: 20, customBg: '', textJustify: false, firstLineIndent: false, letterSpacing: 0, hyphenation: false, paragraphSpacing: 0, theme: 'dark' });
+        const stylesRef = useRef({ fontFamily: 'Inter', fontSize: 110, lineHeight: 1.6, pageMargins: 20, customBg: '', customText: '', textJustify: false, firstLineIndent: false, letterSpacing: 0, hyphenation: false, paragraphSpacing: 0, theme: 'dark' });
 
         const [showSearch, setShowSearch] = useState(false);
         const [searchQuery, setSearchQuery] = useState('');
@@ -252,8 +279,8 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const anyPanelOpenRef = useRef(false);
         useEffect(() => {
             anyPanelOpenRef.current = showToc || showFontMenu || showBrightness || showSearch ||
-                showAutoScrollPanel || showAnnotationsPanel || !!pendingBookmarkCfi;
-        }, [showToc, showFontMenu, showBrightness, showSearch, showAutoScrollPanel, showAnnotationsPanel, pendingBookmarkCfi]);
+                showAutoScrollPanel || showAnnotationsPanel || showTtsPanel || !!pendingBookmarkCfi || !!quoteModal;
+        }, [showToc, showFontMenu, showBrightness, showSearch, showAutoScrollPanel, showAnnotationsPanel, showTtsPanel, pendingBookmarkCfi, quoteModal]);
 
         // Focus mode: hide toolbar on mouse idle, show on hover near top
         const focusToolbarHideTimer = useRef(null);
@@ -313,7 +340,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
         // Cerrar popups al click fuera
         useEffect(() => {
-            const close = () => { setShowToc(false); setShowFontMenu(false); setShowBrightness(false); };
+            const close = () => { setShowToc(false); setShowFontMenu(false); setShowBrightness(false); setShowTtsPanel(false); };
             document.addEventListener('click', close);
             return () => document.removeEventListener('click', close);
         }, []);
@@ -467,6 +494,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                         setShowFontMenu(false);
                         setShowBrightness(false);
                         setDictionaryPopup(null);
+                        setQuotePrompt(null);
                         if (isFullscreen) setShowToolbar(prev => !prev);
                     });
 
@@ -536,6 +564,13 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                 if (err?.message !== 'not found') console.warn('[SharkReader] dictionary lookup failed:', err);
                             }
                             try { contents.window.getSelection()?.removeAllRanges(); } catch (_) {}
+                        } else if (text && text.split(/\s+/).length >= 3) {
+                            // Selección de frase: ofrecer crear imagen de cita
+                            try {
+                                const range = selection.getRangeAt(0);
+                                const rect = range.getBoundingClientRect();
+                                setQuotePrompt({ text: text.slice(0, 500), x: rect.left, y: rect.bottom + 10 });
+                            } catch (_) {}
                         }
                         } catch (err) {
                             console.warn('[SharkReader] selectionchanged handler error:', err);
@@ -661,6 +696,15 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
                         // Cheap UI updates — always run
                         try {
+                            // Progreso dentro del capítulo: página X de Y de la sección actual
+                            const displayed = location.start.displayed;
+                            if (displayed && displayed.total > 0) {
+                                setChapterPage(displayed.page || 0);
+                                setChapterTotal(displayed.total || 0);
+                            } else {
+                                setChapterPage(0);
+                                setChapterTotal(0);
+                            }
                             const spineItem = bookRef.current.spine.get(displayCfi);
                             if (spineItem && spineItem.index !== undefined) {
                                 setCurrentSection(spineItem.index + 1);
@@ -759,7 +803,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             } catch (_) {}
         }, [theme, isReady]);
         useEffect(() => {
-            const opts = { fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme };
+            const opts = { fontFamily, fontSize, lineHeight, pageMargins, customBg, customText, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme };
             stylesRef.current = opts;
             if (!renditionRef.current || !isReady) return;
 
@@ -832,11 +876,11 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     });
                 });
             }
-        }, [fontFamily, fontSize, lineHeight, pageMargins, customBg, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme, isReady, readFlow]);
+        }, [fontFamily, fontSize, lineHeight, pageMargins, customBg, customText, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme, isReady, readFlow]);
 
         useEffect(() => {
-            try { localStorage.setItem(_bookFontKey, JSON.stringify({ fontSize, fontFamily, lineHeight, pageMargins, paragraphSpacing, textJustify, firstLineIndent, letterSpacing, hyphenation })); } catch (_) {}
-        }, [_bookFontKey, fontSize, fontFamily, lineHeight, pageMargins, paragraphSpacing, textJustify, firstLineIndent, letterSpacing, hyphenation]);
+            try { localStorage.setItem(_bookFontKey, JSON.stringify({ fontSize, fontFamily, lineHeight, pageMargins, paragraphSpacing, textJustify, firstLineIndent, letterSpacing, hyphenation, customBg, customText })); } catch (_) {}
+        }, [_bookFontKey, fontSize, fontFamily, lineHeight, pageMargins, paragraphSpacing, textJustify, firstLineIndent, letterSpacing, hyphenation, customBg, customText]);
 
         // When columnWidth changes, the #viewer div gets a new maxWidth — force epub.js to re-layout.
         useEffect(() => {
@@ -864,6 +908,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             const handleKeyDown = (e) => {
                 const target = e.target;
                 if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+                if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); goBackHistory(); return; }
                 if (readFlow !== 'paginated') return;
                 if (anyPanelOpenRef.current) return;
                 if (e.key === 'ArrowLeft') prevPage();
@@ -888,7 +933,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 window.removeEventListener('epub-wheel', handleUniversalWheel);
                 if (wheelTimeout) clearTimeout(wheelTimeout);
             };
-        }, [readFlow, prevPage, nextPage, scheduleReaderTimeout]);
+        }, [readFlow, prevPage, nextPage, scheduleReaderTimeout, goBackHistory]);
 
         // Auto-scroll — requestAnimationFrame (smooth 60fps, replaces jittery setInterval)
         useEffect(() => {
@@ -909,11 +954,245 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             return () => cancelAnimationFrame(autoScrollRafRef.current);
         }, [autoScroll, autoScrollSpeed, readFlow]);
 
+        // Guarda la posición actual antes de un salto (TOC, búsqueda, anotación)
+        const pushHistory = useCallback(() => {
+            const loc = renditionRef.current?.currentLocation?.();
+            const cfi = loc?.start?.cfi;
+            if (!cfi) return;
+            const stack = historyRef.current;
+            if (stack[stack.length - 1] !== cfi) {
+                stack.push(cfi);
+                if (stack.length > 50) stack.shift();
+                setHistoryCount(stack.length);
+            }
+        }, []);
+
+        const goBackHistory = useCallback(() => {
+            const cfi = historyRef.current.pop();
+            setHistoryCount(historyRef.current.length);
+            if (cfi && renditionRef.current) {
+                renditionRef.current.display(cfi).catch(() => {});
+            }
+        }, []);
+
         const jumpToToc = (href) => {
             if (renditionRef.current) {
+                pushHistory();
                 renditionRef.current.display(href);
                 setShowToc(false);
             }
+        };
+
+        // ── LECTURA EN VOZ ALTA (Web Speech API) ──
+        useEffect(() => {
+            if (!window.speechSynthesis) return;
+            const load = () => setTtsVoices(window.speechSynthesis.getVoices() || []);
+            load();
+            window.speechSynthesis.addEventListener?.('voiceschanged', load);
+            return () => window.speechSynthesis.removeEventListener?.('voiceschanged', load);
+        }, []);
+
+        useEffect(() => {
+            ttsRateRef.current = ttsRate;
+            try { localStorage.setItem('sr_tts_rate', String(ttsRate)); } catch (_) {}
+        }, [ttsRate]);
+
+        useEffect(() => {
+            ttsVoiceRef.current = ttsVoiceURI;
+            try { localStorage.setItem('sr_tts_voice', ttsVoiceURI); } catch (_) {}
+        }, [ttsVoiceURI]);
+
+        // Extrae los párrafos legibles de la sección renderizada actualmente
+        const collectTtsChunks = useCallback(() => {
+            const chunks = [];
+            try {
+                renditionRef.current?.getContents()?.forEach(c => {
+                    c.document?.body?.querySelectorAll('p,h1,h2,h3,h4,h5,h6,li,blockquote')?.forEach(el => {
+                        const text = el.innerText?.trim();
+                        if (text && text.length > 1) chunks.push(text);
+                    });
+                });
+            } catch (_) {}
+            return chunks;
+        }, []);
+
+        const stopTts = useCallback(() => {
+            ttsActiveRef.current = false;
+            ttsUttRef.current = null;
+            ttsQueueRef.current = [];
+            ttsIndexRef.current = 0;
+            try { window.speechSynthesis?.cancel(); } catch (_) {}
+            setTtsStatus('idle');
+        }, []);
+
+        const speakChunk = useCallback((index) => {
+            if (!ttsActiveRef.current) return;
+            const text = ttsQueueRef.current[index];
+            if (text == null) {
+                // Fin de la sección cargada
+                stopTts();
+                return;
+            }
+            const utt = new SpeechSynthesisUtterance(text);
+            utt.rate = ttsRateRef.current;
+            utt.lang = lang === 'es' ? 'es-ES' : 'en-US';
+            const voice = (window.speechSynthesis.getVoices() || []).find(v => v.voiceURI === ttsVoiceRef.current);
+            if (voice) { utt.voice = voice; utt.lang = voice.lang; }
+            utt.onend = () => {
+                if (!ttsActiveRef.current) return;
+                ttsIndexRef.current = index + 1;
+                speakChunk(index + 1);
+            };
+            utt.onerror = (e) => {
+                // cancel() dispara 'interrupted'/'canceled' — no son errores reales
+                if (e?.error === 'interrupted' || e?.error === 'canceled') return;
+                if (ttsActiveRef.current) stopTts();
+            };
+            ttsUttRef.current = utt; // evitar GC del utterance en Chromium
+            window.speechSynthesis.speak(utt);
+        }, [lang, stopTts]);
+
+        const startTts = useCallback(() => {
+            if (!window.speechSynthesis) return;
+            try { window.speechSynthesis.cancel(); } catch (_) {}
+            const chunks = collectTtsChunks();
+            if (!chunks.length) return;
+            ttsQueueRef.current = chunks;
+            ttsIndexRef.current = 0;
+            ttsActiveRef.current = true;
+            setTtsStatus('playing');
+            speakChunk(0);
+        }, [collectTtsChunks, speakChunk]);
+
+        const pauseTts = useCallback(() => {
+            try { window.speechSynthesis?.pause(); } catch (_) {}
+            setTtsStatus('paused');
+        }, []);
+
+        const resumeTts = useCallback(() => {
+            try { window.speechSynthesis?.resume(); } catch (_) {}
+            setTtsStatus('playing');
+        }, []);
+
+        // Cambiar velocidad/voz en caliente: reinicia desde el párrafo actual
+        const restartTtsFromCurrent = useCallback(() => {
+            if (!ttsActiveRef.current) return;
+            const index = ttsIndexRef.current;
+            // Desactivar antes de cancel() para que el onend del utterance cortado no avance la cola
+            ttsActiveRef.current = false;
+            try { window.speechSynthesis.cancel(); } catch (_) {}
+            setTtsStatus('playing');
+            scheduleReaderTimeout(() => {
+                if (!ttsQueueRef.current.length) return;
+                ttsActiveRef.current = true;
+                speakChunk(index);
+            }, 80);
+        }, [scheduleReaderTimeout, speakChunk]);
+
+        // Cortar el TTS al desmontar el lector o cambiar de libro
+        useEffect(() => () => {
+            ttsActiveRef.current = false;
+            try { window.speechSynthesis?.cancel(); } catch (_) {}
+        }, [bookData.id]);
+
+        // ── IMAGEN DE CITA (canvas 1080×1080 descargable) ──
+        useEffect(() => {
+            if (!quoteModal || !quoteCanvasRef.current) return;
+            const canvas = quoteCanvasRef.current;
+            const W = 1080, H = 1080;
+            canvas.width = W;
+            canvas.height = H;
+            const ctx = canvas.getContext('2d');
+
+            const palettes = {
+                dark:  { bg1: '#0f172a', bg2: '#1e293b', text: '#f1f5f9', accent: '#38bdf8', muted: 'rgba(241,245,249,0.55)' },
+                light: { bg1: '#f8fafc', bg2: '#e2e8f0', text: '#0f172a', accent: '#0284c7', muted: 'rgba(15,23,42,0.55)' },
+                sepia: { bg1: '#f5f0e8', bg2: '#e8dcc8', text: '#451a03', accent: '#92400e', muted: 'rgba(69,26,3,0.55)' },
+            };
+            const p = palettes[theme] || palettes.dark;
+
+            const grad = ctx.createLinearGradient(0, 0, W, H);
+            grad.addColorStop(0, p.bg1);
+            grad.addColorStop(1, p.bg2);
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, W, H);
+
+            // Marco sutil
+            ctx.strokeStyle = p.accent;
+            ctx.globalAlpha = 0.35;
+            ctx.lineWidth = 3;
+            ctx.strokeRect(48, 48, W - 96, H - 96);
+            ctx.globalAlpha = 1;
+
+            // Comilla decorativa
+            ctx.fillStyle = p.accent;
+            ctx.globalAlpha = 0.5;
+            ctx.font = '900 190px Georgia, serif';
+            ctx.textAlign = 'left';
+            ctx.fillText('“', 90, 250);
+            ctx.globalAlpha = 1;
+
+            // Texto de la cita con ajuste de línea y tamaño adaptativo
+            const text = quoteModal.text;
+            const fontSize = text.length > 320 ? 36 : text.length > 180 ? 44 : text.length > 90 ? 52 : 62;
+            const lineHeightPx = fontSize * 1.45;
+            ctx.font = `600 ${fontSize}px Georgia, "Times New Roman", serif`;
+            ctx.fillStyle = p.text;
+            ctx.textAlign = 'center';
+            const maxWidth = W - 220;
+            const words = text.split(/\s+/);
+            const linesOut = [];
+            let line = '';
+            words.forEach(word => {
+                const probe = line ? `${line} ${word}` : word;
+                if (ctx.measureText(probe).width > maxWidth && line) {
+                    linesOut.push(line);
+                    line = word;
+                } else {
+                    line = probe;
+                }
+            });
+            if (line) linesOut.push(line);
+            const blockHeight = linesOut.length * lineHeightPx;
+            let y = (H - blockHeight) / 2 + fontSize * 0.8;
+            linesOut.forEach(l => { ctx.fillText(l, W / 2, y); y += lineHeightPx; });
+
+            // Separador + autor/libro
+            ctx.strokeStyle = p.accent;
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(W / 2 - 60, H - 235);
+            ctx.lineTo(W / 2 + 60, H - 235);
+            ctx.stroke();
+
+            ctx.font = '700 34px Inter, "Helvetica Neue", Arial, sans-serif';
+            ctx.fillStyle = p.text;
+            ctx.fillText(bookData.name || 'Libro', W / 2, H - 175, W - 200);
+            if (bookData.author) {
+                ctx.font = '500 27px Inter, "Helvetica Neue", Arial, sans-serif';
+                ctx.fillStyle = p.muted;
+                ctx.fillText(bookData.author, W / 2, H - 128, W - 200);
+            }
+
+            ctx.font = '600 21px Inter, "Helvetica Neue", Arial, sans-serif';
+            ctx.fillStyle = p.muted;
+            ctx.globalAlpha = 0.7;
+            ctx.fillText('🦈 SharkReader', W / 2, H - 72);
+            ctx.globalAlpha = 1;
+        }, [quoteModal, theme, bookData.name, bookData.author]);
+
+        const downloadQuoteImage = () => {
+            const canvas = quoteCanvasRef.current;
+            if (!canvas) return;
+            canvas.toBlob(blob => {
+                if (!blob) return;
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `${slugName()}_cita.png`;
+                link.click();
+                URL.revokeObjectURL(url);
+            }, 'image/png');
         };
 
         const SEARCH_LIMIT = 50;
@@ -946,9 +1225,10 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const jumpToSearchIndex = useCallback((index) => {
             const result = searchResults[index];
             if (!result?.cfi || !renditionRef.current) return;
+            pushHistory();
             setSearchActiveIndex(index);
             renditionRef.current.display(result.cfi).catch(() => {});
-        }, [searchResults]);
+        }, [searchResults, pushHistory]);
 
         const moveSearchResult = useCallback((direction) => {
             if (!searchResults.length) return;
@@ -968,11 +1248,12 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         };
 
         const jumpToResult = (cfi) => {
-            if (renditionRef.current) { renditionRef.current.display(cfi); setShowSearch(false); }
+            if (renditionRef.current) { pushHistory(); renditionRef.current.display(cfi); setShowSearch(false); }
         };
 
         const jumpToAnnotation = (cfi) => {
             if (!renditionRef.current || !cfi) return;
+            pushHistory();
             renditionRef.current.display(cfi).catch(() => {});
             setShowAnnotationsPanel(false);
         };
@@ -1173,6 +1454,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 lineHeight={lineHeight} setLineHeight={setLineHeight}
                 pageMargins={pageMargins} setPageMargins={setPageMargins}
                 customBg={customBg} setCustomBg={setCustomBg}
+                customText={customText} setCustomText={setCustomText}
                 textJustify={textJustify} setTextJustify={setTextJustify}
                 firstLineIndent={firstLineIndent} setFirstLineIndent={setFirstLineIndent}
                 hyphenation={hyphenation} setHyphenation={setHyphenation}
@@ -1272,6 +1554,77 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 )}
             </div>
         ) : null;
+
+        const TtsBtn = ({ dock }) => {
+            if (!window.speechSynthesis) return null;
+            const preferredVoices = ttsVoices.filter(v => v.lang?.toLowerCase().startsWith(lang === 'es' ? 'es' : 'en'));
+            const voiceList = preferredVoices.length > 0 ? preferredVoices : ttsVoices;
+            return (
+                <div className="relative" onClick={e => e.stopPropagation()}>
+                    <button
+                        onClick={() => { setShowTtsPanel(p => !p); setShowToc(false); setShowFontMenu(false); setShowBrightness(false); setShowAutoScrollPanel(false); }}
+                        className={`p-2 rounded-xl transition ${showTtsPanel ? 'bg-white/25' : ttsStatus === 'playing' ? 'text-green-400 hover:bg-white/15' : 'hover:bg-white/15'}`}
+                        title="Leer en voz alta">
+                        <Icons.Speaker />
+                    </button>
+                    {showTtsPanel && (
+                        <div className={dock ? "dock-popup active" : "topbar-popup active"} style={{ minWidth: '240px' }} onWheel={e => e.stopPropagation()}>
+                            <p className="text-[10px] font-black uppercase opacity-50 tracking-widest mb-3">Leer en voz alta</p>
+                            <div className="flex gap-1.5 mb-3">
+                                {ttsStatus === 'idle' && (
+                                    <button onClick={startTts}
+                                        className="flex-1 py-2 rounded-xl font-bold text-sm text-white transition"
+                                        style={{ backgroundColor: 'var(--highlight)' }}>
+                                        ▶ Leer esta sección
+                                    </button>
+                                )}
+                                {ttsStatus === 'playing' && (
+                                    <button onClick={pauseTts}
+                                        className="flex-1 py-2 rounded-xl font-bold text-sm bg-black/10 dark:bg-white/10 transition hover:opacity-80">
+                                        ⏸ Pausar
+                                    </button>
+                                )}
+                                {ttsStatus === 'paused' && (
+                                    <button onClick={resumeTts}
+                                        className="flex-1 py-2 rounded-xl font-bold text-sm text-white transition"
+                                        style={{ backgroundColor: 'var(--highlight)' }}>
+                                        ▶ Continuar
+                                    </button>
+                                )}
+                                {ttsStatus !== 'idle' && (
+                                    <button onClick={stopTts}
+                                        className="px-3 py-2 rounded-xl font-bold text-sm bg-red-500/15 text-red-500 transition hover:bg-red-500/25">
+                                        ■
+                                    </button>
+                                )}
+                            </div>
+                            <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-1">Velocidad</p>
+                            <div className="flex items-center gap-2 mb-3">
+                                <span className="text-xs opacity-50">🐢</span>
+                                <input type="range" min="0.5" max="2" step="0.1" value={ttsRate}
+                                    onChange={e => { setTtsRate(parseFloat(e.target.value)); }}
+                                    onMouseUp={() => { if (ttsStatus === 'playing') restartTtsFromCurrent(); }}
+                                    className="flex-1 accent-[var(--highlight)]" />
+                                <span className="text-xs opacity-50">🐇</span>
+                                <span className="text-xs font-black opacity-70 min-w-[32px] text-right">{ttsRate.toFixed(1)}×</span>
+                            </div>
+                            <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-1">Voz</p>
+                            <select
+                                value={ttsVoiceURI}
+                                onChange={e => { setTtsVoiceURI(e.target.value); if (ttsStatus === 'playing') restartTtsFromCurrent(); }}
+                                className="w-full rounded-xl bg-black/5 dark:bg-white/5 px-2 py-2 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
+                                style={{ color: 'var(--text-color)', backgroundColor: 'var(--surface-bg)' }}>
+                                <option value="">Voz del sistema (auto)</option>
+                                {voiceList.map(v => (
+                                    <option key={v.voiceURI} value={v.voiceURI}>{v.name} ({v.lang})</option>
+                                ))}
+                            </select>
+                            <p className="text-[9px] opacity-40 mt-2 leading-relaxed">Lee la sección visible. Al cambiar velocidad o voz, retoma desde el párrafo actual.</p>
+                        </div>
+                    )}
+                </div>
+            );
+        };
 
         const TocBtn = ({ dock }) => (
             <div className="relative" onClick={e => e.stopPropagation()}>
@@ -1426,6 +1779,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                     <Icons.Search />
                                 </button>
                                 <AutoScrollBtn dock={false} />
+                                <TtsBtn dock={false} />
                                 <button onClick={onOpenSettings} className="p-1.5 hover:bg-white/15 rounded-xl transition hidden sm:block" title={t.settings}>
                                     <Icons.Settings />
                                 </button>
@@ -1504,6 +1858,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             </button>
 
                             <AutoScrollBtn dock={true} />
+                            <TtsBtn dock={true} />
 
                             <div className="w-px h-5 bg-white/10 mx-1"></div>
 
@@ -1569,7 +1924,55 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             )}
                         </div>
                     )}
+
+                    {/* Popup Crear imagen de cita */}
+                    {quotePrompt && (
+                        <div className="absolute z-50 flex items-center gap-1 bg-[var(--surface-bg)] border border-[var(--border-color)] shadow-2xl px-2 py-1.5 rounded-2xl fade-in"
+                            style={{ top: Math.min(quotePrompt.y, (viewerWrapRef.current?.clientHeight || 600) - 60), left: Math.min(quotePrompt.x, (viewerWrapRef.current?.clientWidth || 800) - 220) }}>
+                            <button
+                                onClick={() => { setQuoteModal({ text: quotePrompt.text }); setQuotePrompt(null); }}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black text-white transition hover:opacity-80"
+                                style={{ backgroundColor: 'var(--highlight)' }}>
+                                <Icons.Quote /> Imagen de cita
+                            </button>
+                            <button onClick={() => setQuotePrompt(null)} className="p-1.5 opacity-50 hover:opacity-100 transition">
+                                <Icons.Close />
+                            </button>
+                        </div>
+                    )}
                 </div>
+
+                {/* ── MODAL IMAGEN DE CITA ── */}
+                {quoteModal && (
+                    <div className="fixed inset-0 z-[600] flex items-center justify-center bg-black/60 backdrop-blur-sm fade-in p-6"
+                        onClick={() => setQuoteModal(null)}>
+                        <div className="bg-[var(--surface-bg)] rounded-3xl p-5 shadow-2xl border border-[var(--border-color)] max-w-[440px] w-full"
+                            onClick={e => e.stopPropagation()}>
+                            <div className="flex items-center justify-between mb-3">
+                                <h3 className="font-black text-base">Imagen de cita</h3>
+                                <button onClick={() => setQuoteModal(null)} className="p-1.5 opacity-50 hover:opacity-100 transition">
+                                    <Icons.Close />
+                                </button>
+                            </div>
+                            <canvas
+                                ref={quoteCanvasRef}
+                                className="w-full rounded-2xl border"
+                                style={{ borderColor: 'var(--border-color)', aspectRatio: '1 / 1' }}
+                            />
+                            <div className="flex gap-2 mt-4">
+                                <button onClick={() => setQuoteModal(null)}
+                                    className="flex-1 py-2.5 rounded-xl font-bold text-sm bg-black/5 dark:bg-white/5 hover:opacity-80 transition">
+                                    Cerrar
+                                </button>
+                                <button onClick={downloadQuoteImage}
+                                    className="flex-1 py-2.5 rounded-xl font-bold text-sm text-white transition hover:opacity-80"
+                                    style={{ backgroundColor: 'var(--highlight)' }}>
+                                    ⬇ Descargar PNG
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 {/* ── POPUP NOTA DE BOOKMARK ── */}
                 {showToc && (
@@ -1738,9 +2141,18 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                             <Icons.Trash className="w-4 h-4" />
                                         </button>
                                     </div>
-                                    <button onClick={() => jumpToAnnotation(entry.cfi)} className="mt-3 rounded-xl bg-[var(--highlight)]/15 px-3 py-1.5 text-xs font-black text-[var(--highlight)] hover:bg-[var(--highlight)]/20 transition">
-                                        Ir a la anotación
-                                    </button>
+                                    <div className="mt-3 flex items-center gap-2">
+                                        <button onClick={() => jumpToAnnotation(entry.cfi)} className="rounded-xl bg-[var(--highlight)]/15 px-3 py-1.5 text-xs font-black text-[var(--highlight)] hover:bg-[var(--highlight)]/20 transition">
+                                            Ir a la anotación
+                                        </button>
+                                        {entry.kind === 'highlight' && entry.preview && (
+                                            <button onClick={() => setQuoteModal({ text: entry.preview })}
+                                                className="rounded-xl bg-black/5 dark:bg-white/5 px-3 py-1.5 text-xs font-black opacity-70 hover:opacity-100 transition"
+                                                title="Crear imagen de cita con este subrayado">
+                                                🖼 Imagen
+                                            </button>
+                                        )}
+                                    </div>
                                 </div>
                                 ));
                             })()}
@@ -1898,7 +2310,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                             return toc.map((item, i) => {
                                                 const isActive = currentChapterTitle && item.label === currentChapterTitle;
                                                 return (
-                                                    <button key={i} onClick={() => { if (renditionRef.current) renditionRef.current.display(item.href); }}
+                                                    <button key={i} onClick={() => { if (renditionRef.current) { pushHistory(); renditionRef.current.display(item.href); } }}
                                                         className={`w-full text-left text-[11px] px-2 py-1.5 rounded-lg transition font-medium mb-0.5 truncate ${isActive ? 'text-white font-black' : 'opacity-60 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5'}`}
                                                         style={isActive ? { backgroundColor: 'var(--highlight)' } : {}}>
                                                         {item.label}
@@ -1914,7 +2326,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                         walk(toc);
                                         if (results.length === 0) return <p className="text-[10px] opacity-40 px-2 py-3 text-center">Sin resultados</p>;
                                         return results.map((item, i) => (
-                                            <button key={i} onClick={() => { if (renditionRef.current) { renditionRef.current.display(item.href); setTocSearch(''); } }}
+                                            <button key={i} onClick={() => { if (renditionRef.current) { pushHistory(); renditionRef.current.display(item.href); setTocSearch(''); } }}
                                                 className="w-full text-left text-[11px] px-2 py-1.5 rounded-lg transition font-medium mb-0.5 truncate opacity-80 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5">
                                                 {item.label}
                                             </button>
@@ -1938,7 +2350,23 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                         />
                     </div>
                     <div className="absolute inset-0 flex items-end justify-between px-4 pb-1">
-                        <span className="text-[10px] font-black opacity-40 truncate max-w-[55%]">{currentChapterTitle || bookData.name}</span>
+                        <div className="flex items-center gap-2 min-w-0 max-w-[55%]">
+                            {historyCount > 0 && (
+                                <button onClick={goBackHistory}
+                                    className="flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[10px] font-black transition hover:bg-black/10 dark:hover:bg-white/10"
+                                    style={{ color: 'var(--highlight)' }}
+                                    title={`Volver a la posición anterior (Alt+←) · ${historyCount} en historial`}>
+                                    <Icons.HistoryBack className="w-3.5 h-3.5" />
+                                    <span className="hidden sm:inline">Volver</span>
+                                </button>
+                            )}
+                            <span className="text-[10px] font-black opacity-40 truncate">
+                                {currentChapterTitle || bookData.name}
+                                {readFlow === 'paginated' && chapterTotal > 1 && (
+                                    <span className="opacity-80"> · pág. {chapterPage}/{chapterTotal}</span>
+                                )}
+                            </span>
+                        </div>
                         <div className="flex items-center gap-3">
                             {locationsGenerating && (
                                 <span className="text-[9px] font-bold opacity-40 animate-pulse">Calculando...</span>

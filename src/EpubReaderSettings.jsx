@@ -1,4 +1,15 @@
-import React from 'react';
+import React, { useState } from 'react';
+
+const CUSTOM_THEMES_KEY = 'sr_custom_themes';
+
+function loadCustomThemes() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY) || '[]');
+        return Array.isArray(raw) ? raw : [];
+    } catch {
+        return [];
+    }
+}
 
 export const FONTS = [
     { id: 'Inter', label: 'Inter', desc: 'Sans-serif moderna' },
@@ -45,6 +56,7 @@ export default function EpubReaderSettings({
     lineHeight, setLineHeight,
     pageMargins, setPageMargins,
     customBg, setCustomBg,
+    customText, setCustomText,
     textJustify, setTextJustify,
     firstLineIndent, setFirstLineIndent,
     hyphenation, setHyphenation,
@@ -53,6 +65,34 @@ export default function EpubReaderSettings({
     columnWidth, setColumnWidth,
     applyReadingPreset,
 }) {
+    const [customThemes, setCustomThemes] = useState(loadCustomThemes);
+    const [newThemeName, setNewThemeName] = useState('');
+
+    const persistThemes = (next) => {
+        setCustomThemes(next);
+        try { localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(next)); } catch (_) {}
+    };
+
+    const saveCurrentTheme = () => {
+        const name = newThemeName.trim();
+        if (!name || (!customBg && !customText)) return;
+        const next = [
+            ...customThemes.filter(item => item.name !== name),
+            { id: Date.now().toString(36), name, bg: customBg, text: customText },
+        ].slice(-8);
+        persistThemes(next);
+        setNewThemeName('');
+    };
+
+    const applyCustomTheme = (item) => {
+        setCustomBg(item.bg || '');
+        setCustomText?.(item.text || '');
+    };
+
+    const deleteCustomTheme = (id) => {
+        persistThemes(customThemes.filter(item => item.id !== id));
+    };
+
     return (
         <div className="relative" onClick={e => e.stopPropagation()}>
             <button
@@ -120,6 +160,60 @@ export default function EpubReaderSettings({
                             className="w-6 h-6 rounded-full border-0 cursor-pointer p-0"
                             style={{ outline: '2px solid rgba(128,128,128,0.3)' }} />
                     </div>
+                    <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-2 mt-3">Color de texto</p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                        {['', '#1a1a1a', '#3b2f2f', '#e2e8f0', '#c9d1d9', '#f5deb3', '#a8b5c4'].map(c => (
+                            <button key={c || 'auto'} onClick={() => setCustomText?.(c)}
+                                title={c || 'Automático (según tema)'}
+                                className={`w-6 h-6 rounded-full border-2 transition ${customText === c ? 'border-[var(--highlight)] scale-125' : 'border-transparent hover:scale-110'}`}
+                                style={{ backgroundColor: c || 'var(--text-color)', outline: c === '' ? '1px dashed rgba(128,128,128,0.5)' : 'none' }}>
+                                {c === '' && <span className="text-[8px] leading-none block text-center opacity-60" style={{ color: 'var(--bg-color)' }}>A</span>}
+                            </button>
+                        ))}
+                        <input type="color" value={customText || '#000000'}
+                            onChange={e => setCustomText?.(e.target.value)}
+                            title="Color de texto personalizado"
+                            className="w-6 h-6 rounded-full border-0 cursor-pointer p-0"
+                            style={{ outline: '2px solid rgba(128,128,128,0.3)' }} />
+                    </div>
+                    <div className="border-t my-2 mt-3" style={{ borderColor: 'rgba(128,128,128,0.2)' }}></div>
+                    <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-2">Mis temas</p>
+                    {customThemes.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                            {customThemes.map(item => (
+                                <div key={item.id}
+                                    className={`group flex items-center gap-1.5 rounded-lg pl-1.5 pr-1 py-1 text-xs font-bold transition cursor-pointer border ${customBg === (item.bg || '') && customText === (item.text || '') ? 'border-[var(--highlight)]' : 'border-transparent hover:bg-black/5 dark:hover:bg-white/10'}`}
+                                    onClick={() => applyCustomTheme(item)}
+                                    title={`Fondo ${item.bg || 'auto'} · Texto ${item.text || 'auto'}`}>
+                                    <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-black/10 dark:border-white/20 text-[8px] font-black leading-none"
+                                        style={{ backgroundColor: item.bg || 'var(--bg-color)', color: item.text || 'var(--text-color)' }}>A</span>
+                                    <span className="max-w-[90px] truncate">{item.name}</span>
+                                    <button onClick={e => { e.stopPropagation(); deleteCustomTheme(item.id); }}
+                                        className="opacity-0 group-hover:opacity-50 hover:!opacity-100 text-[10px] leading-none px-0.5"
+                                        title="Eliminar tema">×</button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    <div className="flex items-center gap-1.5 mb-1">
+                        <input
+                            type="text"
+                            value={newThemeName}
+                            onChange={e => setNewThemeName(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && saveCurrentTheme()}
+                            placeholder="Nombre del tema..."
+                            className="flex-1 min-w-0 rounded-lg bg-black/5 dark:bg-white/5 px-2 py-1.5 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
+                            style={{ color: 'var(--text-color)' }}
+                        />
+                        <button onClick={saveCurrentTheme}
+                            disabled={!newThemeName.trim() || (!customBg && !customText)}
+                            className="px-2.5 py-1.5 rounded-lg text-xs font-black text-white transition disabled:opacity-30 hover:opacity-80"
+                            style={{ backgroundColor: 'var(--highlight)' }}
+                            title="Guardar colores actuales como tema">
+                            Guardar
+                        </button>
+                    </div>
+                    <p className="text-[9px] opacity-40 leading-relaxed mb-1">Elige fondo y texto arriba y guárdalos con nombre para reutilizarlos en cualquier libro.</p>
                     <div className="border-t my-2" style={{ borderColor: 'rgba(128,128,128,0.2)' }}></div>
                     <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-2">Tipografía</p>
                     <div className="flex flex-wrap gap-1.5 mb-3">
