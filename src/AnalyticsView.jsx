@@ -1,5 +1,6 @@
 import React, { useMemo, useState, lazy, Suspense } from 'react';
 import { ACHIEVEMENTS, RARITY, isAchievementVisible } from './achievements';
+import { CHALLENGE_TEMPLATES, computeChallengeProgress } from './challenges';
 const YearWrapped = lazy(() => import('./YearWrapped'));
 
 const MONTHS_SHORT = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
@@ -45,7 +46,7 @@ const AchievementCard = ({ achievement, unlocked, unlockedAt }) => {
 
 const LEVEL_NAMES = ['Aprendiz', 'Curioso', 'Lector', 'Devorador', 'Bibliófilo', 'Sabio', 'Leyenda'];
 
-const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, addons = {}, addonConfig = {}, initialTab = 'stats', onBack, dailyGoalMins = 30, weeklyGoalMins = 120, currentWeekMins = 0, readerLevel, journalEntries = [], onReadingPlanSet }) => {
+const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, addons = {}, addonConfig = {}, initialTab = 'stats', onBack, dailyGoalMins = 30, weeklyGoalMins = 120, currentWeekMins = 0, readerLevel, journalEntries = [], challenges = [], onAddChallenge, onRemoveChallenge, onReadingPlanSet }) => {
     const [activeTab, setActiveTab] = useState(initialTab);
     const [chartPeriod, setChartPeriod] = useState('week');
     const [showWrapped, setShowWrapped] = useState(false);
@@ -178,6 +179,7 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, add
     const tabs = [
         { id: 'stats', label: '📊 Estadísticas' },
         { id: 'achievements', label: '🏆 Logros' },
+        { id: 'challenges', label: '🎯 Retos' },
         ...(addons.readingJournal && journalEntries.length > 0 ? [{ id: 'journal', label: '📓 Diario' }] : []),
     ];
 
@@ -593,6 +595,131 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, add
                         })}
                     </div>
                 )}
+                {activeTab === 'challenges' && (() => {
+                    const now = Date.now();
+                    const withProgress = challenges.map(challenge => ({
+                        challenge,
+                        progress: computeChallengeProgress(challenge, { stats, books }, now),
+                    }));
+                    const active = withProgress.filter(({ challenge, progress }) => !challenge.completedAt && !progress.expired);
+                    const completed = withProgress.filter(({ challenge }) => challenge.completedAt);
+                    const expired = withProgress.filter(({ challenge, progress }) => !challenge.completedAt && progress.expired);
+                    const fmtDeadline = (deadline) => {
+                        if (!deadline) return null;
+                        const daysLeft = Math.max(0, Math.ceil((deadline - now) / 86400000));
+                        return daysLeft === 0 ? 'Último día' : `${daysLeft} ${daysLeft === 1 ? 'día restante' : 'días restantes'}`;
+                    };
+                    const ChallengeCard = ({ challenge, progress, muted }) => (
+                        <div className={`rounded-2xl border p-4 ${muted ? 'opacity-55' : ''}`}
+                            style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--surface-bg)' }}>
+                            <div className="flex items-start justify-between gap-3 mb-2">
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                    <span className="text-2xl flex-shrink-0">{challenge.emoji}</span>
+                                    <div className="min-w-0">
+                                        <p className="font-black text-sm leading-tight truncate">{challenge.title}</p>
+                                        <p className="text-[10px] opacity-45 font-bold mt-0.5">
+                                            {challenge.completedAt
+                                                ? `Completado el ${new Date(challenge.completedAt).toLocaleDateString()}`
+                                                : progress.expired
+                                                    ? 'Expirado'
+                                                    : (fmtDeadline(progress.deadline) || 'Sin fecha límite')}
+                                        </p>
+                                    </div>
+                                </div>
+                                <button onClick={() => onRemoveChallenge?.(challenge.id)}
+                                    className="p-1 opacity-30 hover:opacity-100 hover:text-red-400 transition text-base leading-none flex-shrink-0"
+                                    title="Eliminar reto">×</button>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ backgroundColor: 'var(--border-color)' }}>
+                                    <div className="h-full rounded-full transition-all duration-500"
+                                        style={{
+                                            width: `${progress.pct}%`,
+                                            background: challenge.completedAt || progress.done
+                                                ? '#22c55e'
+                                                : 'linear-gradient(90deg, var(--progress-bg), var(--highlight))',
+                                        }} />
+                                </div>
+                                <span className="text-xs font-black flex-shrink-0" style={{ color: progress.done ? '#22c55e' : 'var(--highlight)' }}>
+                                    {progress.current}/{progress.target}
+                                </span>
+                            </div>
+                        </div>
+                    );
+                    return (
+                        <div className="p-5 max-w-3xl mx-auto w-full space-y-6">
+                            <div>
+                                <h2 className="font-black text-lg mb-1">Retos de lectura</h2>
+                                <p className="text-xs opacity-50 font-medium">Ponte un objetivo con fecha. Al completarlo suena la fanfarria y queda en tu historial.</p>
+                            </div>
+
+                            {/* Crear nuevo reto */}
+                            <div className="rounded-2xl border p-4" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--surface-bg)' }}>
+                                <p className="text-[10px] font-black uppercase tracking-widest opacity-45 mb-3">Nuevo reto</p>
+                                <div className="grid sm:grid-cols-3 gap-3">
+                                    {CHALLENGE_TEMPLATES.map(template => (
+                                        <div key={template.type} className="rounded-xl border border-dashed p-3" style={{ borderColor: 'var(--border-color)' }}>
+                                            <div className="flex items-center gap-2 mb-1">
+                                                <span className="text-lg">{template.emoji}</span>
+                                                <span className="text-xs font-black leading-tight">{template.label}</span>
+                                            </div>
+                                            <p className="text-[10px] opacity-45 leading-relaxed mb-2">{template.desc}</p>
+                                            <div className="flex flex-wrap gap-1">
+                                                {template.targets.map(target => {
+                                                    const alreadyActive = challenges.some(c => c.type === template.type && c.target === target && !c.completedAt);
+                                                    return (
+                                                        <button key={target}
+                                                            onClick={() => onAddChallenge?.(template.type, target)}
+                                                            disabled={alreadyActive}
+                                                            className="px-2.5 py-1 rounded-lg text-[11px] font-black transition disabled:opacity-30 hover:opacity-80 text-white"
+                                                            style={{ backgroundColor: 'var(--highlight)' }}
+                                                            title={alreadyActive ? 'Ya tienes este reto activo' : `Crear reto: ${template.buildTitle(target)}`}>
+                                                            {target}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {active.length > 0 && (
+                                <div>
+                                    <p className="text-[10px] font-black uppercase tracking-widest opacity-45 mb-2">Activos ({active.length})</p>
+                                    <div className="grid sm:grid-cols-2 gap-2">
+                                        {active.map(({ challenge, progress }) => <ChallengeCard key={challenge.id} challenge={challenge} progress={progress} />)}
+                                    </div>
+                                </div>
+                            )}
+
+                            {active.length === 0 && completed.length === 0 && expired.length === 0 && (
+                                <div className="rounded-2xl border border-dashed p-8 text-center opacity-50" style={{ borderColor: 'var(--border-color)' }}>
+                                    <p className="text-3xl mb-2">🎯</p>
+                                    <p className="text-sm font-bold">Todavía no tienes retos. Crea el primero arriba.</p>
+                                </div>
+                            )}
+
+                            {completed.length > 0 && (
+                                <div>
+                                    <p className="text-[10px] font-black uppercase tracking-widest opacity-45 mb-2">Completados ({completed.length})</p>
+                                    <div className="grid sm:grid-cols-2 gap-2">
+                                        {completed.map(({ challenge, progress }) => <ChallengeCard key={challenge.id} challenge={challenge} progress={progress} />)}
+                                    </div>
+                                </div>
+                            )}
+
+                            {expired.length > 0 && (
+                                <div>
+                                    <p className="text-[10px] font-black uppercase tracking-widest opacity-45 mb-2">Expirados ({expired.length})</p>
+                                    <div className="grid sm:grid-cols-2 gap-2">
+                                        {expired.map(({ challenge, progress }) => <ChallengeCard key={challenge.id} challenge={challenge} progress={progress} muted />)}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    );
+                })()}
                 {activeTab === 'journal' && (
                     <div className="p-5 max-w-3xl mx-auto w-full">
                         <div className="flex items-center justify-between mb-5">

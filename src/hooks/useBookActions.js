@@ -2,6 +2,7 @@ import { useCallback, startTransition } from 'react';
 import { updateBookInList } from '../bookModel';
 import { deleteBookFromDB } from '../db';
 import { sounds } from '../sounds';
+import { getHighlightLabels } from '../highlightLabels';
 
 const HIGHLIGHT_COLOR_LABELS = {
     yellow: 'importante',
@@ -220,7 +221,7 @@ export function useBookActions({
                     cfi: bookmark.cfi,
                     date: bookmark.date || '',
                     color: bookmark.color || 'yellow',
-                    colorLabel: kind === 'highlight' ? (HIGHLIGHT_COLOR_LABELS[bookmark.color] || HIGHLIGHT_COLOR_LABELS.yellow) : '',
+                    colorLabel: kind === 'highlight' ? (getHighlightLabels()[bookmark.color] || HIGHLIGHT_COLOR_LABELS[bookmark.color] || HIGHLIGHT_COLOR_LABELS.yellow) : '',
                     kind,
                     text: normalizeAnnotationText(bookmark),
                     rawNote: bookmark.note || '',

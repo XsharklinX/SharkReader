@@ -19,6 +19,7 @@ import {
 import { buildPortableBackup, mergeBackupData } from './backupMerge';
 import { clearDiagnosticEntries, getDiagnosticEntries, installDiagnostics } from './diagnostics';
 import { readerXp, readerLevelFromXp } from './readingProgress';
+import { settleChallenges, lastWeekSummary, isoWeekKey, createChallenge } from './challenges';
 import SettingsPanel from './SettingsPanel';
 import TabBar from './TabBar';
 import LoginModal from './LoginModal';
@@ -255,6 +256,8 @@ const splitBookTags = (value) => String(value || '')
         const sharkyActionsRef = useRef(null);
         const addonsRef = useRef({});
         const [journalEntries, setJournalEntries] = useState([]);
+        const [challenges, setChallenges] = useState([]);
+        const challengeToastTimerRef = useRef(null);
         const [libraryViewport, setLibraryViewport] = useState({ width: 0, height: 0, scrollTop: 0 });
 
         const t = translations[lang] || translations['es'];
@@ -294,6 +297,59 @@ const splitBookTags = (value) => String(value || '')
             }
             prevReaderLevelRef.current = readerLevel.level;
         }, [readerLevel.level, isStateHydrated, addons.levelSystem, addons.soundFeedback, addonConfig.soundFeedback]);
+
+        // ── RETOS DE LECTURA: detección de completado ──
+        useEffect(() => {
+            if (!isStateHydrated || challenges.length === 0) return;
+            const { next, justCompleted } = settleChallenges(challenges, { stats, books });
+            if (!justCompleted.length) return;
+            setChallenges(next);
+            const done = justCompleted[0];
+            setAchievementToast({ emoji: done.emoji || '🎯', name: '¡Reto completado!', desc: done.title, rarity: 'epic' });
+            if (addons.soundFeedback && addonConfig.soundFeedback?.achievements !== false) {
+                sounds.achievement((addonConfig.soundFeedback?.volume ?? 100) / 100 * 0.3);
+            }
+            clearTimeout(challengeToastTimerRef.current);
+            challengeToastTimerRef.current = setTimeout(() => setAchievementToast(null), 4500);
+        }, [challenges, stats, books, isStateHydrated, addons.soundFeedback, addonConfig.soundFeedback]);
+
+        useEffect(() => () => clearTimeout(challengeToastTimerRef.current), []);
+
+        const addChallenge = useCallback((type, target) => {
+            const challenge = createChallenge(type, target);
+            if (!challenge) return;
+            setChallenges(prev => [
+                ...prev.filter(c => !(c.type === type && c.target === target && !c.completedAt)),
+                challenge,
+            ]);
+        }, []);
+
+        const removeChallenge = useCallback((id) => {
+            setChallenges(prev => prev.filter(c => c.id !== id));
+        }, []);
+
+        // ── RESUMEN SEMANAL: notificación nativa una vez por semana ──
+        useEffect(() => {
+            if (!isStateHydrated || !userProfile) return;
+            if (typeof Notification === 'undefined') return;
+            const weekKey = isoWeekKey();
+            let lastNotified = null;
+            try { lastNotified = localStorage.getItem('sr_weekly_summary_week'); } catch (_) {}
+            if (lastNotified === weekKey) return;
+            try { localStorage.setItem('sr_weekly_summary_week', weekKey); } catch (_) {}
+            const summary = lastWeekSummary({ stats, books });
+            if (summary.minutes < 5) return; // semana sin actividad relevante: no molestar
+            const showNotification = () => {
+                const parts = [`${summary.minutes} min leídos en ${summary.daysActive} ${summary.daysActive === 1 ? 'día' : 'días'}`];
+                if (summary.booksFinished > 0) parts.push(`${summary.booksFinished} ${summary.booksFinished === 1 ? 'libro terminado' : 'libros terminados'}`);
+                if (stats.streak > 0) parts.push(`racha de ${stats.streak} días`);
+                try { new Notification('🦈 Tu semana de lectura', { body: parts.join(' · '), silent: true }); } catch (_) {}
+            };
+            if (Notification.permission === 'granted') showNotification();
+            else if (Notification.permission !== 'denied') {
+                Notification.requestPermission().then(p => { if (p === 'granted') showNotification(); }).catch(() => {});
+            }
+        }, [isStateHydrated, userProfile]); // eslint-disable-line
 
         const bookPayloadsToFiles = useCallback((payloads = []) => {
             return payloads.map(payload => {
@@ -678,6 +734,7 @@ const splitBookTags = (value) => String(value || '')
                 await Promise.all([
                     applyStoredValue('stats', setStats),
                     applyStoredValue('journalEntries', setJournalEntries, Array.isArray),
+                    applyStoredValue('challenges', setChallenges, Array.isArray),
                     applyStoredValue('vocabulary', setVocabulary, Array.isArray),
                     applyStoredValue('categories', value => setCustomCategories(value.filter(cat => String(cat).toLowerCase() !== 'favoritos')), Array.isArray),
                     applyStoredValue('collections', setManualCollections, Array.isArray),
@@ -990,6 +1047,7 @@ const splitBookTags = (value) => String(value || '')
                     saveAppData('yearlyGoal', yearlyGoal),
                     saveAppData('achievements', achievements),
                     saveAppData('journalEntries', journalEntries),
+                    saveAppData('challenges', challenges),
                     saveAppData('currentFilter', currentFilter),
                     saveAppData('sortBy', sortBy),
                     saveAppData('categoryColors', categoryColors),
@@ -998,7 +1056,7 @@ const splitBookTags = (value) => String(value || '')
                 });
             }, 1500);
             return () => clearTimeout(persistUserRef.current);
-        }, [userProfile, vocabulary, dailyGoalMins, weeklyGoalMins, yearlyGoal, achievements, journalEntries, currentFilter, sortBy, categoryColors, isDbLoaded, isStateHydrated]);
+        }, [userProfile, vocabulary, dailyGoalMins, weeklyGoalMins, yearlyGoal, achievements, journalEntries, challenges, currentFilter, sortBy, categoryColors, isDbLoaded, isStateHydrated]);
 
         // ── PERSIST: addons & AI config → IndexedDB (debounce 1500ms)
         useEffect(() => {
@@ -2637,6 +2695,9 @@ const splitBookTags = (value) => String(value || '')
                                 currentWeekMins={currentWeekMins}
                                 readerLevel={readerLevel}
                                 journalEntries={journalEntries}
+                                challenges={challenges}
+                                onAddChallenge={addChallenge}
+                                onRemoveChallenge={removeChallenge}
                                 initialTab={view === 'achievements' ? 'achievements' : 'stats'}
                                 onBack={() => setView('library')}
                                 onReadingPlanSet={() => setStats(prev => prev.readingPlanSet ? prev : { ...prev, readingPlanSet: true })}

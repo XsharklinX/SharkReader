@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Icons } from './icons';
+import { useHighlightLabels, setHighlightLabel, HIGHLIGHT_SWATCHES, HIGHLIGHT_LABEL_DEFAULTS } from './highlightLabels';
 
 const ANNOTATION_COLOR_META = {
     yellow: { label: 'Importante', swatch: '#facc15' },
@@ -69,6 +70,9 @@ const Sidebar = ({
     setShowJournalModal,
     setSettingsOpen,
 }) => {
+    const highlightLabels = useHighlightLabels();
+    const [showLabelEditor, setShowLabelEditor] = useState(false);
+
     if (!open) return null;
 
     return (
@@ -372,8 +376,34 @@ const Sidebar = ({
                                 <button onClick={() => exportAnnotations('html', annotationBookFilter === 'all' ? {} : { bookId: annotationBookFilter })} className="text-[10px] font-black px-2 py-1 rounded-lg opacity-40 hover:opacity-100 hover:text-[var(--highlight)] transition">.HTML</button>
                                 <button onClick={() => exportAnnotations('json', annotationBookFilter === 'all' ? {} : { bookId: annotationBookFilter })} className="text-[10px] font-black px-2 py-1 rounded-lg opacity-40 hover:opacity-100 hover:text-[var(--highlight)] transition">.JSON</button>
                                 {addons.quotePosters && <button onClick={exportQuotesAsImage} title="Exportar subrayados como imagen" className="text-[10px] font-black px-2 py-1 rounded-lg opacity-40 hover:opacity-100 hover:text-[var(--highlight)] transition">🖼️</button>}
+                                <button onClick={() => setShowLabelEditor(p => !p)} title="Personalizar etiquetas de colores"
+                                    className={`text-[10px] font-black px-2 py-1 rounded-lg transition ${showLabelEditor ? 'opacity-100 text-[var(--highlight)]' : 'opacity-40 hover:opacity-100 hover:text-[var(--highlight)]'}`}>
+                                    ✏️
+                                </button>
                             </div>
                         </div>
+
+                        {showLabelEditor && (
+                            <div className="mb-3 rounded-2xl border p-3 space-y-2" style={{ borderColor: 'var(--border-color)' }}>
+                                <p className="text-[9px] font-black uppercase tracking-widest opacity-45">Etiquetas de subrayado</p>
+                                {Object.keys(HIGHLIGHT_LABEL_DEFAULTS).map(color => (
+                                    <div key={color} className="flex items-center gap-2">
+                                        <span className="w-4 h-4 rounded-full flex-shrink-0" style={{ backgroundColor: HIGHLIGHT_SWATCHES[color] }} />
+                                        <input
+                                            type="text"
+                                            defaultValue={highlightLabels[color]}
+                                            maxLength={24}
+                                            placeholder={HIGHLIGHT_LABEL_DEFAULTS[color]}
+                                            onBlur={e => setHighlightLabel(color, e.target.value)}
+                                            onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+                                            className="flex-1 min-w-0 bg-black/5 dark:bg-white/5 rounded-lg px-2 py-1.5 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
+                                            style={{ color: 'var(--text-color)' }}
+                                        />
+                                    </div>
+                                ))}
+                                <p className="text-[9px] opacity-40 leading-relaxed">Dale tu propio significado a cada color (p. ej. "A investigar", "Definición"). Se aplica en el lector, aquí y en los exports.</p>
+                            </div>
+                        )}
 
                         <div className="mb-3 space-y-2">
                             <input
@@ -472,7 +502,7 @@ const Sidebar = ({
                                                         </span>
                                                         {entry.kind === 'highlight' && (
                                                             <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-full" style={{ backgroundColor: `${colorMeta.swatch}22`, color: colorMeta.swatch }}>
-                                                                {colorMeta.label}
+                                                                {highlightLabels[entry.color] || colorMeta.label}
                                                             </span>
                                                         )}
                                                     </div>

@@ -4,6 +4,7 @@ import ePub from 'epubjs';
 import { Icons } from './icons';
 import { getCachedLocations, setCachedLocations } from './locationsCache';
 import EpubReaderSettings, { READING_PRESETS } from './EpubReaderSettings';
+import { useHighlightLabels } from './highlightLabels';
 
 function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg, customText, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme }) {
     const fontStack =
@@ -98,6 +99,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             return timer;
         }, []);
 
+        const highlightLabels = useHighlightLabels();
         const _bookFontKey = `sr_font_${bookData.id}`;
         const _savedFont = (() => { try { const r = localStorage.getItem(_bookFontKey); return r ? JSON.parse(r) : null; } catch { return null; } })();
         const [fontSize, setFontSize] = useState(_savedFont?.fontSize ?? 110);
@@ -249,13 +251,13 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 if (annotationColorFilter !== 'all' && entry.color !== annotationColorFilter) return false;
                 if (!q) return true;
                 const label = entry.kind === 'highlight'
-                    ? (HIGHLIGHT_PRESETS[entry.color]?.label || '')
+                    ? (highlightLabels[entry.color] || '')
                     : entry.kind === 'note' ? 'nota' : 'marcador';
                 return [entry.preview, entry.note, label, entry.date]
                     .filter(Boolean)
                     .some(value => String(value).toLowerCase().includes(q));
             });
-        }, [annotationColorFilter, annotationKindFilter, annotationSearch, currentAnnotations]);
+        }, [annotationColorFilter, annotationKindFilter, annotationSearch, currentAnnotations, highlightLabels]);
 
         const flattenTocItems = useCallback((items = [], depth = 0, output = []) => {
             items.forEach(item => {
@@ -1277,7 +1279,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         };
 
         const labelFor = (a) => a.kind === 'highlight'
-            ? (HIGHLIGHT_PRESETS[a.color]?.label || 'Subrayado')
+            ? (highlightLabels[a.color] || 'Subrayado')
             : a.kind === 'note' ? 'Nota' : 'Marcador';
 
         const slugName = () => (bookData.name || 'libro').replace(/[^a-z0-9]/gi, '_');
@@ -1300,6 +1302,9 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 '---',
                 '',
             ].filter(l => l !== '');
+            if (bookData.notes?.trim()) {
+                lines.push('## Notas del libro', '', bookData.notes.trim(), '', '---', '');
+            }
             currentAnnotations.forEach(a => {
                 lines.push(`**[${labelFor(a)}]** ${a.preview}`);
                 if (a.date) lines.push(`> *${a.date}*`);
@@ -1333,6 +1338,10 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 bookData.author ? `> por ${bookData.author}` : null,
                 '',
             ].filter(l => l !== null);
+
+            if (bookData.notes?.trim()) {
+                out.push('## Notas del libro', '', bookData.notes.trim(), '');
+            }
 
             // Agrupar por capítulo preservando el orden de aparición.
             const groups = new Map();
@@ -1766,7 +1775,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                             <button
                                                 key={id}
                                                 onClick={() => setHighlightColor(id)}
-                                                title={preset.label}
+                                                title={highlightLabels[id] || preset.label}
                                                 className={`h-4 w-4 rounded-full border transition ${highlightColor === id ? 'scale-110 border-white' : 'border-white/30'}`}
                                                 style={{ backgroundColor: preset.fill.replace(/0\.\d+\)/, '1)') }}
                                             />
@@ -1843,7 +1852,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                         <button
                                             key={id}
                                             onClick={() => setHighlightColor(id)}
-                                            title={preset.label}
+                                            title={highlightLabels[id] || preset.label}
                                             className={`h-4 w-4 rounded-full border transition ${highlightColor === id ? 'scale-110 border-white' : 'border-white/30'}`}
                                             style={{ backgroundColor: preset.fill.replace(/0\.\d+\)/, '1)') }}
                                         />
@@ -2088,7 +2097,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                         </button>
                                         {Object.entries(HIGHLIGHT_PRESETS).map(([id, preset]) => (
                                             <button key={id} onClick={() => setAnnotationColorFilter(id)}
-                                                title={`${preset.label} (${annotationStats.colors[id] || 0})`}
+                                                title={`${highlightLabels[id] || preset.label} (${annotationStats.colors[id] || 0})`}
                                                 className={`h-6 min-w-6 rounded-lg border px-1 text-[9px] font-black transition ${annotationColorFilter === id ? 'scale-105 border-white' : 'border-transparent opacity-80 hover:opacity-100'}`}
                                                 style={{ backgroundColor: preset.fill.replace(/0\.\d+\)/, '0.8)') }}>
                                                 {annotationStats.colors[id] || 0}
@@ -2131,7 +2140,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                                         : 'rgba(148, 163, 184, 0.16)',
                                                     color: 'var(--text-color)',
                                                 }}>
-                                                    {entry.kind === 'highlight' ? (HIGHLIGHT_PRESETS[entry.color]?.label || 'Subrayado') : entry.kind === 'note' ? 'Nota' : 'Marcador'}
+                                                    {entry.kind === 'highlight' ? (highlightLabels[entry.color] || 'Subrayado') : entry.kind === 'note' ? 'Nota' : 'Marcador'}
                                                 </span>
                                                 {entry.date && <span className="text-[10px] opacity-40 font-bold">{entry.date}</span>}
                                             </div>
