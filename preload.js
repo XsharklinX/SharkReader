@@ -24,6 +24,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     offFolderImportBatch: () => ipcRenderer.removeAllListeners('folder-import-batch'),
     onFolderImportDone: (handler) => ipcRenderer.on('folder-import-done', (_e, payload) => handler(payload)),
     offFolderImportDone: () => ipcRenderer.removeAllListeners('folder-import-done'),
+    // ── System tray ──
+    updateTrayInfo: (payload) => ipcRenderer.send('update-tray-info', payload),
+    onTrayContinueReading: (handler) => ipcRenderer.on('tray-continue-reading', () => handler()),
+    offTrayContinueReading: () => ipcRenderer.removeAllListeners('tray-continue-reading'),
     // ── Auto-updater ──
     checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
     quitAndInstallUpdate: () => ipcRenderer.invoke('quit-and-install-update'),

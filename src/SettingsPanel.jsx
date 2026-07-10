@@ -268,9 +268,14 @@ const SettingsPanel = ({
                             <section className="rounded-2xl border border-white/5 bg-black/5 p-4 dark:bg-white/[0.03]">
                                 <label className="mb-3 block text-xs font-black uppercase tracking-widest opacity-50">Backups</label>
                                 <p className="mb-3 text-xs opacity-60">Exporta metadata, progreso, configuración, Workshop y diagnóstico en un ZIP local.</p>
-                                <button onClick={onExportZipBackup} className="w-full rounded-xl bg-[var(--highlight)] py-2.5 text-sm font-black text-white transition hover:brightness-110">
-                                    Exportar backup ZIP
+                                <button onClick={() => onExportZipBackup(false)} className="w-full rounded-xl bg-[var(--highlight)] py-2.5 text-sm font-black text-white transition hover:brightness-110">
+                                    Exportar backup ZIP (solo datos)
                                 </button>
+                                <p className="mb-3 mt-4 text-xs opacity-60">O incluye también los archivos EPUB/PDF para poder restaurar el 100% de tu biblioteca en otro PC. Puede tardar y ocupar bastante según tu biblioteca.</p>
+                                <button onClick={() => onExportZipBackup(true)} className="w-full rounded-xl border border-[var(--highlight)]/40 bg-[var(--highlight)]/10 py-2.5 text-sm font-black text-[var(--highlight)] transition hover:bg-[var(--highlight)]/20">
+                                    Exportar backup completo (con libros)
+                                </button>
+                                <p className="mt-3 text-[11px] opacity-45">Para restaurar cualquiera de los dos: menú de usuario → Importar y selecciona el .json o .zip.</p>
                             </section>
 
                             <section>

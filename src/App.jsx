@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspens
 import JSZip from 'jszip';
 import { Icons, renderAvatar } from './icons';
 import { translations, languageNames, RANDOM_EMOJIS } from './translations';
-import { safeParse, loadBooksFromDB, saveBookToDB, saveBooksToDB, saveAppData, loadAppData, saveSetting, resetAllAppDataVerified, getAppDataCounts, saveCache, loadCacheByPrefix } from './db';
+import { safeParse, loadBooksFromDB, saveBookToDB, saveBooksToDB, saveAppData, loadAppData, saveSetting, resetAllAppDataVerified, getAppDataCounts, saveCache, loadCacheByPrefix, loadFilesFromDB } from './db';
 import { extractEpubMeta } from './epubMeta';
 import { RARITY } from './achievements';
 import { DEFAULT_EXTERNAL_SOURCES, migrateWorkshopData, normalizeAddonConfig, normalizeAddonState, validateAddonToggle } from './workshopModules';
@@ -49,6 +49,7 @@ import Sidebar from './Sidebar';
 import LibraryView from './LibraryView';
 import { sounds } from './sounds';
 import { TipToast } from './TipToast';
+import CommandPalette from './CommandPalette';
 import { TIPS } from './tips';
 
 const EpubReader = lazy(() => import('./EpubReader'));
@@ -232,6 +233,8 @@ const splitBookTags = (value) => String(value || '')
         const persistUserRef = useRef(null);        // user data & goals debounce
         const persistAddonsRef = useRef(null);      // addons & AI config debounce
         const syncTimerRef = useRef(null);
+        const syncDirtyRef = useRef(false);
+        const syncSnapshotRef = useRef(null);
         const activeBookIdRef = useRef(null);
         const metadataRepairingRef = useRef(new Set());
         const bookDedupKeysRef = useRef(new Set());
@@ -258,6 +261,7 @@ const splitBookTags = (value) => String(value || '')
         const [journalEntries, setJournalEntries] = useState([]);
         const [challenges, setChallenges] = useState([]);
         const challengeToastTimerRef = useRef(null);
+        const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
         const [libraryViewport, setLibraryViewport] = useState({ width: 0, height: 0, scrollTop: 0 });
 
         const t = translations[lang] || translations['es'];
@@ -350,6 +354,18 @@ const splitBookTags = (value) => String(value || '')
                 Notification.requestPermission().then(p => { if (p === 'granted') showNotification(); }).catch(() => {});
             }
         }, [isStateHydrated, userProfile]); // eslint-disable-line
+
+        // ── PALETA DE COMANDOS: Ctrl+K / Cmd+K ──
+        useEffect(() => {
+            const onKeyDown = (e) => {
+                if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+                    e.preventDefault();
+                    setCommandPaletteOpen(prev => !prev);
+                }
+            };
+            window.addEventListener('keydown', onKeyDown);
+            return () => window.removeEventListener('keydown', onKeyDown);
+        }, []);
 
         const bookPayloadsToFiles = useCallback((payloads = []) => {
             return payloads.map(payload => {
@@ -993,9 +1009,38 @@ const splitBookTags = (value) => String(value || '')
                 }
                 const syncData = JSON.stringify(backupToWrite, null, 2);
                 window.electronAPI.writeSyncFile(syncFolder, syncData).catch(() => {});
+                syncDirtyRef.current = false;
             }, 5000);
+            // Marcar cambios pendientes para el flush de cierre
+            syncDirtyRef.current = true;
+            syncSnapshotRef.current = { books, customCategories, manualCollections, stats, userProfile, addons, addonConfig, externalSources, syncFolder };
             return () => clearTimeout(syncTimerRef.current);
         }, [books, customCategories, manualCollections, stats, userProfile, addons, addonConfig, externalSources, isDbLoaded, isStateHydrated, syncFolder]);
+
+        // Flush del sync al cerrar la app: si el debounce de 5s no llegó a disparar,
+        // los últimos cambios se escribirían nunca. beforeunload envía el IPC
+        // fire-and-forget antes del teardown del renderer.
+        useEffect(() => {
+            const flushSyncOnClose = () => {
+                const snapshot = syncSnapshotRef.current;
+                if (!syncDirtyRef.current || !snapshot?.syncFolder || !window.electronAPI?.writeSyncFile) return;
+                try {
+                    const bookRecords = snapshot.books.filter(b => !b.loading).map(b => toStoredBookRecord(b, {}, { includeFile: false }));
+                    const backup = buildPortableBackup({
+                        books: bookRecords.map(({ file, ...record }) => record),
+                        categories: snapshot.customCategories,
+                        collections: snapshot.manualCollections,
+                        stats: snapshot.stats,
+                        user: snapshot.userProfile || {},
+                        workshop: migrateWorkshopData({ addons: snapshot.addons, addonConfig: snapshot.addonConfig, externalSources: snapshot.externalSources }),
+                    });
+                    window.electronAPI.writeSyncFile(snapshot.syncFolder, JSON.stringify(backup, null, 2)).catch(() => {});
+                    syncDirtyRef.current = false;
+                } catch (_) {}
+            };
+            window.addEventListener('beforeunload', flushSyncOnClose);
+            return () => window.removeEventListener('beforeunload', flushSyncOnClose);
+        }, []);
 
         // ── PERSIST: display prefs → localStorage (fast startup path, fires synchronously)
         useEffect(() => {
@@ -1575,6 +1620,29 @@ const splitBookTags = (value) => String(value || '')
             }));
         }, [selectedBookIds]);
 
+        const bulkAssignAuthor = useCallback((author) => {
+            const clean = (author || '').trim();
+            if (!clean) return;
+            const now = Date.now();
+            setBooks(prev => prev.map(b => selectedBookIds.has(b.id) ? { ...b, author: clean, updatedAt: now, metadataUpdatedAt: now } : b));
+        }, [selectedBookIds]);
+
+        const bulkAssignSeries = useCallback((series) => {
+            const clean = (series || '').trim();
+            if (!clean) return;
+            const now = Date.now();
+            setBooks(prev => {
+                // Continuar la numeración si la serie ya tiene libros con índice
+                let nextIndex = prev.reduce((max, b) => (b.series === clean && b.seriesIndex ? Math.max(max, b.seriesIndex) : max), 0);
+                return prev.map(b => {
+                    if (!selectedBookIds.has(b.id)) return b;
+                    if (b.series === clean && b.seriesIndex) return b; // ya estaba en la serie
+                    nextIndex += 1;
+                    return { ...b, series: clean, seriesIndex: nextIndex, updatedAt: now, metadataUpdatedAt: now };
+                });
+            });
+        }, [selectedBookIds]);
+
         const bulkMarkFinished = useCallback((isFinished) => {
             const now = Date.now();
             setBooks(prev => prev.map(b => !selectedBookIds.has(b.id) ? b : { ...b, isFinished, dateFinished: isFinished ? Date.now() : null, updatedAt: now }));
@@ -1840,6 +1908,24 @@ const splitBookTags = (value) => String(value || '')
             setStats(prev => ({ ...prev, rouletteSpins: (prev.rouletteSpins || 0) + 1 }));
         }, [addonConfig.bookRoulette, books, showNoticeToast]);
 
+        // ── SYSTEM TRAY: informar último libro y responder a "Continuar leyendo" ──
+        const trayActionRef = useRef({ lastReadId: null, openBook: null });
+        useEffect(() => {
+            trayActionRef.current = { lastReadId, openBook };
+            if (!window.electronAPI?.updateTrayInfo) return;
+            const lastBook = books.find(b => b.id === lastReadId);
+            window.electronAPI.updateTrayInfo({ lastBookName: lastBook?.name || null });
+        }, [lastReadId, books, openBook]);
+
+        useEffect(() => {
+            if (!window.electronAPI?.onTrayContinueReading) return;
+            window.electronAPI.onTrayContinueReading(() => {
+                const { lastReadId: id, openBook: open } = trayActionRef.current;
+                if (id && open) open(id);
+            });
+            return () => window.electronAPI.offTrayContinueReading?.();
+        }, []);
+
         // ── v3.5: OpenLibrary metadata fetch ───────────────────────────────────
         const fetchOpenLibraryMeta = useCallback(async (book) => {
             if (!window.electronAPI?.fetchOpenLibrary) return;
@@ -1909,7 +1995,7 @@ const splitBookTags = (value) => String(value || '')
             showNoticeToast('Diagnostico limpiado.', 'info');
         }, [showNoticeToast]);
 
-        const exportZipBackup = useCallback(async () => {
+        const exportZipBackup = useCallback(async (includeFiles = false) => {
             const backup = buildPortableBackup({
                 books: booksRef.current.filter(b => !b.loading).map(stripBookFilesForExport),
                 categories: customCategories,
@@ -1937,39 +2023,63 @@ const splitBookTags = (value) => String(value || '')
                 externalSources,
             }, null, 2));
             zip.file('diagnostics.json', JSON.stringify(getDiagnosticEntries(), null, 2));
+            let includedFileCount = 0;
+            if (includeFiles) {
+                try {
+                    const fileRecords = await loadFilesFromDB();
+                    const booksById2 = new Map(booksRef.current.map(b => [b.id, b]));
+                    fileRecords.forEach(record => {
+                        const book = booksById2.get(record?.id);
+                        if (!record?.file || !book) return;
+                        const rawName = record.file.name || `${book.name || 'libro'}.${book.type || 'epub'}`;
+                        const safeName = rawName.replace(/[<>:"/\\|?*]/g, '_').slice(0, 120);
+                        zip.file(`books/${book.id}__${safeName}`, record.file);
+                        includedFileCount += 1;
+                    });
+                } catch (err) {
+                    console.warn('[SharkReader] No se pudieron incluir los archivos en el backup:', err);
+                }
+            }
             zip.file('README.txt', [
                 'SharkReader backup ZIP',
                 `Exportado: ${new Date().toISOString()}`,
                 '',
                 'Este ZIP contiene datos de biblioteca, metadata, progreso, configuracion y diagnostico.',
-                'No incluye archivos EPUB/PDF completos para evitar duplicar contenido protegido.',
+                includeFiles
+                    ? `Incluye ${includedFileCount} archivo(s) EPUB/PDF en la carpeta books/ para restauracion completa.`
+                    : 'No incluye archivos EPUB/PDF completos para evitar duplicar contenido protegido.',
+                '',
+                'Para restaurar: Ajustes -> Datos -> Importar backup y selecciona este ZIP.',
             ].join('\n'));
 
             const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
-            downloadBlob(blob, `SharkReader_Backup_${new Date().toISOString().slice(0, 10)}.zip`);
+            downloadBlob(blob, `SharkReader_Backup${includeFiles ? '_Completo' : ''}_${new Date().toISOString().slice(0, 10)}.zip`);
         }, [addonConfig, addons, customCategories, downloadBlob, externalSources, manualCollections, stats, userProfile]);
 
-        const importData = (e) => {
-            const f = e.target.files[0]; if (!f) return;
-            const r = new FileReader();
-            r.onload = ev => {
-                try {
-                    const d = JSON.parse(ev.target.result);
-                    let nextBooks = books;
-
-                    if (Array.isArray(d.books)) {
-                        const byId = new Map(d.books.filter(book => book?.id).map(book => [book.id, book]));
-                        const bySourcePath = new Map(d.books.filter(book => book?.sourcePath).map(book => [book.sourcePath, book]));
-                        const byLegacyKey = new Map(d.books.map(book => [`${book.originalTitle || ''}|${book.originalAuthor || ''}`, book]));
-
-                        nextBooks = books.map(book => {
-                            const imported = byId.get(book.id)
-                                || (book.sourcePath ? bySourcePath.get(book.sourcePath) : null)
-                                || byLegacyKey.get(`${book.originalTitle || ''}|${book.originalAuthor || ''}`);
-                            return applyImportedBookData(book, imported);
+        const applyBackupObject = (d) => {
+                    // Actualización funcional: tras una importación de ZIP los libros
+                    // recién añadidos no están en el closure `books`, y usarlo los perdería.
+                    if (Array.isArray(d.books) || d.meta) {
+                        setBooks(prev => {
+                            let nextBooks = prev;
+                            if (Array.isArray(d.books)) {
+                                const byId = new Map(d.books.filter(book => book?.id).map(book => [book.id, book]));
+                                const bySourcePath = new Map(d.books.filter(book => book?.sourcePath).map(book => [book.sourcePath, book]));
+                                const byLegacyKey = new Map(d.books.map(book => [`${book.originalTitle || ''}|${book.originalAuthor || ''}`, book]));
+                                nextBooks = prev.map(book => {
+                                    const imported = byId.get(book.id)
+                                        || (book.sourcePath ? bySourcePath.get(book.sourcePath) : null)
+                                        || byLegacyKey.get(`${book.originalTitle || ''}|${book.originalAuthor || ''}`);
+                                    return applyImportedBookData(book, imported);
+                                });
+                            } else if (d.meta) {
+                                nextBooks = prev.map(book => applyImportedBookData(book, d.meta[`${book.originalTitle || ''}|${book.originalAuthor || ''}`]));
+                            }
+                            queueMicrotask(() => {
+                                saveBooksToDB(nextBooks.filter(book => !book.loading).map(book => toStoredBookRecord(book, {}, { includeFile: false })));
+                            });
+                            return nextBooks;
                         });
-                    } else if (d.meta) {
-                        nextBooks = books.map(book => applyImportedBookData(book, d.meta[`${book.originalTitle || ''}|${book.originalAuthor || ''}`]));
                     }
 
                     if (d.categories) {
@@ -1997,8 +2107,44 @@ const splitBookTags = (value) => String(value || '')
                         saveAppData('workshop', migratedWorkshop);
                     }
 
-                    setBooks(nextBooks);
-                    saveBooksToDB(nextBooks.filter(book => !book.loading).map(book => toStoredBookRecord(book, {}, { includeFile: false })));
+        };
+
+        // Restaura un ZIP completo: primero importa los EPUB/PDF de books/,
+        // después aplica metadata/progreso/config del manifiesto.
+        const importZipBackup = async (f) => {
+            const zip = await JSZip.loadAsync(f);
+            const bookEntries = Object.values(zip.files).filter(entry => !entry.dir && entry.name.startsWith('books/'));
+            if (bookEntries.length) {
+                showNoticeToast(`Restaurando ${bookEntries.length} libro(s) del backup…`, 'info');
+                const files = [];
+                for (const entry of bookEntries) {
+                    const blob = await entry.async('blob');
+                    const rawName = entry.name.slice('books/'.length).replace(/^[^_]+__/, '') || 'libro.epub';
+                    const type = /\.pdf$/i.test(rawName) ? 'application/pdf' : 'application/epub+zip';
+                    files.push(new File([blob], rawName, { type }));
+                }
+                await processFiles(files);
+            }
+            const manifest = zip.file('sharkreader-backup.json');
+            if (manifest) {
+                const d = JSON.parse(await manifest.async('string'));
+                applyBackupObject(d);
+            }
+            showNoticeToast('Backup restaurado.', 'success');
+        };
+
+        const importData = (e) => {
+            const f = e.target.files[0]; if (!f) return;
+            if (/\.zip$/i.test(f.name)) {
+                importZipBackup(f).catch(() => alert('El ZIP no es un backup válido de SharkReader.'));
+                e.target.value = '';
+                return;
+            }
+            const r = new FileReader();
+            r.onload = ev => {
+                try {
+                    const d = JSON.parse(ev.target.result);
+                    applyBackupObject(d);
                     alert("Datos restaurados.");
                 } catch (_) { alert("Archivo inválido."); }
             };
@@ -2491,7 +2637,7 @@ const splitBookTags = (value) => String(value || '')
                 {/* Inputs ocultos */}
                 <input type="file" accept=".epub,.pdf" multiple ref={fileInputRef} className="hidden" onChange={handleFilesUpload} />
                 <input type="file" multiple ref={folderInputRef} accept=".epub,.pdf" className="hidden" onChange={handleFilesUpload} webkitdirectory="" directory="" />
-                <input type="file" accept=".json" ref={importInputRef} className="hidden" onChange={importData} />
+                <input type="file" accept=".json,.zip" ref={importInputRef} className="hidden" onChange={importData} />
                 <input type="file" accept="image/*" ref={avatarInputRef} className="hidden" onChange={handleAvatarUpload} />
                 <input type="file" accept="image/*" ref={coverInputRef} className="hidden" onChange={handleCoverUpload} />
 
@@ -2624,6 +2770,8 @@ const splitBookTags = (value) => String(value || '')
                         bulkToggleFav={bulkToggleFav}
                         bulkMarkFinished={bulkMarkFinished}
                         bulkAssignCategory={bulkAssignCategory}
+                        bulkAssignAuthor={bulkAssignAuthor}
+                        bulkAssignSeries={bulkAssignSeries}
                         bulkDeleteBooks={bulkDeleteBooks}
                         bulkAddToCollection={bulkAddToCollection}
                         customCategories={customCategories}
@@ -2931,6 +3079,23 @@ const splitBookTags = (value) => String(value || '')
                         </div>
                     );
                 })()}
+
+                {/* ── PALETA DE COMANDOS (Ctrl+K) ── */}
+                <CommandPalette
+                    open={commandPaletteOpen}
+                    onClose={() => setCommandPaletteOpen(false)}
+                    books={books}
+                    lastReadId={lastReadId}
+                    openBook={openBook}
+                    setView={setView}
+                    setSettingsOpen={setSettingsOpen}
+                    setShowWorkshop={setShowWorkshop}
+                    setSidebarOpen={setSidebarOpen}
+                    setTheme={setTheme}
+                    exportZipBackup={exportZipBackup}
+                    spinBookRoulette={spinBookRoulette}
+                    lang={lang}
+                />
 
                 {/* ── ¿SABÍAS QUE? TIP TOAST ── */}
                 {activeTip && !activeTabId && (

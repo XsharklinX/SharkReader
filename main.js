@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Tray, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -995,8 +995,51 @@ ipcMain.handle('quit-and-install-update', () => {
     catch (err) { return { ok: false, msg: String(err?.message || err) }; }
 });
 
+// ── System tray ──────────────────────────────────────────────────────────────
+let tray = null;
+let trayLastBook = null;
+
+function focusMainWindow() {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+}
+
+function buildTrayMenu() {
+    return Menu.buildFromTemplate([
+        { label: 'Abrir SharkReader', click: focusMainWindow },
+        ...(trayLastBook ? [{
+            label: `📖 Continuar: ${trayLastBook.slice(0, 42)}${trayLastBook.length > 42 ? '…' : ''}`,
+            click: () => {
+                focusMainWindow();
+                if (mainWindow) mainWindow.webContents.send('tray-continue-reading');
+            },
+        }] : []),
+        { type: 'separator' },
+        { label: 'Salir', click: () => app.quit() },
+    ]);
+}
+
+function createTray() {
+    try {
+        tray = new Tray(path.join(__dirname, 'icon_build.ico'));
+        tray.setToolTip('SharkReader');
+        tray.setContextMenu(buildTrayMenu());
+        tray.on('double-click', focusMainWindow);
+    } catch (err) {
+        console.warn('[SharkReader] No se pudo crear el tray:', err);
+    }
+}
+
+ipcMain.on('update-tray-info', (_e, payload) => {
+    trayLastBook = payload?.lastBookName || null;
+    if (tray) tray.setContextMenu(buildTrayMenu());
+});
+
 app.whenReady().then(() => {
     createWindow();
+    createTray();
     // Comprobación silenciosa al arrancar (solo en producción, no bloquea el inicio)
     if (!isDev) {
         setTimeout(() => { autoUpdater.checkForUpdates().catch(() => {}); }, 4000);

@@ -34,6 +34,8 @@ const LibraryView = React.forwardRef(({
     bulkToggleFav,
     bulkMarkFinished,
     bulkAssignCategory,
+    bulkAssignAuthor,
+    bulkAssignSeries,
     bulkDeleteBooks,
     bulkAddToCollection,
     customCategories,
@@ -381,6 +383,20 @@ const LibraryView = React.forwardRef(({
                                 {manualCollections.map(col => <option key={col.id} value={col.id}>{col.emoji || '🗂️'} {col.name}</option>)}
                             </select>
                         )}
+                        <button onClick={() => {
+                            const author = window.prompt(`Autor para ${selectedBookIds.size} libro(s):`);
+                            if (author) bulkAssignAuthor(author);
+                        }} disabled={!selectedBookIds.size}
+                            className="text-xs font-bold px-3 py-1.5 rounded-xl bg-sky-500/15 text-sky-700 dark:text-sky-400 hover:bg-sky-500/25 transition disabled:opacity-40">
+                            👤 Autor
+                        </button>
+                        <button onClick={() => {
+                            const series = window.prompt(`Nombre de la serie para ${selectedBookIds.size} libro(s) (índices automáticos):`);
+                            if (series) bulkAssignSeries(series);
+                        }} disabled={!selectedBookIds.size}
+                            className="text-xs font-bold px-3 py-1.5 rounded-xl bg-violet-500/15 text-violet-700 dark:text-violet-400 hover:bg-violet-500/25 transition disabled:opacity-40">
+                            📖 Serie
+                        </button>
                         <button onClick={bulkDeleteBooks} disabled={!selectedBookIds.size}
                             className="text-xs font-bold px-3 py-1.5 rounded-xl bg-red-500/15 text-red-700 dark:text-red-400 hover:bg-red-500/25 transition disabled:opacity-40">
                             🗑️ Eliminar
