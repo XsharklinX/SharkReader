@@ -2309,6 +2309,83 @@ body {
     scroll-behavior: smooth;
 }
 
+/* ── ¿SABÍAS QUE? TIP TOAST ── */
+@keyframes tipSlideIn {
+    from { opacity: 0; transform: translateY(12px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes tipProgress {
+    from { width: 100%; }
+    to   { width: 0%; }
+}
+
+.tip-toast-card {
+    width: 290px;
+    background: var(--surface-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 18px;
+    box-shadow: 0 12px 48px rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.04);
+    overflow: hidden;
+    animation: tipSlideIn 0.32s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.tip-toast-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 14px 8px;
+}
+
+.tip-toast-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--highlight);
+    opacity: 0.9;
+}
+
+.tip-toast-close {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: none;
+    background: transparent;
+    color: inherit;
+    opacity: 0.35;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.15s, background 0.15s;
+    padding: 0;
+}
+.tip-toast-close:hover {
+    opacity: 0.9;
+    background: rgba(255,255,255,0.08);
+}
+
+.tip-toast-body {
+    padding: 0 14px 12px;
+    font-size: 12.5px;
+    line-height: 1.65;
+    opacity: 0.82;
+    font-weight: 500;
+}
+
+.tip-toast-bar {
+    height: 2px;
+    background: var(--highlight);
+    opacity: 0.5;
+    animation: tipProgress 12s linear forwards;
+    transform-origin: left;
+}
+
 /* ── SIDEBAR IMPROVED SLIDE ── */
 .slide-in-left {
     animation: slideInLeft 0.28s cubic-bezier(0.32, 0.72, 0, 1) forwards;
