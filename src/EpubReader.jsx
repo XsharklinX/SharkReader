@@ -399,6 +399,28 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             }
         }, [readFlow, doTransition]);
 
+        // Guarda la posición actual antes de un salto (TOC, búsqueda, anotación).
+        // Definido antes del efecto de teclado que lo usa en sus deps (evita TDZ).
+        const pushHistory = useCallback(() => {
+            const loc = renditionRef.current?.currentLocation?.();
+            const cfi = loc?.start?.cfi;
+            if (!cfi) return;
+            const stack = historyRef.current;
+            if (stack[stack.length - 1] !== cfi) {
+                stack.push(cfi);
+                if (stack.length > 50) stack.shift();
+                setHistoryCount(stack.length);
+            }
+        }, []);
+
+        const goBackHistory = useCallback(() => {
+            const cfi = historyRef.current.pop();
+            setHistoryCount(historyRef.current.length);
+            if (cfi && renditionRef.current) {
+                renditionRef.current.display(cfi).catch(() => {});
+            }
+        }, []);
+
         useEffect(() => {
             if (!viewerRef.current) return;
 
@@ -955,27 +977,6 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             autoScrollRafRef.current = requestAnimationFrame(tick);
             return () => cancelAnimationFrame(autoScrollRafRef.current);
         }, [autoScroll, autoScrollSpeed, readFlow]);
-
-        // Guarda la posición actual antes de un salto (TOC, búsqueda, anotación)
-        const pushHistory = useCallback(() => {
-            const loc = renditionRef.current?.currentLocation?.();
-            const cfi = loc?.start?.cfi;
-            if (!cfi) return;
-            const stack = historyRef.current;
-            if (stack[stack.length - 1] !== cfi) {
-                stack.push(cfi);
-                if (stack.length > 50) stack.shift();
-                setHistoryCount(stack.length);
-            }
-        }, []);
-
-        const goBackHistory = useCallback(() => {
-            const cfi = historyRef.current.pop();
-            setHistoryCount(historyRef.current.length);
-            if (cfi && renditionRef.current) {
-                renditionRef.current.display(cfi).catch(() => {});
-            }
-        }, []);
 
         const jumpToToc = (href) => {
             if (renditionRef.current) {
