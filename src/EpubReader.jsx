@@ -125,12 +125,15 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const [ttsRate, setTtsRate] = useState(() => { const r = parseFloat(localStorage.getItem('sr_tts_rate')); return Number.isFinite(r) ? r : 1; });
         const [ttsVoiceURI, setTtsVoiceURI] = useState(() => { try { return localStorage.getItem('sr_tts_voice') || ''; } catch { return ''; } });
         const [ttsVoices, setTtsVoices] = useState([]);
-        const ttsQueueRef = useRef([]);
+        const ttsQueueRef = useRef([]);           // elementos DOM pendientes de leer
         const ttsIndexRef = useRef(0);
         const ttsActiveRef = useRef(false);
         const ttsUttRef = useRef(null);
         const ttsRateRef = useRef(ttsRate);
         const ttsVoiceRef = useRef(ttsVoiceURI);
+        const ttsSpokenRef = useRef(new WeakSet()); // párrafos ya leídos (evita repetir al pasar página)
+        const ttsHighlightRef = useRef(null);       // elemento sombreado actualmente
+        const stopTtsRef = useRef(() => {});        // acceso a stopTts desde callbacks definidos antes
         const [isLoading, setIsLoading] = useState(true);
         const [isReady, setIsReady] = useState(false);
         const [epubError, setEpubError] = useState(null);
@@ -389,12 +392,14 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
         const prevPage = useCallback(() => {
             if (renditionRef.current && readFlow === 'paginated') {
+                if (ttsActiveRef.current) stopTtsRef.current(); // navegación manual: cortar lectura
                 doTransition('prev', () => renditionRef.current.prev());
             }
         }, [readFlow, doTransition]);
 
         const nextPage = useCallback(() => {
             if (renditionRef.current && readFlow === 'paginated') {
+                if (ttsActiveRef.current) stopTtsRef.current();
                 doTransition('next', () => renditionRef.current.next());
             }
         }, [readFlow, doTransition]);
@@ -417,6 +422,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             const cfi = historyRef.current.pop();
             setHistoryCount(historyRef.current.length);
             if (cfi && renditionRef.current) {
+                if (ttsActiveRef.current) stopTtsRef.current();
                 renditionRef.current.display(cfi).catch(() => {});
             }
         }, []);
@@ -980,6 +986,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
         const jumpToToc = (href) => {
             if (renditionRef.current) {
+                if (ttsActiveRef.current) stopTtsRef.current();
                 pushHistory();
                 renditionRef.current.display(href);
                 setShowToc(false);
@@ -1005,46 +1012,171 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             try { localStorage.setItem('sr_tts_voice', ttsVoiceURI); } catch (_) {}
         }, [ttsVoiceURI]);
 
-        // Extrae los párrafos legibles de la sección renderizada actualmente
-        const collectTtsChunks = useCallback(() => {
-            const chunks = [];
-            try {
-                renditionRef.current?.getContents()?.forEach(c => {
-                    c.document?.body?.querySelectorAll('p,h1,h2,h3,h4,h5,h6,li,blockquote')?.forEach(el => {
-                        const text = el.innerText?.trim();
-                        if (text && text.length > 1) chunks.push(text);
+        // ── Utilidades TTS ──
+        // Elementos de bloque legibles de un documento, excluyendo los que contienen
+        // otros bloques (evita leer un blockquote y luego sus <p> internos dos veces).
+        const TTS_BLOCK_SELECTOR = 'p,h1,h2,h3,h4,h5,h6,li,blockquote';
+        const ttsBlocksOf = useCallback((doc) => {
+            if (!doc?.body) return [];
+            return Array.from(doc.body.querySelectorAll(TTS_BLOCK_SELECTOR)).filter(el =>
+                (el.innerText || '').trim().length > 1 && !el.querySelector(TTS_BLOCK_SELECTOR)
+            );
+        }, []);
+
+        const ensureTtsStyles = useCallback((doc) => {
+            if (!doc?.head || doc.head.querySelector('#shark-tts-style')) return;
+            const style = doc.createElement('style');
+            style.id = 'shark-tts-style';
+            style.textContent = `
+                .shark-tts-active {
+                    background: rgba(56, 189, 248, 0.20) !important;
+                    box-shadow: 0 0 0 5px rgba(56, 189, 248, 0.20);
+                    border-radius: 4px;
+                    transition: background 0.25s ease;
+                }
+            `;
+            doc.head.appendChild(style);
+        }, []);
+
+        const clearTtsHighlight = useCallback(() => {
+            try { ttsHighlightRef.current?.classList?.remove('shark-tts-active'); } catch (_) {}
+            ttsHighlightRef.current = null;
+        }, []);
+
+        // Índice del bloque que contiene un nodo (subiendo por ancestros)
+        const blockIndexOf = (node, blocks) => {
+            let el = node?.nodeType === 1 ? node : node?.parentElement;
+            while (el) {
+                const idx = blocks.indexOf(el);
+                if (idx !== -1) return idx;
+                el = el.parentElement;
+            }
+            return -1;
+        };
+
+        // Cola de lectura derivada de lo que hay EN PANTALLA ahora mismo.
+        // Paginado: usa los CFI start/end de currentLocation() (respeta doble página,
+        // tamaño de fuente, márgenes, etc.). Scroll: primer bloque visible → final.
+        const collectVisibleTtsQueue = useCallback(() => {
+            const rendition = renditionRef.current;
+            const loc = rendition?.currentLocation?.();
+            if (!rendition || !loc?.start?.cfi) return [];
+
+            if (readFlow === 'scrolled-doc') {
+                const viewer = viewerRef.current;
+                const vr = viewer?.getBoundingClientRect();
+                if (!vr) return [];
+                const allBlocks = [];
+                (rendition.getContents() || []).forEach(c => {
+                    const doc = c.document;
+                    if (!doc?.body) return;
+                    ensureTtsStyles(doc);
+                    const iframe = doc.defaultView?.frameElement;
+                    const ifr = iframe?.getBoundingClientRect();
+                    if (!ifr) return;
+                    ttsBlocksOf(doc).forEach(el => {
+                        const r = el.getBoundingClientRect();
+                        allBlocks.push({ el, absTop: r.top + ifr.top, absBottom: r.bottom + ifr.top });
                     });
                 });
-            } catch (_) {}
-            return chunks;
-        }, []);
+                allBlocks.sort((a, b) => a.absTop - b.absTop);
+                const startIdx = allBlocks.findIndex(b => b.absBottom > vr.top + 8 && b.absTop < vr.bottom - 8);
+                if (startIdx === -1) return [];
+                return allBlocks.slice(startIdx).map(b => b.el).filter(el => !ttsSpokenRef.current.has(el));
+            }
+
+            // Paginado: rango visible exacto vía CFI
+            let startRange = null;
+            let endRange = null;
+            try { startRange = rendition.getRange(loc.start.cfi); } catch (_) {}
+            try { endRange = loc.end?.cfi ? rendition.getRange(loc.end.cfi) : null; } catch (_) {}
+            const doc = startRange?.startContainer?.ownerDocument;
+            if (!doc?.body) return [];
+            ensureTtsStyles(doc);
+            const blocks = ttsBlocksOf(doc);
+            if (!blocks.length) return [];
+            let startIdx = blockIndexOf(startRange.startContainer, blocks);
+            if (startIdx === -1) startIdx = 0;
+            let endIdx = endRange && endRange.startContainer.ownerDocument === doc
+                ? blockIndexOf(endRange.startContainer, blocks)
+                : blocks.length - 1;
+            if (endIdx === -1) endIdx = blocks.length - 1;
+            return blocks.slice(startIdx, endIdx + 1).filter(el => !ttsSpokenRef.current.has(el));
+        }, [readFlow, ensureTtsStyles, ttsBlocksOf]);
 
         const stopTts = useCallback(() => {
             ttsActiveRef.current = false;
             ttsUttRef.current = null;
             ttsQueueRef.current = [];
             ttsIndexRef.current = 0;
+            clearTtsHighlight();
             try { window.speechSynthesis?.cancel(); } catch (_) {}
             setTtsStatus('idle');
-        }, []);
+        }, [clearTtsHighlight]);
+        useEffect(() => { stopTtsRef.current = stopTts; }, [stopTts]);
 
-        const speakChunk = useCallback((index) => {
-            if (!ttsActiveRef.current) return;
-            const text = ttsQueueRef.current[index];
-            if (text == null) {
-                // Fin de la sección cargada
+        // Centrar suavemente el párrafo activo en modo scroll (coords iframe → contenedor)
+        const scrollTtsElIntoView = useCallback((el) => {
+            if (readFlow !== 'scrolled-doc') return;
+            const viewer = viewerRef.current;
+            const iframe = el?.ownerDocument?.defaultView?.frameElement;
+            if (!viewer || !iframe) return;
+            try {
+                const ifr = iframe.getBoundingClientRect();
+                const vr = viewer.getBoundingClientRect();
+                const r = el.getBoundingClientRect();
+                const delta = (r.top + ifr.top) - (vr.top + viewer.clientHeight * 0.35);
+                if (Math.abs(delta) > 30) viewer.scrollTo({ top: viewer.scrollTop + delta, behavior: 'smooth' });
+            } catch (_) {}
+        }, [readFlow]);
+
+        // Al agotar la página visible en modo paginado, pasa página y sigue leyendo.
+        // depth evita bucles si una página no aporta bloques nuevos (párrafo partido).
+        // speakTtsElRef rompe la dependencia circular advanceTtsPage ↔ speakTtsEl.
+        const speakTtsElRef = useRef(null);
+        const advanceTtsPage = useCallback((depth = 0) => {
+            if (!ttsActiveRef.current || readFlow !== 'paginated' || !renditionRef.current || depth >= 4) {
                 stopTts();
                 return;
             }
+            renditionRef.current.next().then(() => {
+                scheduleReaderTimeout(() => {
+                    if (!ttsActiveRef.current) return;
+                    const els = collectVisibleTtsQueue();
+                    if (!els.length) { advanceTtsPage(depth + 1); return; }
+                    ttsQueueRef.current = els;
+                    speakTtsElRef.current?.(0);
+                }, 450);
+            }).catch(() => stopTts());
+        }, [readFlow, scheduleReaderTimeout, collectVisibleTtsQueue, stopTts]);
+
+        const speakTtsEl = useCallback((index) => {
+            if (!ttsActiveRef.current) return;
+            const els = ttsQueueRef.current;
+            if (index >= els.length) {
+                clearTtsHighlight();
+                advanceTtsPage();
+                return;
+            }
+            const el = els[index];
+            ttsIndexRef.current = index;
+            const text = (el?.innerText || '').trim();
+            if (!text) { speakTtsEl(index + 1); return; }
+
+            // Sombrear el párrafo que se está leyendo
+            clearTtsHighlight();
+            try { el.classList.add('shark-tts-active'); ttsHighlightRef.current = el; } catch (_) {}
+            scrollTtsElIntoView(el);
+
             const utt = new SpeechSynthesisUtterance(text);
             utt.rate = ttsRateRef.current;
             utt.lang = lang === 'es' ? 'es-ES' : 'en-US';
             const voice = (window.speechSynthesis.getVoices() || []).find(v => v.voiceURI === ttsVoiceRef.current);
             if (voice) { utt.voice = voice; utt.lang = voice.lang; }
             utt.onend = () => {
+                ttsSpokenRef.current.add(el);
                 if (!ttsActiveRef.current) return;
-                ttsIndexRef.current = index + 1;
-                speakChunk(index + 1);
+                speakTtsEl(index + 1);
             };
             utt.onerror = (e) => {
                 // cancel() dispara 'interrupted'/'canceled' — no son errores reales
@@ -1053,19 +1185,21 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             };
             ttsUttRef.current = utt; // evitar GC del utterance en Chromium
             window.speechSynthesis.speak(utt);
-        }, [lang, stopTts]);
+        }, [lang, clearTtsHighlight, advanceTtsPage, scrollTtsElIntoView, stopTts]);
+        useEffect(() => { speakTtsElRef.current = speakTtsEl; }, [speakTtsEl]);
 
         const startTts = useCallback(() => {
             if (!window.speechSynthesis) return;
             try { window.speechSynthesis.cancel(); } catch (_) {}
-            const chunks = collectTtsChunks();
-            if (!chunks.length) return;
-            ttsQueueRef.current = chunks;
+            ttsSpokenRef.current = new WeakSet();
+            const els = collectVisibleTtsQueue();
+            if (!els.length) return;
+            ttsQueueRef.current = els;
             ttsIndexRef.current = 0;
             ttsActiveRef.current = true;
             setTtsStatus('playing');
-            speakChunk(0);
-        }, [collectTtsChunks, speakChunk]);
+            speakTtsEl(0);
+        }, [collectVisibleTtsQueue, speakTtsEl]);
 
         const pauseTts = useCallback(() => {
             try { window.speechSynthesis?.pause(); } catch (_) {}
@@ -1088,13 +1222,15 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             scheduleReaderTimeout(() => {
                 if (!ttsQueueRef.current.length) return;
                 ttsActiveRef.current = true;
-                speakChunk(index);
+                speakTtsEl(index);
             }, 80);
-        }, [scheduleReaderTimeout, speakChunk]);
+        }, [scheduleReaderTimeout, speakTtsEl]);
 
         // Cortar el TTS al desmontar el lector o cambiar de libro
         useEffect(() => () => {
             ttsActiveRef.current = false;
+            try { ttsHighlightRef.current?.classList?.remove('shark-tts-active'); } catch (_) {}
+            ttsHighlightRef.current = null;
             try { window.speechSynthesis?.cancel(); } catch (_) {}
         }, [bookData.id]);
 
@@ -1585,7 +1721,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                     <button onClick={startTts}
                                         className="flex-1 py-2 rounded-xl font-bold text-sm text-white transition"
                                         style={{ backgroundColor: 'var(--highlight)' }}>
-                                        ▶ Leer esta sección
+                                        ▶ Leer desde esta página
                                     </button>
                                 )}
                                 {ttsStatus === 'playing' && (
@@ -1629,7 +1765,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                     <option key={v.voiceURI} value={v.voiceURI}>{v.name} ({v.lang})</option>
                                 ))}
                             </select>
-                            <p className="text-[9px] opacity-40 mt-2 leading-relaxed">Lee la sección visible. Al cambiar velocidad o voz, retoma desde el párrafo actual.</p>
+                            <p className="text-[9px] opacity-40 mt-2 leading-relaxed">Empieza en lo que ves en pantalla, sombrea el párrafo que va leyendo y pasa de página sola. Pasar página a mano detiene la lectura.</p>
                         </div>
                     )}
                 </div>
