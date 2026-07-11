@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     offFolderImportBatch: () => ipcRenderer.removeAllListeners('folder-import-batch'),
     onFolderImportDone: (handler) => ipcRenderer.on('folder-import-done', (_e, payload) => handler(payload)),
     offFolderImportDone: () => ipcRenderer.removeAllListeners('folder-import-done'),
+    // ── TTS neuronal ──
+    synthesizeNeuralTts: (payload) => ipcRenderer.invoke('tts-synthesize', payload),
     // ── System tray ──
     updateTrayInfo: (payload) => ipcRenderer.send('update-tray-info', payload),
     onTrayContinueReading: (handler) => ipcRenderer.on('tray-continue-reading', () => handler()),

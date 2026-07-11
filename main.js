@@ -995,6 +995,37 @@ ipcMain.handle('quit-and-install-update', () => {
     catch (err) { return { ok: false, msg: String(err?.message || err) }; }
 });
 
+// ── TTS neuronal (Edge Read Aloud API vía msedge-tts) ────────────────────────
+// Reutiliza la instancia mientras no cambie la voz (mantiene el websocket vivo).
+let edgeTts = null;
+let edgeTtsVoice = null;
+
+ipcMain.handle('tts-synthesize', async (_e, payload) => {
+    const text = String(payload?.text || '').slice(0, 8000).trim();
+    const voice = String(payload?.voice || 'es-ES-ElviraNeural');
+    const rate = String(payload?.rate || '+0%');
+    if (!text) return null;
+    try {
+        const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
+        if (!edgeTts || edgeTtsVoice !== voice) {
+            edgeTts = new MsEdgeTTS();
+            await edgeTts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
+            edgeTtsVoice = voice;
+        }
+        const { audioStream } = edgeTts.toStream(text, { rate });
+        const chunks = [];
+        return await new Promise((resolve) => {
+            audioStream.on('data', (chunk) => chunks.push(chunk));
+            audioStream.on('end', () => resolve(Buffer.concat(chunks)));
+            audioStream.on('error', () => { edgeTts = null; edgeTtsVoice = null; resolve(null); });
+        });
+    } catch (err) {
+        edgeTts = null;
+        edgeTtsVoice = null;
+        return null;
+    }
+});
+
 // ── System tray ──────────────────────────────────────────────────────────────
 let tray = null;
 let trayLastBook = null;

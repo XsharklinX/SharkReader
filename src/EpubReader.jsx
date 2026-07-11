@@ -59,6 +59,23 @@ function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg
     return lines.join('\n');
 }
 
+// Voces neuronales del Edge Read Aloud API (requieren internet, calidad casi humana)
+const NEURAL_VOICES = [
+    { id: 'es-ES-ElviraNeural', label: 'Elvira — España (F)' },
+    { id: 'es-ES-AlvaroNeural', label: 'Álvaro — España (M)' },
+    { id: 'es-MX-DaliaNeural', label: 'Dalia — México (F)' },
+    { id: 'es-MX-JorgeNeural', label: 'Jorge — México (M)' },
+    { id: 'es-DO-RamonaNeural', label: 'Ramona — Rep. Dominicana (F)' },
+    { id: 'es-DO-EmilioNeural', label: 'Emilio — Rep. Dominicana (M)' },
+    { id: 'es-AR-ElenaNeural', label: 'Elena — Argentina (F)' },
+    { id: 'es-AR-TomasNeural', label: 'Tomás — Argentina (M)' },
+    { id: 'es-CO-SalomeNeural', label: 'Salomé — Colombia (F)' },
+    { id: 'es-CO-GonzaloNeural', label: 'Gonzalo — Colombia (M)' },
+    { id: 'en-US-AriaNeural', label: 'Aria — English US (F)' },
+    { id: 'en-US-GuyNeural', label: 'Guy — English US (M)' },
+    { id: 'en-GB-SoniaNeural', label: 'Sonia — English UK (F)' },
+];
+
 const HIGHLIGHT_PRESETS = {
     yellow: { label: 'Importante', fill: 'rgba(250, 204, 21, 0.62)' },
     green:  { label: 'Idea',       fill: 'rgba(34, 197, 94, 0.55)'  },
@@ -125,6 +142,8 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const [ttsRate, setTtsRate] = useState(() => { const r = parseFloat(localStorage.getItem('sr_tts_rate')); return Number.isFinite(r) ? r : 1; });
         const [ttsVoiceURI, setTtsVoiceURI] = useState(() => { try { return localStorage.getItem('sr_tts_voice') || ''; } catch { return ''; } });
         const [ttsVoices, setTtsVoices] = useState([]);
+        const [ttsEngine, setTtsEngine] = useState(() => { try { return localStorage.getItem('sr_tts_engine') || 'neural'; } catch { return 'neural'; } });
+        const [ttsNeuralVoice, setTtsNeuralVoice] = useState(() => { try { return localStorage.getItem('sr_tts_neural_voice') || 'es-ES-ElviraNeural'; } catch { return 'es-ES-ElviraNeural'; } });
         const ttsQueueRef = useRef([]);           // elementos DOM pendientes de leer
         const ttsIndexRef = useRef(0);
         const ttsActiveRef = useRef(false);
@@ -134,6 +153,10 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const ttsSpokenRef = useRef(new WeakSet()); // párrafos ya leídos (evita repetir al pasar página)
         const ttsHighlightRef = useRef(null);       // elemento sombreado actualmente
         const stopTtsRef = useRef(() => {});        // acceso a stopTts desde callbacks definidos antes
+        const ttsEngineRef = useRef(ttsEngine);
+        const ttsNeuralVoiceRef = useRef(ttsNeuralVoice);
+        const ttsAudioRef = useRef(null);           // <audio> del chunk neuronal en reproducción
+        const ttsAudioCacheRef = useRef(new Map()); // índice de cola → Promise<audio buffer> (prefetch)
         const [isLoading, setIsLoading] = useState(true);
         const [isReady, setIsReady] = useState(false);
         const [epubError, setEpubError] = useState(null);
@@ -1012,6 +1035,16 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             try { localStorage.setItem('sr_tts_voice', ttsVoiceURI); } catch (_) {}
         }, [ttsVoiceURI]);
 
+        useEffect(() => {
+            ttsEngineRef.current = ttsEngine;
+            try { localStorage.setItem('sr_tts_engine', ttsEngine); } catch (_) {}
+        }, [ttsEngine]);
+
+        useEffect(() => {
+            ttsNeuralVoiceRef.current = ttsNeuralVoice;
+            try { localStorage.setItem('sr_tts_neural_voice', ttsNeuralVoice); } catch (_) {}
+        }, [ttsNeuralVoice]);
+
         // ── Utilidades TTS ──
         // Elementos de bloque legibles de un documento, excluyendo los que contienen
         // otros bloques (evita leer un blockquote y luego sus <p> internos dos veces).
@@ -1111,9 +1144,29 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             ttsIndexRef.current = 0;
             clearTtsHighlight();
             try { window.speechSynthesis?.cancel(); } catch (_) {}
+            try { ttsAudioRef.current?.pause(); } catch (_) {}
+            ttsAudioRef.current = null;
+            ttsAudioCacheRef.current.clear();
             setTtsStatus('idle');
         }, [clearTtsHighlight]);
         useEffect(() => { stopTtsRef.current = stopTts; }, [stopTts]);
+
+        // Sintetiza (y cachea) el audio neuronal de un índice de la cola — permite prefetch
+        const fetchNeuralAudio = useCallback((index) => {
+            const el = ttsQueueRef.current[index];
+            const text = (el?.innerText || '').trim();
+            if (!text || !window.electronAPI?.synthesizeNeuralTts) return Promise.resolve(null);
+            const cache = ttsAudioCacheRef.current;
+            if (!cache.has(index)) {
+                const pct = Math.round((ttsRateRef.current - 1) * 100);
+                cache.set(index, window.electronAPI.synthesizeNeuralTts({
+                    text,
+                    voice: ttsNeuralVoiceRef.current,
+                    rate: `${pct >= 0 ? '+' : ''}${pct}%`,
+                }).catch(() => null));
+            }
+            return cache.get(index);
+        }, []);
 
         // Centrar suavemente el párrafo activo en modo scroll (coords iframe → contenedor)
         const scrollTtsElIntoView = useCallback((el) => {
@@ -1145,6 +1198,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     const els = collectVisibleTtsQueue();
                     if (!els.length) { advanceTtsPage(depth + 1); return; }
                     ttsQueueRef.current = els;
+                    ttsAudioCacheRef.current.clear(); // la caché neuronal va por índice de cola
                     speakTtsElRef.current?.(0);
                 }, 450);
             }).catch(() => stopTts());
@@ -1168,16 +1222,36 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             try { el.classList.add('shark-tts-active'); ttsHighlightRef.current = el; } catch (_) {}
             scrollTtsElIntoView(el);
 
+            const advance = () => {
+                ttsSpokenRef.current.add(el);
+                if (!ttsActiveRef.current) return;
+                speakTtsEl(index + 1);
+            };
+
+            // ── Motor neuronal (Edge, requiere internet) ──
+            if (ttsEngineRef.current === 'neural' && window.electronAPI?.synthesizeNeuralTts) {
+                fetchNeuralAudio(index).then(data => {
+                    // Ignorar respuestas tardías si el usuario paró o saltó de párrafo
+                    if (!ttsActiveRef.current || ttsIndexRef.current !== index) return;
+                    if (!data) { stopTts(); return; } // sin internet o fallo del servicio
+                    fetchNeuralAudio(index + 1); // prefetch: elimina el hueco entre párrafos
+                    const url = URL.createObjectURL(new Blob([data], { type: 'audio/mpeg' }));
+                    const audio = new Audio(url);
+                    ttsAudioRef.current = audio;
+                    audio.onended = () => { URL.revokeObjectURL(url); advance(); };
+                    audio.onerror = () => { URL.revokeObjectURL(url); if (ttsActiveRef.current) stopTts(); };
+                    audio.play().catch(() => { if (ttsActiveRef.current) stopTts(); });
+                });
+                return;
+            }
+
+            // ── Motor del sistema (offline) ──
             const utt = new SpeechSynthesisUtterance(text);
             utt.rate = ttsRateRef.current;
             utt.lang = lang === 'es' ? 'es-ES' : 'en-US';
             const voice = (window.speechSynthesis.getVoices() || []).find(v => v.voiceURI === ttsVoiceRef.current);
             if (voice) { utt.voice = voice; utt.lang = voice.lang; }
-            utt.onend = () => {
-                ttsSpokenRef.current.add(el);
-                if (!ttsActiveRef.current) return;
-                speakTtsEl(index + 1);
-            };
+            utt.onend = advance;
             utt.onerror = (e) => {
                 // cancel() dispara 'interrupted'/'canceled' — no son errores reales
                 if (e?.error === 'interrupted' || e?.error === 'canceled') return;
@@ -1185,7 +1259,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             };
             ttsUttRef.current = utt; // evitar GC del utterance en Chromium
             window.speechSynthesis.speak(utt);
-        }, [lang, clearTtsHighlight, advanceTtsPage, scrollTtsElIntoView, stopTts]);
+        }, [lang, clearTtsHighlight, advanceTtsPage, scrollTtsElIntoView, stopTts, fetchNeuralAudio]);
         useEffect(() => { speakTtsElRef.current = speakTtsEl; }, [speakTtsEl]);
 
         const startTts = useCallback(() => {
@@ -1196,28 +1270,40 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             if (!els.length) return;
             ttsQueueRef.current = els;
             ttsIndexRef.current = 0;
+            ttsAudioCacheRef.current.clear();
             ttsActiveRef.current = true;
             setTtsStatus('playing');
             speakTtsEl(0);
         }, [collectVisibleTtsQueue, speakTtsEl]);
 
         const pauseTts = useCallback(() => {
-            try { window.speechSynthesis?.pause(); } catch (_) {}
+            if (ttsEngineRef.current === 'neural') {
+                try { ttsAudioRef.current?.pause(); } catch (_) {}
+            } else {
+                try { window.speechSynthesis?.pause(); } catch (_) {}
+            }
             setTtsStatus('paused');
         }, []);
 
         const resumeTts = useCallback(() => {
-            try { window.speechSynthesis?.resume(); } catch (_) {}
+            if (ttsEngineRef.current === 'neural') {
+                try { ttsAudioRef.current?.play?.(); } catch (_) {}
+            } else {
+                try { window.speechSynthesis?.resume(); } catch (_) {}
+            }
             setTtsStatus('playing');
         }, []);
 
-        // Cambiar velocidad/voz en caliente: reinicia desde el párrafo actual
+        // Cambiar velocidad/voz/motor en caliente: reinicia desde el párrafo actual
         const restartTtsFromCurrent = useCallback(() => {
             if (!ttsActiveRef.current) return;
             const index = ttsIndexRef.current;
             // Desactivar antes de cancel() para que el onend del utterance cortado no avance la cola
             ttsActiveRef.current = false;
             try { window.speechSynthesis.cancel(); } catch (_) {}
+            try { ttsAudioRef.current?.pause(); } catch (_) {}
+            ttsAudioRef.current = null;
+            ttsAudioCacheRef.current.clear(); // la velocidad/voz van horneadas en el audio neuronal
             setTtsStatus('playing');
             scheduleReaderTimeout(() => {
                 if (!ttsQueueRef.current.length) return;
@@ -1232,6 +1318,8 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             try { ttsHighlightRef.current?.classList?.remove('shark-tts-active'); } catch (_) {}
             ttsHighlightRef.current = null;
             try { window.speechSynthesis?.cancel(); } catch (_) {}
+            try { ttsAudioRef.current?.pause(); } catch (_) {}
+            ttsAudioRef.current = null;
         }, [bookData.id]);
 
         // ── IMAGEN DE CITA (canvas 1080×1080 descargable) ──
@@ -1754,18 +1842,46 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                 <span className="text-xs opacity-50">🐇</span>
                                 <span className="text-xs font-black opacity-70 min-w-[32px] text-right">{ttsRate.toFixed(1)}×</span>
                             </div>
+                            <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-1">Motor de voz</p>
+                            <div className="flex gap-1 mb-3">
+                                <button onClick={() => { setTtsEngine('neural'); if (ttsStatus === 'playing') restartTtsFromCurrent(); }}
+                                    className={`flex-1 py-1.5 rounded-lg text-[11px] font-black transition ${ttsEngine === 'neural' ? 'bg-[var(--highlight)] text-white' : 'bg-black/5 dark:bg-white/5 opacity-60 hover:opacity-100'}`}>
+                                    ✨ Neural
+                                </button>
+                                <button onClick={() => { setTtsEngine('system'); if (ttsStatus === 'playing') restartTtsFromCurrent(); }}
+                                    className={`flex-1 py-1.5 rounded-lg text-[11px] font-black transition ${ttsEngine === 'system' ? 'bg-[var(--highlight)] text-white' : 'bg-black/5 dark:bg-white/5 opacity-60 hover:opacity-100'}`}>
+                                    💻 Sistema
+                                </button>
+                            </div>
                             <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-1">Voz</p>
-                            <select
-                                value={ttsVoiceURI}
-                                onChange={e => { setTtsVoiceURI(e.target.value); if (ttsStatus === 'playing') restartTtsFromCurrent(); }}
-                                className="w-full rounded-xl bg-black/5 dark:bg-white/5 px-2 py-2 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
-                                style={{ color: 'var(--text-color)', backgroundColor: 'var(--surface-bg)' }}>
-                                <option value="">Voz del sistema (auto)</option>
-                                {voiceList.map(v => (
-                                    <option key={v.voiceURI} value={v.voiceURI}>{v.name} ({v.lang})</option>
-                                ))}
-                            </select>
-                            <p className="text-[9px] opacity-40 mt-2 leading-relaxed">Empieza en lo que ves en pantalla, sombrea el párrafo que va leyendo y pasa de página sola. Pasar página a mano detiene la lectura.</p>
+                            {ttsEngine === 'neural' ? (
+                                <select
+                                    value={ttsNeuralVoice}
+                                    onChange={e => { setTtsNeuralVoice(e.target.value); if (ttsStatus === 'playing') restartTtsFromCurrent(); }}
+                                    className="w-full rounded-xl bg-black/5 dark:bg-white/5 px-2 py-2 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
+                                    style={{ color: 'var(--text-color)', backgroundColor: 'var(--surface-bg)' }}>
+                                    {NEURAL_VOICES.map(v => (
+                                        <option key={v.id} value={v.id}>{v.label}</option>
+                                    ))}
+                                </select>
+                            ) : (
+                                <select
+                                    value={ttsVoiceURI}
+                                    onChange={e => { setTtsVoiceURI(e.target.value); if (ttsStatus === 'playing') restartTtsFromCurrent(); }}
+                                    className="w-full rounded-xl bg-black/5 dark:bg-white/5 px-2 py-2 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
+                                    style={{ color: 'var(--text-color)', backgroundColor: 'var(--surface-bg)' }}>
+                                    <option value="">Voz del sistema (auto)</option>
+                                    {voiceList.map(v => (
+                                        <option key={v.voiceURI} value={v.voiceURI}>{v.name} ({v.lang})</option>
+                                    ))}
+                                </select>
+                            )}
+                            <p className="text-[9px] opacity-40 mt-2 leading-relaxed">
+                                {ttsEngine === 'neural'
+                                    ? 'Voces neuronales de alta calidad (requieren internet). Si falla la conexión, la lectura se detiene.'
+                                    : 'Voces instaladas en Windows (funcionan sin internet).'}
+                                {' '}Empieza en lo visible, sombrea el párrafo actual y pasa de página sola.
+                            </p>
                         </div>
                     )}
                 </div>
