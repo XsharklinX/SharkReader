@@ -2060,7 +2060,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             {/* Izquierda: back + título (sin tabs) | solo título+info (con tabs) */}
                             {!tabs ? (
                                 <div className="flex items-center gap-1.5 min-w-0">
-                                    <button onClick={onClose} className="p-1.5 hover:bg-black/20 rounded-full transition flex-shrink-0 transform hover:-translate-x-1"><Icons.Back /></button>
+                                    <button onClick={onClose} aria-label="Volver a la biblioteca" className="p-1.5 hover:bg-black/20 rounded-full transition flex-shrink-0 transform hover:-translate-x-1"><Icons.Back /></button>
                                     <button onClick={onOpenBookInfo} className="flex items-center gap-1.5 hover:bg-black/10 px-2 py-1 rounded-xl transition min-w-0">
                                         <span className="font-bold text-sm tracking-wide truncate max-w-[150px] sm:max-w-xs">{bookData.name}</span>
                                         <Icons.Info />
@@ -2249,7 +2249,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             style={{ top: dictionaryPopup.y, left: dictionaryPopup.x }}>
                             <div className="flex justify-between items-start mb-3">
                                 <h4 className="font-black text-[var(--highlight)] text-sm uppercase tracking-widest">{dictionaryPopup.word}</h4>
-                                <button onClick={() => setDictionaryPopup(null)} className="opacity-50 hover:opacity-100 transition ml-3"><Icons.Close /></button>
+                                <button onClick={() => setDictionaryPopup(null)} aria-label="Cerrar diccionario" className="opacity-50 hover:opacity-100 transition ml-3"><Icons.Close /></button>
                             </div>
                             <p className="text-sm opacity-80 leading-relaxed font-medium mb-3">{dictionaryPopup.def}</p>
                             {onSaveWord && (
@@ -2284,11 +2284,11 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 {quoteModal && (
                     <div className="fixed inset-0 z-[600] flex items-center justify-center bg-black/60 backdrop-blur-sm fade-in p-6"
                         onClick={() => setQuoteModal(null)}>
-                        <div className="bg-[var(--surface-bg)] rounded-3xl p-5 shadow-2xl border border-[var(--border-color)] max-w-[440px] w-full"
+                        <div role="dialog" aria-modal="true" aria-label="Imagen de cita" className="bg-[var(--surface-bg)] rounded-3xl p-5 shadow-2xl border border-[var(--border-color)] max-w-[440px] w-full"
                             onClick={e => e.stopPropagation()}>
                             <div className="flex items-center justify-between mb-3">
                                 <h3 className="font-black text-base">Imagen de cita</h3>
-                                <button onClick={() => setQuoteModal(null)} className="p-1.5 opacity-50 hover:opacity-100 transition">
+                                <button onClick={() => setQuoteModal(null)} aria-label="Cerrar" className="p-1.5 opacity-50 hover:opacity-100 transition">
                                     <Icons.Close />
                                 </button>
                             </div>
@@ -2501,7 +2501,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 {pendingBookmarkCfi && (
                     <div className="fixed inset-0 z-[500] flex items-center justify-center bg-black/40 backdrop-blur-sm fade-in"
                         onClick={() => { setPendingBookmarkCfi(null); setPendingBookmarkType('bookmark'); }}>
-                        <div className="bg-[var(--surface-bg)] rounded-2xl p-6 w-80 shadow-2xl border border-[var(--border-color)]"
+                        <div role="dialog" aria-modal="true" aria-label={pendingBookmarkType === 'note' ? 'Añadir nota al margen' : 'Añadir marcador'} className="bg-[var(--surface-bg)] rounded-2xl p-6 w-80 shadow-2xl border border-[var(--border-color)]"
                             onClick={e => e.stopPropagation()}>
                             <h3 className="font-black text-base mb-1">{pendingBookmarkType === 'note' ? 'Añadir nota al margen' : 'Añadir marcador'}</h3>
                             <p className="text-xs opacity-50 mb-4">{pendingBookmarkType === 'note' ? 'Esta nota quedará atada a este punto del libro.' : 'Escribe una nota para este punto (opcional).'}</p>

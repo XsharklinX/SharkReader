@@ -231,6 +231,7 @@ const WorkshopPanel = ({
     return (
         <div className="fixed inset-0 z-[300] flex items-end justify-center bg-black/60 backdrop-blur-sm fade-in sm:items-center" onClick={onClose} onWheel={e => e.stopPropagation()}>
             <div
+                role="dialog" aria-modal="true" aria-label={copy.title}
                 className="flex w-full flex-col rounded-t-3xl border border-[var(--border-color)] bg-[var(--surface-bg)] shadow-2xl sm:max-w-3xl sm:rounded-3xl"
                 style={{ maxHeight: '90vh' }}
                 onClick={e => e.stopPropagation()} onWheel={e => e.stopPropagation()}>
@@ -244,7 +245,7 @@ const WorkshopPanel = ({
                             </p>
                         </div>
                     </div>
-                    <button onClick={onClose} className="rounded-full p-2 text-xl leading-none opacity-60 transition hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/5">x</button>
+                    <button onClick={onClose} aria-label="Cerrar Workshop" className="rounded-full p-2 text-xl leading-none opacity-60 transition hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/5">x</button>
                 </div>
 
                 {false && activeAddonsList.length > 0 && (

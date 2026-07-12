@@ -99,7 +99,7 @@ export default function CommandPalette({
 
     return (
         <div className="fixed inset-0 z-[700] flex items-start justify-center bg-black/50 backdrop-blur-sm pt-[12vh] fade-in" onClick={onClose}>
-            <div className="w-full max-w-lg rounded-2xl border shadow-2xl overflow-hidden"
+            <div role="dialog" aria-modal="true" aria-label={lang === 'en' ? 'Command palette' : 'Paleta de comandos'} className="w-full max-w-lg rounded-2xl border shadow-2xl overflow-hidden"
                 style={{ backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)' }}
                 onClick={e => e.stopPropagation()}>
                 <div className="flex items-center gap-2.5 px-4 py-3 border-b" style={{ borderColor: 'var(--border-color)' }}>
@@ -111,6 +111,7 @@ export default function CommandPalette({
                         onChange={e => setQuery(e.target.value)}
                         onKeyDown={handleKeyDown}
                         placeholder={lang === 'en' ? 'Type a command or book name…' : 'Escribe un comando o el nombre de un libro…'}
+                        aria-label={lang === 'en' ? 'Search commands or books' : 'Buscar comandos o libros'}
                         className="flex-1 bg-transparent outline-none text-sm font-medium"
                         style={{ color: 'var(--text-color)' }}
                     />

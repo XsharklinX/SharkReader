@@ -15,7 +15,10 @@
     --surface-bg: #ffffff;
     --border-color: #e2e8f0;
     --topbar-bg: #0284c7;
-    --highlight: #0ea5e9;
+    /* sky-700, no sky-500: --highlight se usa como color de TEXTO en muchas
+       etiquetas/porcentajes sobre fondos claros. #0ea5e9 daba ~2.6:1 de
+       contraste (falla WCAG AA 4.5:1); #0369a1 da ~5.7:1. */
+    --highlight: #0369a1;
     --progress-bg: #3b82f6;
 }
 
@@ -35,8 +38,22 @@
     --surface-bg: #fde68a;
     --border-color: #d3c6aa;
     --topbar-bg: #8b6b4a;
-    --highlight: #d97706;
-    --progress-bg: #d97706;
+    /* amber-800, no amber-600: mismo motivo que en :root — #d97706 daba ~3:1
+       de contraste como texto sobre el fondo crema; #92400e da ~6.7:1. */
+    --highlight: #92400e;
+    --progress-bg: #92400e;
+}
+
+/* Accesibilidad: anillo de foco visible y consistente para navegación por
+   teclado. Muchos componentes usan la utilidad `outline-none` de Tailwind
+   (pensada para combinarse con un `ring` propio) sin añadir un reemplazo,
+   dejando el foco de teclado invisible. :focus-visible no se activa con
+   clic de ratón, así que no añade ruido visual fuera de la navegación real
+   por teclado. !important es deliberado: debe ganar siempre a estilos
+   puntuales de cada componente, igual que las reglas de tema del EPUB. */
+:focus-visible {
+    outline: 2px solid var(--highlight) !important;
+    outline-offset: 2px !important;
 }
 
 body {
@@ -807,7 +824,8 @@ body {
 }
 
 .onboarding-book-illustration,
-.onboarding-book-sharky {
+.onboarding-book-sharky,
+.onboarding-book-logo {
     position: relative;
     z-index: 1;
     display: block;
@@ -816,10 +834,17 @@ body {
     filter: drop-shadow(0 18px 24px rgba(38,48,66,0.18));
 }
 
-.onboarding-book-sharky {
+.onboarding-book-sharky,
+.onboarding-book-logo {
     display: grid;
     place-items: center;
     min-height: 150px;
+}
+
+.onboarding-book-logo img {
+    width: 96px;
+    height: 96px;
+    border-radius: 26px;
 }
 
 .onboarding-book-progress {
@@ -1139,7 +1164,8 @@ body {
     }
 
     .onboarding-book-illustration,
-    .onboarding-book-sharky {
+    .onboarding-book-sharky,
+    .onboarding-book-logo {
         margin: 18px auto;
         width: min(70%, 230px);
     }

@@ -545,7 +545,7 @@ const PdfReader = ({
                     {/* Controles */}
                     <div className="h-14 flex items-center justify-between px-3 gap-2">
                         <div className="flex items-center gap-1 min-w-0">
-                            <button onClick={onClose} className="p-2 hover:bg-black/20 rounded-full transition flex-shrink-0"><Icons.Back /></button>
+                            <button onClick={onClose} aria-label="Volver a la biblioteca" className="p-2 hover:bg-black/20 rounded-full transition flex-shrink-0"><Icons.Back /></button>
                             <button onClick={onOpenBookInfo} className="flex items-center gap-1 hover:bg-black/10 px-2 py-1 rounded-xl transition min-w-0">
                                 <span className="font-bold text-sm truncate max-w-[140px] sm:max-w-xs">{bookData.name}</span>
                                 <Icons.Info />
@@ -699,7 +699,7 @@ const PdfReader = ({
                     onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-between px-4 py-3 border-b flex-shrink-0" style={{ borderColor: 'var(--border-color)' }}>
                         <span className="font-black text-sm" style={{ color: 'var(--text-color)' }}>Índice</span>
-                        <button onClick={() => setShowOutline(false)} className="p-1 opacity-50 hover:opacity-100 transition"><Icons.Close /></button>
+                        <button onClick={() => setShowOutline(false)} aria-label="Cerrar índice" className="p-1 opacity-50 hover:opacity-100 transition"><Icons.Close /></button>
                     </div>
                     <div className="px-3 pt-2.5 pb-1 flex-shrink-0">
                         <div className="flex items-center gap-1.5 bg-black/5 dark:bg-white/5 rounded-lg px-2 py-1.5">
@@ -825,7 +825,7 @@ const PdfReader = ({
                             {(bookData.bookmarks || []).length > 0 && (
                                 <button onClick={exportPdfAnnotations} className="px-2 py-1 rounded-lg text-[10px] font-black hover:bg-black/5 dark:hover:bg-white/5 transition opacity-50 hover:opacity-100" title="Exportar como Markdown">↓ MD</button>
                             )}
-                            <button onClick={() => setShowAnnotationsPanel(false)} className="p-1 opacity-50 hover:opacity-100 transition"><Icons.Close /></button>
+                            <button onClick={() => setShowAnnotationsPanel(false)} aria-label="Cerrar anotaciones" className="p-1 opacity-50 hover:opacity-100 transition"><Icons.Close /></button>
                         </div>
                     </div>
                     {pdfAnnotationStats.total > 0 && (

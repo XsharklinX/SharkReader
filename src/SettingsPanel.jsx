@@ -92,6 +92,7 @@ const SettingsPanel = ({
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm fade-in" onClick={onClose} onWheel={e => e.stopPropagation()}>
             <div
+                role="dialog" aria-modal="true" aria-label={t.settings}
                 className="relative max-h-[90vh] w-[720px] max-w-[95%] overflow-hidden rounded-3xl p-0 shadow-2xl"
                 style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}
                 onClick={e => e.stopPropagation()}

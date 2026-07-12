@@ -86,7 +86,7 @@ const Sidebar = ({
                             <span className="font-black text-lg tracking-tighter text-[var(--text-color)] uppercase -mt-1">Reader</span>
                         </div>
                     </div>
-                    <button onClick={onClose} className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-full transition"><Icons.Close /></button>
+                    <button onClick={onClose} aria-label="Cerrar menú" className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-full transition"><Icons.Close /></button>
                 </div>
                 <div className="flex-1 overflow-y-auto py-4 px-3">
                     <div className="px-3 mb-5 fade-in cursor-pointer" onClick={() => { setShowStreakModal(true); onClose(); }}>
@@ -256,7 +256,7 @@ const Sidebar = ({
                                     <button onClick={e => { e.stopPropagation(); moveManualCollection(collection.id, 'up'); }} disabled={colIdx === 0} className="p-1 text-xs disabled:opacity-20 hover:opacity-70 transition" title="Subir">↑</button>
                                     <button onClick={e => { e.stopPropagation(); moveManualCollection(collection.id, 'down'); }} disabled={colIdx === manualCollections.length - 1} className="p-1 text-xs disabled:opacity-20 hover:opacity-70 transition" title="Bajar">↓</button>
                                     <button onClick={e => { e.stopPropagation(); setRenamingCollectionId(collection.id); setRenamingCollectionValue(collection.name); }} className="p-1 text-xs hover:opacity-70 transition" title="Renombrar">✏️</button>
-                                    <button onClick={(e) => { e.stopPropagation(); removeManualCollection(collection.id); }} className="p-1 text-red-500 hover:text-red-600 transition"><Icons.Trash className="w-3.5 h-3.5" /></button>
+                                    <button onClick={(e) => { e.stopPropagation(); removeManualCollection(collection.id); }} aria-label={`Eliminar colección ${collection.name}`} className="p-1 text-red-500 hover:text-red-600 transition"><Icons.Trash className="w-3.5 h-3.5" /></button>
                                 </div>
                             </div>
                         ))}
@@ -283,7 +283,7 @@ const Sidebar = ({
                                 <input type="color" value={catColor || '#6366f1'} title="Color de categoría"
                                     onChange={e => setCategoryColors(prev => ({ ...prev, [cat]: e.target.value }))}
                                     className="opacity-0 group-hover:opacity-60 hover:!opacity-100 w-5 h-5 rounded cursor-pointer transition border-0 bg-transparent p-0 flex-shrink-0" />
-                                <button onClick={e => { e.stopPropagation(); removeCategory(cat); }} className="opacity-0 group-hover:opacity-100 p-3 text-red-500 hover:text-red-600 transition"><Icons.Trash className="w-4 h-4" /></button>
+                                <button onClick={e => { e.stopPropagation(); removeCategory(cat); }} aria-label={`Eliminar categoría ${cat}`} className="opacity-0 group-hover:opacity-100 p-3 text-red-500 hover:text-red-600 transition"><Icons.Trash className="w-4 h-4" /></button>
                             </div>
                             );
                         })}
@@ -330,7 +330,7 @@ const Sidebar = ({
                                                     <div key={v.id} className="group bg-black/5 dark:bg-white/5 rounded-xl p-3 hover:bg-black/8 dark:hover:bg-white/8 transition">
                                                         <div className="flex justify-between items-start">
                                                             <span className="font-black text-sm" style={{ color: 'var(--highlight)' }}>{v.word}</span>
-                                                            <button onClick={() => setVocabulary(prev => prev.filter(w => w.id !== v.id))} className="opacity-0 group-hover:opacity-40 hover:!opacity-100 text-red-500 transition ml-2 flex-shrink-0"><Icons.Trash className="w-3 h-3" /></button>
+                                                            <button onClick={() => setVocabulary(prev => prev.filter(w => w.id !== v.id))} aria-label={`Eliminar palabra ${v.word} del vocabulario`} className="opacity-0 group-hover:opacity-40 hover:!opacity-100 text-red-500 transition ml-2 flex-shrink-0"><Icons.Trash className="w-3 h-3" /></button>
                                                         </div>
                                                         <p className="text-[11px] opacity-70 mt-1 leading-relaxed">{v.definition}</p>
                                                         <p className="text-[9px] opacity-40 mt-1">{v.bookName} · {v.date}</p>

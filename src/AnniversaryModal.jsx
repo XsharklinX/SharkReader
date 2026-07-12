@@ -4,7 +4,7 @@ export default function AnniversaryModal({ anniversaryInfo, onClose }) {
     if (!anniversaryInfo) return null;
     return (
         <div className="fixed inset-0 z-[600] flex items-center justify-center bg-black/70 backdrop-blur-sm fade-in" onClick={onClose}>
-            <div className="bg-[var(--surface-bg)] rounded-3xl p-8 max-w-sm w-full shadow-2xl border border-[var(--border-color)] text-center mx-4" onClick={e => e.stopPropagation()}>
+            <div role="dialog" aria-modal="true" aria-label="Aniversario de lectura" className="bg-[var(--surface-bg)] rounded-3xl p-8 max-w-sm w-full shadow-2xl border border-[var(--border-color)] text-center mx-4" onClick={e => e.stopPropagation()}>
                 <div className="text-6xl mb-4">
                     {anniversaryInfo.days >= 365 ? '🎉' : anniversaryInfo.days >= 100 ? '🏆' : anniversaryInfo.days >= 30 ? '🔥' : '📅'}
                 </div>
