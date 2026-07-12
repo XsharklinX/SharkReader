@@ -154,6 +154,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const ttsSpokenRef = useRef(new WeakSet()); // párrafos ya leídos (evita repetir al pasar página)
         const ttsHighlightRef = useRef(null);       // elemento sombreado actualmente
         const stopTtsRef = useRef(() => {});        // acceso a stopTts desde callbacks definidos antes
+        const jumpTtsToElementRef = useRef(() => {}); // salta la lectura al párrafo clicado
         const ttsEngineRef = useRef(ttsEngine);
         const ttsNeuralVoiceRef = useRef(ttsNeuralVoice);
         const ttsAudioRef = useRef(null);           // <audio> del chunk neuronal en reproducción
@@ -543,13 +544,14 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                         }
                     });
 
-                    rendition.on('click', () => {
+                    rendition.on('click', (e) => {
                         setShowToc(false);
                         setShowFontMenu(false);
                         setShowBrightness(false);
                         setDictionaryPopup(null);
                         setQuotePrompt(null);
                         if (isFullscreen) setShowToolbar(prev => !prev);
+                        if (ttsActiveRef.current && e?.target) jumpTtsToElementRef.current?.(e.target);
                     });
 
                     rendition.on('rendered', (_section, view) => {
@@ -1104,10 +1106,11 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             return queue;
         }, []);
 
-        // Cola de lectura derivada de lo que hay EN PANTALLA ahora mismo.
-        // Paginado: usa los CFI start/end de currentLocation() (respeta doble página,
-        // tamaño de fuente, márgenes, etc.). Scroll: primer bloque visible → final.
-        const collectVisibleTtsQueue = useCallback(() => {
+        // Bloques legibles EN PANTALLA ahora mismo, en orden de lectura (sin filtrar
+        // por "ya leídos" — eso lo decide cada consumidor). Paginado: usa los CFI
+        // start/end de currentLocation() (respeta doble página, fuente, márgenes...).
+        // Scroll: primer bloque visible → final del documento.
+        const getVisibleTtsBlocks = useCallback(() => {
             const rendition = renditionRef.current;
             const loc = rendition?.currentLocation?.();
             if (!rendition || !loc?.start?.cfi) return [];
@@ -1132,8 +1135,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 allBlocks.sort((a, b) => a.absTop - b.absTop);
                 const startIdx = allBlocks.findIndex(b => b.absBottom > vr.top + 8 && b.absTop < vr.bottom - 8);
                 if (startIdx === -1) return [];
-                const blocks = allBlocks.slice(startIdx).map(b => b.el).filter(el => !ttsSpokenRef.current.has(el));
-                return buildTtsQueue(blocks);
+                return allBlocks.slice(startIdx).map(b => b.el);
             }
 
             // Paginado: rango visible exacto vía CFI
@@ -1152,9 +1154,14 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 ? blockIndexOf(endRange.startContainer, blocks)
                 : blocks.length - 1;
             if (endIdx === -1) endIdx = blocks.length - 1;
-            const visibleBlocks = blocks.slice(startIdx, endIdx + 1).filter(el => !ttsSpokenRef.current.has(el));
-            return buildTtsQueue(visibleBlocks);
-        }, [readFlow, ensureTtsStyles, ttsBlocksOf, buildTtsQueue]);
+            return blocks.slice(startIdx, endIdx + 1);
+        }, [readFlow, ensureTtsStyles, ttsBlocksOf]);
+
+        // Cola de lectura: bloques visibles aún no leídos, troceados en frases.
+        const collectVisibleTtsQueue = useCallback(() => {
+            const blocks = getVisibleTtsBlocks().filter(el => !ttsSpokenRef.current.has(el));
+            return buildTtsQueue(blocks);
+        }, [getVisibleTtsBlocks, buildTtsQueue]);
 
         const stopTts = useCallback(() => {
             ttsActiveRef.current = false;
@@ -1285,6 +1292,31 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             window.speechSynthesis.speak(utt);
         }, [lang, clearTtsHighlight, advanceTtsPage, scrollTtsElIntoView, stopTts, fetchNeuralAudio]);
         useEffect(() => { speakTtsElRef.current = speakTtsEl; }, [speakTtsEl]);
+
+        // Clic en un párrafo mientras se lee: salta la lectura ahí mismo, sin salirse
+        // de lo visible (usa los mismos bloques que la cola normal, desde el clicado).
+        const jumpTtsToElement = useCallback((clickedNode) => {
+            if (!ttsActiveRef.current || isHighlightingRef.current) return;
+            const blocks = getVisibleTtsBlocks();
+            if (!blocks.length) return;
+            let target = clickedNode?.nodeType === 1 ? clickedNode : clickedNode?.parentElement;
+            while (target && !blocks.includes(target)) target = target.parentElement;
+            if (!target) return; // el clic no cayó dentro de un bloque legible visible
+            const newQueue = buildTtsQueue(blocks.slice(blocks.indexOf(target)));
+            if (!newQueue.length) return;
+
+            ttsActiveRef.current = false;
+            try { window.speechSynthesis.cancel(); } catch (_) {}
+            try { ttsAudioRef.current?.pause(); } catch (_) {}
+            ttsAudioRef.current = null;
+            ttsAudioCacheRef.current.clear();
+            ttsQueueRef.current = newQueue;
+            ttsIndexRef.current = 0;
+            ttsActiveRef.current = true;
+            setTtsStatus('playing');
+            speakTtsElRef.current?.(0);
+        }, [getVisibleTtsBlocks, buildTtsQueue]);
+        useEffect(() => { jumpTtsToElementRef.current = jumpTtsToElement; }, [jumpTtsToElement]);
 
         const startTts = useCallback(() => {
             if (!window.speechSynthesis) return;
@@ -1904,7 +1936,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                 {ttsEngine === 'neural'
                                     ? 'Voces neuronales de alta calidad (requieren internet). Si falla la conexión, la lectura se detiene.'
                                     : 'Voces instaladas en Windows (funcionan sin internet).'}
-                                {' '}Empieza en lo visible, sombrea el párrafo actual y pasa de página sola.
+                                {' '}Empieza en lo visible, sombrea el párrafo actual y pasa de página sola. Toca cualquier párrafo mientras lee para saltar ahí.
                             </p>
                         </div>
                     )}
