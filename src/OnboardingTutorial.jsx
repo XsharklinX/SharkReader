@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import SharkySprite from './SharkySprite';
 import { RANDOM_EMOJIS } from './translations';
+import appLogo from '../icon.png';
 
 const BOOK_STEPS = [
     {
@@ -13,7 +14,7 @@ const BOOK_STEPS = [
         cta: 'Empezar',
         skipLabel: 'Crear perfil',
         notes: ['Local-first', 'EPUB y PDF', 'Sin distracciones'],
-        visual: 'library',
+        visual: 'welcome',
     },
     {
         id: 'library',
@@ -117,6 +118,14 @@ function MiniIllustration({ type, accent }) {
         return (
             <div className="onboarding-book-sharky">
                 <SharkySprite size={92} mood="celebrate" expression="happy" stage="reader" />
+            </div>
+        );
+    }
+
+    if (type === 'welcome') {
+        return (
+            <div className="onboarding-book-logo">
+                <img src={appLogo} alt="" width="96" height="96" />
             </div>
         );
     }

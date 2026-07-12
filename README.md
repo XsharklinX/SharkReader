@@ -6,7 +6,7 @@
 [![Descargas totales](https://img.shields.io/github/downloads/XsharklinX/SharkReader/total?color=22c55e&label=descargas&style=flat-square)](https://github.com/XsharklinX/SharkReader/releases)
 [![Licencia ISC](https://img.shields.io/github/license/XsharklinX/SharkReader?color=a78bfa&label=licencia&style=flat-square)](LICENSE)
 [![Plataforma](https://img.shields.io/badge/Windows-10%20%2F%2011-0078d4?style=flat-square&logo=windows)](https://github.com/XsharklinX/SharkReader/releases/latest)
-[![Tests](https://img.shields.io/badge/tests-70%2F70-22c55e?style=flat-square)](#desarrollo)
+[![Tests](https://img.shields.io/badge/tests-95%2F95-22c55e?style=flat-square)](#desarrollo)
 
 **Lector de EPUB y PDF para Windows. Local-first, gratuito, sin cuenta, sin nube.**
 
@@ -39,12 +39,25 @@ Es una app que funciona sin internet, guarda todo en tu dispositivo, y está pen
 - Tipografía completamente personalizable por libro: fuente, tamaño, interlineado, márgenes, justificación, sangría, espacio entre letras, separación silábica y espaciado entre párrafos
 - TOC flotante con búsqueda integrada en todos los niveles del índice
 - Presets tipográficos: Equilibrado, Enfoque, Compacto, Accesible — con un clic
+- Temas de lectura personalizados: color de texto + fondo, guardables con nombre y reutilizables entre libros
 - Modo foco completo: oculta barra, progreso y zonas de navegación. Solo el texto
 - Modo dislexia: inyecta OpenDyslexic dentro del iframe del EPUB con ajustes de espaciado automáticos
 - Doble página, scroll continuo o paginado, búsqueda interna con navegación ←→
-- Panel de anotaciones filtrable por tipo (subrayado / nota / marcador) y por color
-- Export a Obsidian: `.md` con frontmatter YAML y anotaciones agrupadas por capítulo
-- Auto-bookmark al cerrar cada tab; diccionario en línea; TTS; vocabulario exportable
+- Progreso por capítulo (`pág. X/Y` de la sección) e historial de posiciones (Alt+← deshace saltos de TOC/búsqueda)
+- Panel de anotaciones filtrable por tipo (subrayado / nota / marcador) y por color, con etiquetas de subrayado personalizables
+- Imagen de cita: selecciona una frase y genera un PNG descargable con la portada y paleta del tema
+- Export a Obsidian: `.md` con frontmatter YAML, anotaciones agrupadas por capítulo y notas del libro incluidas
+- Auto-bookmark al cerrar cada tab; diccionario en línea; vocabulario exportable
+
+### 🔊 Lectura en voz alta (TTS)
+
+- **Motor neuronal** (Microsoft Edge Read Aloud, gratis, sin API key): 13 voces en español e inglés con calidad casi humana — Elvira, Álvaro, Dalia, Jorge, Ramona, Emilio, Elena, Tomás, Salomé, Gonzalo y más
+- **Motor de sistema** como alternativa offline (voces instaladas en Windows)
+- Lee exactamente lo que está en pantalla — nunca contenido de otra página o capítulo
+- Sombrea en vivo el párrafo que va narrando y hace auto-scroll suave en modo continuo
+- Avanza de página sola al terminar lo visible, respetando el corte exacto cuando un párrafo queda partido entre dos páginas
+- Toca cualquier párrafo mientras escuchas para saltar la lectura ahí mismo
+- Trocea el texto en frases (no en párrafos completos): cambiar de voz o velocidad retoma cerca de donde ibas, no desde el principio
 
 ### 📄 Lector PDF
 
@@ -59,8 +72,9 @@ Es una app que funciona sin internet, guarda todo en tu dispositivo, y está pen
 
 - Importación individual, por carpeta o desde fuentes OPDS/Calibre externas
 - Fetch de portada y metadata desde OpenLibrary (sin registro, sin clave de API)
-- Multi-select con acciones en masa: favorito, terminado, categoría, colección, eliminar
+- Multi-select con acciones en masa: favorito, terminado, categoría, colección, autor, serie (con índices automáticos), eliminar
 - Edición rápida inline: nombre, autor, tags y rating sin abrir ningún modal
+- Paleta de comandos (Ctrl+K / Cmd+K): navega, cambia de tema, abre ajustes o busca cualquier libro por título/autor sin tocar el ratón
 - Vista por serie con detección de huecos, badge "Siguiente #N" y "✓ Completa"
 - Colecciones manuales con emoji, rename inline, reorder y portadas dinámicas
 - Estanterías automáticas: "Pausados +6 meses" y "Casi terminados ≥80%"
@@ -78,6 +92,8 @@ Es una app que funciona sin internet, guarda todo en tu dispositivo, y está pen
 - Plan de lectura con fecha objetivo y cálculo automático de ritmo necesario
 - Resumen Anual estilo Wrapped: 7 slides animados con tus estadísticas del año
 - Diario de lectura: log de sesiones con libro, tiempo y fecha, exportable a Markdown
+- **Retos de lectura**: racha de N días, minutos en una semana o libros en un mes — con barra de progreso, fecha límite y fanfarria al completar
+- **Resumen semanal**: notificación nativa una vez por semana con minutos leídos, días activos, libros terminados y racha
 
 ### 🔧 Workshop y addons
 
@@ -120,7 +136,9 @@ Reacciona a eventos reales: abrir un libro, alcanzar hitos de progreso (25%, 50%
 - **Local-first**: todo se guarda en IndexedDB en tu dispositivo. Cero servidores propios
 - CSP estricto en producción; `webSecurity` habilitado; scripts embebidos en EPUB desactivados
 - Export/import de todos tus datos en un JSON portátil con merge inteligente
-- Sync automático a carpeta local (OneDrive, Dropbox, cualquier carpeta compartida)
+- **Backup ZIP completo opcional**: incluye los archivos EPUB/PDF además de metadata y progreso, para restaurar el 100% de tu biblioteca en otro PC
+- Sync automático a carpeta local (OneDrive, Dropbox, cualquier carpeta compartida), con flush al cerrar la app para no perder los últimos cambios
+- System tray de Windows: "Continuar leyendo [último libro]" sin abrir la ventana principal
 - Auto-updater vía GitHub Releases (verificable y reversible)
 
 ---
@@ -216,10 +234,12 @@ Los archivos generados quedan en `dist/`.
 pnpm test
 ```
 
-70 tests unitarios cubriendo la lógica pura de:
+95 tests unitarios cubriendo la lógica pura de:
 - `src/bookModel.test.js` — modelo de libro, hidratación, deduplicación (35 tests)
 - `src/backupMerge.test.js` — merge de backups, bookmarks, minutesByDay (15 tests)
 - `src/readingProgress.test.js` — lógica de rachas, XP y niveles (20 tests)
+- `src/challenges.test.js` — retos de lectura y resumen semanal (16 tests)
+- `src/ttsChunks.test.js` — divisor de texto en frases para el TTS (9 tests)
 
 ---
 
@@ -230,12 +250,14 @@ SharkReader/
 ├── main.js                    # Proceso principal de Electron
 ├── preload.js                 # Puente IPC seguro (contextBridge)
 ├── src/
-│   ├── App.jsx                # Shell principal (~2600 líneas)
-│   ├── EpubReader.jsx         # Lector EPUB (epub.js)
+│   ├── App.jsx                # Shell principal
+│   ├── EpubReader.jsx         # Lector EPUB (epub.js) — incluye el TTS completo
 │   ├── PdfReader.jsx          # Lector PDF (pdfjs-dist)
-│   ├── AnalyticsView.jsx      # Pantalla de estadísticas y logros
+│   ├── EpubReaderSettings.jsx # Tipografía, presets y temas de lectura custom
+│   ├── AnalyticsView.jsx      # Estadísticas, logros y retos de lectura
 │   ├── WorkshopPanel.jsx      # Panel de addons con presets
 │   ├── SettingsPanel.jsx      # Configuración, backup, diagnóstico
+│   ├── CommandPalette.jsx     # Paleta de comandos Ctrl+K / Cmd+K
 │   ├── Sidebar.jsx            # Panel lateral de la biblioteca
 │   ├── LibraryView.jsx        # Grid / lista / series de la biblioteca
 │   ├── BookCard.jsx           # Tarjeta de libro
@@ -243,22 +265,26 @@ SharkReader/
 │   ├── SharkyContext.jsx      # Estado y lógica de la mascota
 │   ├── SharkyWidget.jsx       # JSX de Sharky
 │   ├── YearWrapped.jsx        # Resumen anual (Wrapped)
+│   ├── TipToast.jsx           # Toast "¿Sabías que?" en la biblioteca
 │   ├── sounds.js              # Sonidos sintetizados vía Web Audio API
 │   ├── db.js                  # IndexedDB v6 (5 stores)
 │   ├── bookModel.js           # Modelo de libro, hidratación y deduplicación
 │   ├── backupMerge.js         # Merge inteligente de backups
 │   ├── achievements.js        # Definición de los 60 logros
+│   ├── challenges.js          # Lógica pura de retos de lectura (testeable)
+│   ├── highlightLabels.js     # Etiquetas de subrayado personalizables
+│   ├── ttsChunks.js           # Divisor de texto en frases para el TTS (testeable)
 │   ├── workshopModules.js     # Registro de los 18 addons
 │   ├── readingProgress.js     # Lógica pura de rachas y XP (testeable)
 │   ├── translations.js        # i18n ES/EN
 │   └── hooks/
-│       ├── useLibrary.js      # Filtros, búsqueda y virtualización
-│       ├── useBookImport.js   # Importación individual y por carpeta
-│       ├── useBookActions.js  # CRUD de libros (favorito, borrar, editar…)
-│       ├── useReadingSession.js # Timer, rachas, logros en sesión
-│       ├── useStats.js        # Estado y persistencia de estadísticas
-│       ├── useAchievements.js # Estado de logros y toasts
-│       └── useUI.js           # Estado de modales, sidebar y toasts
+│       ├── useLibrary.js               # Filtros, búsqueda y virtualización
+│       ├── useBookImport.js            # Importación individual y por carpeta
+│       ├── useBookActions.js           # CRUD de libros (favorito, borrar, editar…)
+│       ├── useReaderOrchestration.js   # Tabs abiertas, panel dividido, apertura/cierre de libros
+│       ├── useReadingSession.js        # Timer, rachas, logros en sesión
+│       ├── useStats.js                 # Estado y persistencia de estadísticas
+│       └── useUI.js                    # Estado de modales, sidebar y toasts
 ├── styles/
 │   └── main.css               # Estilos globales, temas dark/light/sepia
 ├── public/
@@ -288,14 +314,14 @@ Cada store se puede exportar/importar individualmente. El merge de backups resue
 
 ## Roadmap
 
-| Versión | Criterio de salida |
-|---|---|
-| **v3.7** (en progreso) | Lector premium: temas custom, presets guardables, progreso por capítulo |
-| **v3.8** | Gamificación 2.0: retos de lectura, resumen semanal, comparativa de libros |
-| **v3.9** | Sync y datos: ZIP completo con archivos, sync automático al cerrar, system tray |
-| **v4.0** | Publicable: accesibilidad AA, firma de código, onboarding v2 |
+| Versión | Criterio de salida | Estado |
+|---|---|---|
+| **v3.7** | Lector premium: temas custom, historial de posiciones, imagen de cita, TTS reconstruido con motor neuronal | ✅ |
+| **v3.8** | Conocimiento activo: retos de lectura, resumen semanal, etiquetas de subrayado personalizables | ✅ |
+| **v3.9** | Datos y confianza: ZIP completo con archivos, sync automático al cerrar, paleta de comandos, system tray | ✅ |
+| **v4.0** | Publicable: accesibilidad AA, descomposición de `App.jsx`, virtualización de búsqueda, onboarding con logo real | En curso |
 
-El roadmap completo con detalles de implementación está en [`docs/roadmap-hardening.md`](docs/roadmap-hardening.md).
+La comparación de libros lado a lado y las colecciones inteligentes por reglas quedaron fuera de v3.8 por alcance y están en el radar para el siguiente roadmap. Detalles de implementación en [`docs/roadmap-hardening.md`](docs/roadmap-hardening.md).
 
 ---
 
