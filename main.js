@@ -930,31 +930,38 @@ ipcMain.handle('app-version', () => app.getVersion());
 // ── OpenLibrary metadata fetch ────────────────────────────────────────────────
 // Busca metadata de un libro por título+autor en la API pública de OpenLibrary.
 // Devuelve { coverUrl, description, year, isbn } o null si no encuentra nada.
+//
+// Nota: la versión previa apuntaba a "opds.openlibrary.org", un subdominio que
+// nunca resuelve por DNS (ni siquiera existe) — la función fallaba siempre, con
+// cualquier libro, silenciosamente (try/catch → null). El endpoint real y
+// documentado es openlibrary.org/search.json.
 ipcMain.handle('fetch-openlibrary', async (_e, { title, author }) => {
     if (!title) return null;
     try {
         const q = encodeURIComponent(`${title} ${author || ''}`.trim().slice(0, 120));
-        const searchUrl = `https://opds.openlibrary.org/search?q=${q}&limit=5`;
+        const fields = 'title,author_name,first_publish_year,cover_i,isbn,key';
+        const searchUrl = `https://openlibrary.org/search.json?q=${q}&fields=${fields}&limit=1`;
         const { buffer } = await fetchBuffer(searchUrl, { maxBytes: 512 * 1024 });
-        const text = buffer.toString('utf8');
-        // Parse OPDS Atom response — extraer primer resultado
-        const idMatch = text.match(/<id>[^<]*\/works\/(OL\w+)<\/id>/);
-        if (!idMatch) return null;
-        const workId = idMatch[1];
-        const detailUrl = `https://openlibrary.org/works/${workId}.json`;
-        const { buffer: detailBuf } = await fetchBuffer(detailUrl, { maxBytes: 256 * 1024 });
-        const detail = JSON.parse(detailBuf.toString('utf8'));
-        const description = typeof detail.description === 'string'
-            ? detail.description
-            : detail.description?.value || null;
-        const year = detail.first_publish_date
-            ? parseInt(detail.first_publish_date)
-            : null;
-        // Portada: buscar ISBN del work para construir URL de portada
-        const isbn = detail.isbn_10?.[0] || detail.isbn_13?.[0] || null;
-        const coverId = detail.covers?.[0];
-        const coverUrl = coverId
-            ? `https://covers.openlibrary.org/b/id/${coverId}-L.jpg`
+        const data = JSON.parse(buffer.toString('utf8'));
+        const doc = data?.docs?.[0];
+        if (!doc) return null;
+
+        // Segunda llamada opcional: la sinopsis solo vive en el detalle del "work"
+        let description = null;
+        if (doc.key) {
+            try {
+                const { buffer: detailBuf } = await fetchBuffer(`https://openlibrary.org${doc.key}.json`, { maxBytes: 256 * 1024 });
+                const detail = JSON.parse(detailBuf.toString('utf8'));
+                description = typeof detail.description === 'string'
+                    ? detail.description
+                    : detail.description?.value || null;
+            } catch (_) { /* la sinopsis es opcional; seguir sin ella */ }
+        }
+
+        const year = doc.first_publish_year || null;
+        const isbn = doc.isbn?.[0] || null;
+        const coverUrl = doc.cover_i
+            ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg`
             : isbn
                 ? `https://covers.openlibrary.org/b/isbn/${isbn}-L.jpg`
                 : null;
