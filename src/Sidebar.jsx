@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Icons } from './icons';
 import { useHighlightLabels, setHighlightLabel, HIGHLIGHT_SWATCHES, HIGHLIGHT_LABEL_DEFAULTS } from './highlightLabels';
+import { SMART_RULE_TYPES, describeSmartRule } from './smartCollections';
 
 const ANNOTATION_COLOR_META = {
     yellow: { label: 'Importante', swatch: '#facc15' },
@@ -31,6 +32,7 @@ const Sidebar = ({
     setShowRatingSection,
     manualCollections,
     createManualCollection,
+    createSmartCollection,
     removeManualCollection,
     renameManualCollection,
     moveManualCollection,
@@ -72,6 +74,19 @@ const Sidebar = ({
 }) => {
     const highlightLabels = useHighlightLabels();
     const [showLabelEditor, setShowLabelEditor] = useState(false);
+    const [showSmartForm, setShowSmartForm] = useState(false);
+    const [smartName, setSmartName] = useState('');
+    const [smartRuleType, setSmartRuleType] = useState(SMART_RULE_TYPES[0].id);
+    const [smartRuleValue, setSmartRuleValue] = useState('');
+
+    const submitSmartCollection = () => {
+        const created = createSmartCollection?.(smartName, { type: smartRuleType, value: smartRuleValue });
+        if (created) {
+            setShowSmartForm(false);
+            setSmartName('');
+            setSmartRuleValue('');
+        }
+    };
 
     if (!open) return null;
 
@@ -225,8 +240,35 @@ const Sidebar = ({
                             <div className="mt-2 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
                                 <div className="flex items-center justify-between px-4 mb-1">
                                     <p className="text-[9px] font-black uppercase tracking-widest opacity-30">Colecciones</p>
-                                    <button onClick={() => createManualCollection()} className="text-[10px] font-black opacity-50 hover:opacity-100 transition">+ Nueva</button>
+                                    <div className="flex items-center gap-2">
+                                        <button onClick={() => setShowSmartForm(p => !p)} className="text-[10px] font-black opacity-50 hover:opacity-100 transition">⚡ Inteligente</button>
+                                        <button onClick={() => createManualCollection()} className="text-[10px] font-black opacity-50 hover:opacity-100 transition">+ Nueva</button>
+                                    </div>
                                 </div>
+                            </div>
+                        )}
+                        {showSmartForm && (
+                            <div className="mx-3 mb-2 rounded-xl border p-3 space-y-2" style={{ borderColor: 'var(--border-color)' }}>
+                                <p className="text-[9px] font-black uppercase tracking-widest opacity-45">Nueva colección inteligente</p>
+                                <input type="text" value={smartName} onChange={e => setSmartName(e.target.value)} placeholder="Nombre"
+                                    className="w-full bg-black/5 dark:bg-white/5 rounded-lg px-2 py-1.5 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
+                                    style={{ color: 'var(--text-color)' }} />
+                                <select value={smartRuleType} onChange={e => setSmartRuleType(e.target.value)}
+                                    className="w-full bg-black/5 dark:bg-white/5 rounded-lg px-2 py-1.5 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
+                                    style={{ color: 'var(--text-color)' }}>
+                                    {SMART_RULE_TYPES.map(rule => <option key={rule.id} value={rule.id}>{rule.label}</option>)}
+                                </select>
+                                <input type="text" value={smartRuleValue} onChange={e => setSmartRuleValue(e.target.value)}
+                                    placeholder={SMART_RULE_TYPES.find(r => r.id === smartRuleType)?.placeholder}
+                                    onKeyDown={e => e.key === 'Enter' && submitSmartCollection()}
+                                    className="w-full bg-black/5 dark:bg-white/5 rounded-lg px-2 py-1.5 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
+                                    style={{ color: 'var(--text-color)' }} />
+                                <button onClick={submitSmartCollection} disabled={!smartName.trim() || !smartRuleValue.trim()}
+                                    className="w-full py-1.5 rounded-lg text-xs font-black text-white transition disabled:opacity-30 hover:opacity-80"
+                                    style={{ backgroundColor: 'var(--highlight)' }}>
+                                    Crear
+                                </button>
+                                <p className="text-[9px] opacity-40 leading-relaxed">Se auto-actualiza: cualquier libro que cumpla la regla entra o sale de la colección sola.</p>
                             </div>
                         )}
                         {manualCollections.map((collection, colIdx) => (
@@ -246,7 +288,9 @@ const Sidebar = ({
                                         onClick={e => e.stopPropagation()}
                                     />
                                 ) : (
-                                    <button onClick={() => { setCurrentFilter(`collection:${collection.id}`); setView('library'); onClose(); }} className="flex-1 flex items-center gap-2 px-3 py-2 text-left text-sm font-semibold min-w-0">
+                                    <button onClick={() => { setCurrentFilter(`collection:${collection.id}`); setView('library'); onClose(); }}
+                                        title={collection.rule ? `Inteligente — ${describeSmartRule(collection.rule)}` : undefined}
+                                        className="flex-1 flex items-center gap-2 px-3 py-2 text-left text-sm font-semibold min-w-0">
                                         <span className="text-base flex-shrink-0">{collection.emoji || '🗂️'}</span>
                                         <span className="flex-1 truncate">{collection.name}</span>
                                         <span className="text-[10px] font-bold px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded-md flex-shrink-0">{libraryDerived.collectionCounts.get(collection.id) || 0}</span>

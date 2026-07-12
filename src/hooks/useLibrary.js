@@ -1,5 +1,6 @@
 import { useMemo, useCallback } from 'react';
 import { getBookSearchIndex } from '../bookModel';
+import { smartCollectionBookIds } from '../smartCollections';
 
 const LIBRARY_VIRTUALIZE_THRESHOLD = 80;
 const LIBRARY_SCROLL_OVERSCAN = 4;
@@ -46,10 +47,13 @@ export function useLibrary({
         const bookSets = new Map();
         manualCollections.forEach(collection => {
             byId.set(collection.id, collection);
-            bookSets.set(collection.id, new Set(collection.bookIds || []));
+            // Las colecciones "smart" (con regla) recalculan su contenido en vivo
+            // contra la biblioteca actual en vez de guardar una lista fija de IDs.
+            const ids = collection.rule ? smartCollectionBookIds(books, collection.rule) : (collection.bookIds || []);
+            bookSets.set(collection.id, new Set(ids));
         });
         return { byId, bookSets };
-    }, [manualCollections]);
+    }, [manualCollections, books]);
 
     const displayedBooks = useMemo(() => {
         const now = Date.now();
