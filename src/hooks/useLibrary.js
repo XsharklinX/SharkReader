@@ -3,6 +3,12 @@ import { getBookSearchIndex } from '../bookModel';
 
 const LIBRARY_VIRTUALIZE_THRESHOLD = 80;
 const LIBRARY_SCROLL_OVERSCAN = 4;
+// Altura fija estimada de una fila de resultado de búsqueda (portada 64px + padding
+// + hasta 2 líneas de texto + chips). La lista de resultados es siempre de una sola
+// columna, a diferencia de la grid principal, así que necesita su propia geometría
+// de virtualización en vez de reutilizar virtualLibrary (que asume el layout activo
+// — grid o lista — y produce offsets incorrectos si son distintos).
+const SEARCH_RESULT_ROW_HEIGHT = 120;
 
 const splitBookTags = (value) => String(value || '')
     .split(',')
@@ -239,6 +245,26 @@ export function useLibrary({
         };
     }, [netflixView, displayedBooks, libraryView, libraryViewport.height, libraryViewport.scrollTop, libraryViewport.width]);
 
+    const virtualSearchResults = useMemo(() => {
+        const total = searchResultsWithMatches?.length || 0;
+        const enabled = total > LIBRARY_VIRTUALIZE_THRESHOLD && libraryViewport.height > 0;
+        if (!enabled) {
+            return { enabled: false, items: searchResultsWithMatches || [], top: 0, totalHeight: 0, startIndex: 0, endIndex: total };
+        }
+        const itemHeight = SEARCH_RESULT_ROW_HEIGHT;
+        const startIndex = Math.max(0, Math.floor(libraryViewport.scrollTop / itemHeight) - LIBRARY_SCROLL_OVERSCAN);
+        const visibleCount = Math.ceil(libraryViewport.height / itemHeight) + LIBRARY_SCROLL_OVERSCAN * 2;
+        const endIndex = Math.min(total, startIndex + visibleCount);
+        return {
+            enabled: true,
+            items: searchResultsWithMatches.slice(startIndex, endIndex),
+            top: startIndex * itemHeight,
+            totalHeight: total * itemHeight,
+            startIndex,
+            endIndex,
+        };
+    }, [searchResultsWithMatches, libraryViewport.height, libraryViewport.scrollTop]);
+
     const annotationEntries = useMemo(() => {
         if (!shouldComputeAnnotations) return [];
         return getAnnotationEntries();
@@ -353,6 +379,7 @@ export function useLibrary({
         searchResultsWithMatches,
         libraryDerived,
         virtualLibrary,
+        virtualSearchResults,
         annotationBookOptions,
         annotationGroups,
         annotationSummary,

@@ -6,6 +6,7 @@ import QuickEditCard from './QuickEditCard';
 const LibraryView = React.forwardRef(({
     searchTerm,
     searchResultsWithMatches,
+    virtualSearchResults,
     displayedBooks,
     books,
     currentFilter,
@@ -41,8 +42,8 @@ const LibraryView = React.forwardRef(({
     customCategories,
     manualCollections,
 }, ref) => {
-    const visibleSearchResults = virtualLibrary.enabled
-        ? searchResultsWithMatches?.slice(virtualLibrary.startIndex, virtualLibrary.endIndex)
+    const visibleSearchResults = virtualSearchResults.enabled
+        ? virtualSearchResults.items
         : searchResultsWithMatches;
 
     return (
@@ -63,10 +64,10 @@ const LibraryView = React.forwardRef(({
                     ) : (
                         <div
                             className="flex flex-col gap-2"
-                            style={virtualLibrary.enabled ? { height: virtualLibrary.totalHeight, position: 'relative' } : undefined}>
+                            style={virtualSearchResults.enabled ? { height: virtualSearchResults.totalHeight, position: 'relative' } : undefined}>
                             <div
                                 className="flex flex-col gap-2"
-                                style={virtualLibrary.enabled ? { transform: `translateY(${virtualLibrary.top}px)` } : undefined}>
+                                style={virtualSearchResults.enabled ? { transform: `translateY(${virtualSearchResults.top}px)` } : undefined}>
                             {(visibleSearchResults || []).map(book => (
                                 <div key={book.id}
                                     className="flex items-center gap-4 p-4 rounded-2xl cursor-pointer transition group border border-transparent hover:border-[var(--border-color)]"
@@ -409,8 +410,8 @@ const LibraryView = React.forwardRef(({
             )}
 
             <div className="md:hidden fixed bottom-6 right-6 flex flex-col gap-4 z-30">
-                <button onClick={openFolderPicker} className="w-12 h-12 rounded-full flex items-center justify-center text-white shadow-xl bg-slate-700 hover:scale-110 transition-transform"><Icons.FolderPlus /></button>
-                <button onClick={openFilePicker} className="w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl hover:scale-110 transition-transform" style={{ backgroundColor: 'var(--highlight)' }}><Icons.Plus /></button>
+                <button onClick={openFolderPicker} aria-label="Añadir carpeta de libros" className="w-12 h-12 rounded-full flex items-center justify-center text-white shadow-xl bg-slate-700 hover:scale-110 transition-transform"><Icons.FolderPlus /></button>
+                <button onClick={openFilePicker} aria-label="Añadir libro" className="w-14 h-14 rounded-full flex items-center justify-center text-white shadow-xl hover:scale-110 transition-transform" style={{ backgroundColor: 'var(--highlight)' }}><Icons.Plus /></button>
             </div>
         </div>
     );
