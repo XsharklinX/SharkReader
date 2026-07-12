@@ -151,7 +151,6 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const ttsUttRef = useRef(null);
         const ttsRateRef = useRef(ttsRate);
         const ttsVoiceRef = useRef(ttsVoiceURI);
-        const ttsSpokenRef = useRef(new WeakSet()); // párrafos ya leídos (evita repetir al pasar página)
         const ttsHighlightRef = useRef(null);       // elemento sombreado actualmente
         const stopTtsRef = useRef(() => {});        // acceso a stopTts desde callbacks definidos antes
         const jumpTtsToElementRef = useRef(() => {}); // salta la lectura al párrafo clicado
@@ -1096,11 +1095,29 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         // fundiendo diálogo breve). Esto es lo que hace que cambiar voz/velocidad
         // reinicie cerca de donde iba el usuario, no desde el principio del párrafo,
         // y que cada síntesis sea rápida en vez de esperar un párrafo entero.
+        //
+        // boundaries.start/end recortan el PRIMER/ÚLTIMO bloque a partir de un punto
+        // exacto del DOM: cuando un párrafo queda cortado justo en el borde de página
+        // (media frase en esta página, media en la siguiente), sin esto se leería el
+        // párrafo completo — incluida la mitad que está fuera de pantalla.
         const TTS_CHUNK_MAX_LEN = 200;
-        const buildTtsQueue = useCallback((blocks) => {
+        const buildTtsQueue = useCallback((blocks, boundaries = {}) => {
+            const { start, end } = boundaries;
             const queue = [];
-            blocks.forEach(el => {
-                const text = (el.innerText || '').trim();
+            blocks.forEach((el, i) => {
+                const useStart = i === 0 && start && el.contains(start.node);
+                const useEnd = i === blocks.length - 1 && end && el.contains(end.node);
+                let text = null;
+                if (useStart || useEnd) {
+                    try {
+                        const range = el.ownerDocument.createRange();
+                        if (useStart) range.setStart(start.node, start.offset); else range.setStart(el, 0);
+                        if (useEnd) range.setEnd(end.node, end.offset); else range.setEnd(el, el.childNodes.length);
+                        text = range.toString();
+                    } catch (_) { text = null; }
+                }
+                if (text == null) text = el.innerText;
+                text = (text || '').trim();
                 splitIntoSpeechChunks(text, TTS_CHUNK_MAX_LEN).forEach(chunkText => {
                     queue.push({ el, text: chunkText });
                 });
@@ -1108,19 +1125,18 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             return queue;
         }, []);
 
-        // Bloques legibles EN PANTALLA ahora mismo, en orden de lectura (sin filtrar
-        // por "ya leídos" — eso lo decide cada consumidor). Paginado: usa los CFI
-        // start/end de currentLocation() (respeta doble página, fuente, márgenes...).
-        // Scroll: primer bloque visible → final del documento.
+        // Bloques legibles EN PANTALLA ahora mismo, en orden de lectura, más los
+        // límites exactos del recorte de página (solo en modo paginado — en modo
+        // scroll el contenido fluye sin cortes duros y no hace falta recortar).
         const getVisibleTtsBlocks = useCallback(() => {
             const rendition = renditionRef.current;
             const loc = rendition?.currentLocation?.();
-            if (!rendition || !loc?.start?.cfi) return [];
+            if (!rendition || !loc?.start?.cfi) return { blocks: [], start: null, end: null };
 
             if (readFlow === 'scrolled-doc') {
                 const viewer = viewerRef.current;
                 const vr = viewer?.getBoundingClientRect();
-                if (!vr) return [];
+                if (!vr) return { blocks: [], start: null, end: null };
                 const allBlocks = [];
                 (rendition.getContents() || []).forEach(c => {
                     const doc = c.document;
@@ -1136,8 +1152,8 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 });
                 allBlocks.sort((a, b) => a.absTop - b.absTop);
                 const startIdx = allBlocks.findIndex(b => b.absBottom > vr.top + 8 && b.absTop < vr.bottom - 8);
-                if (startIdx === -1) return [];
-                return allBlocks.slice(startIdx).map(b => b.el);
+                if (startIdx === -1) return { blocks: [], start: null, end: null };
+                return { blocks: allBlocks.slice(startIdx).map(b => b.el), start: null, end: null };
             }
 
             // Paginado: rango visible exacto vía CFI
@@ -1146,23 +1162,28 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             try { startRange = rendition.getRange(loc.start.cfi); } catch (_) {}
             try { endRange = loc.end?.cfi ? rendition.getRange(loc.end.cfi) : null; } catch (_) {}
             const doc = startRange?.startContainer?.ownerDocument;
-            if (!doc?.body) return [];
+            if (!doc?.body) return { blocks: [], start: null, end: null };
             ensureTtsStyles(doc);
             const blocks = ttsBlocksOf(doc);
-            if (!blocks.length) return [];
+            if (!blocks.length) return { blocks: [], start: null, end: null };
             let startIdx = blockIndexOf(startRange.startContainer, blocks);
             if (startIdx === -1) startIdx = 0;
             let endIdx = endRange && endRange.startContainer.ownerDocument === doc
                 ? blockIndexOf(endRange.startContainer, blocks)
                 : blocks.length - 1;
             if (endIdx === -1) endIdx = blocks.length - 1;
-            return blocks.slice(startIdx, endIdx + 1);
+            return {
+                blocks: blocks.slice(startIdx, endIdx + 1),
+                start: { node: startRange.startContainer, offset: startRange.startOffset },
+                end: endRange ? { node: endRange.startContainer, offset: endRange.startOffset } : null,
+            };
         }, [readFlow, ensureTtsStyles, ttsBlocksOf]);
 
-        // Cola de lectura: bloques visibles aún no leídos, troceados en frases.
+        // Cola de lectura: todo lo visible en la página/pantalla actual, recortado
+        // en los bordes si algún párrafo queda partido, troceado en frases.
         const collectVisibleTtsQueue = useCallback(() => {
-            const blocks = getVisibleTtsBlocks().filter(el => !ttsSpokenRef.current.has(el));
-            return buildTtsQueue(blocks);
+            const { blocks, start, end } = getVisibleTtsBlocks();
+            return buildTtsQueue(blocks, { start, end });
         }, [getVisibleTtsBlocks, buildTtsQueue]);
 
         const stopTts = useCallback(() => {
@@ -1253,10 +1274,6 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             }
 
             const advance = () => {
-                // Marcar el bloque como ya leído solo al terminar su última frase,
-                // así una página que corta un párrafo a mitad no lo da por leído.
-                const next = queue[index + 1];
-                if (!next || next.el !== el) ttsSpokenRef.current.add(el);
                 if (!ttsActiveRef.current) return;
                 speakTtsEl(index + 1);
             };
@@ -1299,12 +1316,14 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         // de lo visible (usa los mismos bloques que la cola normal, desde el clicado).
         const jumpTtsToElement = useCallback((clickedNode) => {
             if (!ttsActiveRef.current || isHighlightingRef.current) return;
-            const blocks = getVisibleTtsBlocks();
+            const { blocks, start, end } = getVisibleTtsBlocks();
             if (!blocks.length) return;
             let target = clickedNode?.nodeType === 1 ? clickedNode : clickedNode?.parentElement;
             while (target && !blocks.includes(target)) target = target.parentElement;
             if (!target) return; // el clic no cayó dentro de un bloque legible visible
-            const newQueue = buildTtsQueue(blocks.slice(blocks.indexOf(target)));
+            // Los límites de página solo aplican de verdad si el bloque clicado sigue
+            // siendo el primero/último tras el recorte (buildTtsQueue lo comprueba).
+            const newQueue = buildTtsQueue(blocks.slice(blocks.indexOf(target)), { start, end });
             if (!newQueue.length) return;
 
             ttsActiveRef.current = false;
@@ -1323,7 +1342,6 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const startTts = useCallback(() => {
             if (!window.speechSynthesis) return;
             try { window.speechSynthesis.cancel(); } catch (_) {}
-            ttsSpokenRef.current = new WeakSet();
             const els = collectVisibleTtsQueue();
             if (!els.length) return;
             ttsQueueRef.current = els;
