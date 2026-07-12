@@ -139,6 +139,14 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const quoteCanvasRef = useRef(null);
         // Lectura en voz alta (TTS)
         const [showTtsPanel, setShowTtsPanel] = useState(false);
+        // Posición de escucha guardada de este libro (si hay), recalculada cada
+        // vez que se abre el panel — TtsBtn se recrea en cada render y no puede
+        // llevar hooks propios sin remontarse, así que esto vive en el nivel
+        // superior del componente.
+        const savedTtsCfi = useMemo(() => {
+            if (!showTtsPanel) return null;
+            try { return localStorage.getItem(`sr_tts_pos_${bookData.id}`) || null; } catch { return null; }
+        }, [showTtsPanel, bookData.id]);
         const [ttsStatus, setTtsStatus] = useState('idle');      // idle | playing | paused
         const [ttsRate, setTtsRate] = useState(() => { const r = parseFloat(localStorage.getItem('sr_tts_rate')); return Number.isFinite(r) ? r : 1; });
         const [ttsVoiceURI, setTtsVoiceURI] = useState(() => { try { return localStorage.getItem('sr_tts_voice') || ''; } catch { return ''; } });
@@ -154,6 +162,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const ttsHighlightRef = useRef(null);       // elemento sombreado actualmente
         const stopTtsRef = useRef(() => {});        // acceso a stopTts desde callbacks definidos antes
         const jumpTtsToElementRef = useRef(() => {}); // salta la lectura al párrafo clicado
+        const advanceTtsPageRef = useRef(() => {});   // pasa página y sigue leyendo (reusado al pasar página a mano)
         const ttsEngineRef = useRef(ttsEngine);
         const ttsNeuralVoiceRef = useRef(ttsNeuralVoice);
         const ttsAudioRef = useRef(null);           // <audio> del chunk neuronal en reproducción
@@ -425,7 +434,18 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
         const nextPage = useCallback(() => {
             if (renditionRef.current && readFlow === 'paginated') {
-                if (ttsActiveRef.current) stopTtsRef.current();
+                // Pasar página hacia adelante mientras se escucha continúa la lectura en la
+                // nueva página (misma dirección que el TTS ya sigue) en vez de cortarla —
+                // reusa advanceTtsPage, la misma máquina que usa el avance automático. Corta
+                // primero el audio en curso (si el usuario avanzó a media frase) para que no
+                // se solape con lo que empiece a sonar en la página nueva.
+                if (ttsActiveRef.current) {
+                    try { window.speechSynthesis.cancel(); } catch (_) {}
+                    try { ttsAudioRef.current?.pause(); } catch (_) {}
+                    ttsAudioRef.current = null;
+                    advanceTtsPageRef.current?.();
+                    return;
+                }
                 doTransition('next', () => renditionRef.current.next());
             }
         }, [readFlow, doTransition]);
@@ -1187,6 +1207,14 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         }, [getVisibleTtsBlocks, buildTtsQueue]);
 
         const stopTts = useCallback(() => {
+            // Recordar dónde se quedó la escucha (solo si de verdad estaba activa,
+            // para no pisar la posición guardada con paradas redundantes/en vacío).
+            if (ttsActiveRef.current) {
+                try {
+                    const cfi = renditionRef.current?.currentLocation?.()?.start?.cfi;
+                    if (cfi) localStorage.setItem(`sr_tts_pos_${bookData.id}`, cfi);
+                } catch (_) {}
+            }
             ttsActiveRef.current = false;
             ttsUttRef.current = null;
             ttsQueueRef.current = [];
@@ -1197,7 +1225,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             ttsAudioRef.current = null;
             ttsAudioCacheRef.current.clear();
             setTtsStatus('idle');
-        }, [clearTtsHighlight]);
+        }, [clearTtsHighlight, bookData.id]);
         useEffect(() => { stopTtsRef.current = stopTts; }, [stopTts]);
 
         // Sintetiza (y cachea) el audio neuronal de un índice de la cola — permite prefetch
@@ -1252,6 +1280,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 }, 450);
             }).catch(() => stopTts());
         }, [readFlow, scheduleReaderTimeout, collectVisibleTtsQueue, stopTts]);
+        useEffect(() => { advanceTtsPageRef.current = advanceTtsPage; }, [advanceTtsPage]);
 
         const speakTtsEl = useCallback((index) => {
             if (!ttsActiveRef.current) return;
@@ -1351,6 +1380,29 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             setTtsStatus('playing');
             speakTtsEl(0);
         }, [collectVisibleTtsQueue, speakTtsEl]);
+
+        // Retoma la escucha desde la última posición guardada de este libro (aunque
+        // sea en otra página/sesión): salta ahí, espera a que renderice y arranca.
+        const resumeTtsFromSaved = useCallback(() => {
+            if (!window.speechSynthesis || !renditionRef.current) return;
+            let savedCfi = null;
+            try { savedCfi = localStorage.getItem(`sr_tts_pos_${bookData.id}`); } catch (_) {}
+            if (!savedCfi) return;
+            pushHistory();
+            renditionRef.current.display(savedCfi).then(() => {
+                scheduleReaderTimeout(() => {
+                    try { window.speechSynthesis.cancel(); } catch (_) {}
+                    const els = collectVisibleTtsQueue();
+                    if (!els.length) return;
+                    ttsQueueRef.current = els;
+                    ttsIndexRef.current = 0;
+                    ttsAudioCacheRef.current.clear();
+                    ttsActiveRef.current = true;
+                    setTtsStatus('playing');
+                    speakTtsEl(0);
+                }, 350);
+            }).catch(() => {});
+        }, [bookData.id, collectVisibleTtsQueue, speakTtsEl, scheduleReaderTimeout, pushHistory]);
 
         const pauseTts = useCallback(() => {
             if (ttsEngineRef.current === 'neural') {
@@ -1880,6 +1932,13 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     {showTtsPanel && (
                         <div className={dock ? "dock-popup active" : "topbar-popup active"} style={{ minWidth: '240px' }} onWheel={e => e.stopPropagation()}>
                             <p className="text-[10px] font-black uppercase opacity-50 tracking-widest mb-3">Leer en voz alta</p>
+                            {ttsStatus === 'idle' && savedTtsCfi && (
+                                <button onClick={resumeTtsFromSaved}
+                                    className="w-full mb-2 py-2 rounded-xl font-bold text-sm transition border"
+                                    style={{ borderColor: 'var(--highlight)', color: 'var(--highlight)' }}>
+                                    ⏵ Continuar escucha donde la dejaste
+                                </button>
+                            )}
                             <div className="flex gap-1.5 mb-3">
                                 {ttsStatus === 'idle' && (
                                     <button onClick={startTts}
