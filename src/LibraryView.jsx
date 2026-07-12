@@ -37,6 +37,7 @@ const LibraryView = React.forwardRef(({
     bulkAssignCategory,
     bulkAssignAuthor,
     bulkAssignSeries,
+    onCompareBooks,
     bulkDeleteBooks,
     bulkAddToCollection,
     customCategories,
@@ -397,6 +398,11 @@ const LibraryView = React.forwardRef(({
                         }} disabled={!selectedBookIds.size}
                             className="text-xs font-bold px-3 py-1.5 rounded-xl bg-violet-500/15 text-violet-700 dark:text-violet-400 hover:bg-violet-500/25 transition disabled:opacity-40">
                             📖 Serie
+                        </button>
+                        <button onClick={onCompareBooks} disabled={selectedBookIds.size < 2 || selectedBookIds.size > 4}
+                            title={selectedBookIds.size < 2 ? 'Selecciona 2 a 4 libros' : selectedBookIds.size > 4 ? 'Máximo 4 libros' : 'Comparar libros seleccionados'}
+                            className="text-xs font-bold px-3 py-1.5 rounded-xl bg-cyan-500/15 text-cyan-700 dark:text-cyan-400 hover:bg-cyan-500/25 transition disabled:opacity-40">
+                            📊 Comparar
                         </button>
                         <button onClick={bulkDeleteBooks} disabled={!selectedBookIds.size}
                             className="text-xs font-bold px-3 py-1.5 rounded-xl bg-red-500/15 text-red-700 dark:text-red-400 hover:bg-red-500/25 transition disabled:opacity-40">

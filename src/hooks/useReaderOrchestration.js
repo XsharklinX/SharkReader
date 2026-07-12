@@ -14,6 +14,7 @@ export function useReaderOrchestration({
     sharkyActionsRef,
     addJournalEntry,
     setBooks,
+    setStats,
     setLastReadId,
     setView,
     isDbLoaded,
@@ -125,6 +126,16 @@ export function useReaderOrchestration({
                         endProgress,
                         progressDelta,
                     });
+                    // Récord de sesión: solo a partir de 15 min, para que la primera
+                    // sesión de siempre no "rompa un récord" trivialmente.
+                    if (sessionMins >= 15) {
+                        setStats(prevStats => {
+                            const best = prevStats.bestSessionMins || 0;
+                            if (sessionMins <= best) return prevStats;
+                            sharkyActionsRef.current?.notifySessionRecord?.(sessionMins);
+                            return { ...prevStats, bestSessionMins: sessionMins };
+                        });
+                    }
                 }
             }
             return booksSnap;
@@ -139,7 +150,7 @@ export function useReaderOrchestration({
             return newTabs;
         });
         setTabTargetCfi(prev => { const n = { ...prev }; delete n[tabId]; return n; });
-    }, [activeTabId, rightTabId, tabs, addonsRef, sharkyActionsRef, setBooks, setView, addJournalEntry]);
+    }, [activeTabId, rightTabId, tabs, addonsRef, sharkyActionsRef, setBooks, setStats, setView, addJournalEntry]);
 
     const closeBook = useCallback(() => {
         closeTab(activeTabId);

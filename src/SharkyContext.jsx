@@ -33,6 +33,8 @@ const SHARKY_EVENT_RULES = {
     streakLost: { priority: 'high', cooldownMs: 0, expression: 'sad', emote: 'sad' },
     achievement: { priority: 'high', cooldownMs: 0, expression: 'happy', emote: 'star' },
     anniversary: { priority: 'medium', cooldownMs: 0, expression: 'curious', emote: 'idea' },
+    challengeCompleted: { priority: 'high', cooldownMs: 0, expression: 'laugh', emote: 'star' },
+    sessionRecord: { priority: 'high', cooldownMs: 0, expression: 'happy', emote: 'star' },
 };
 
 const EVENT_FREQUENCY_PRIORITY = {
@@ -825,6 +827,23 @@ export const SharkyProvider = ({
         emitSharkyEvent('anniversary', { message: msg, duration: 4500 });
     }, [addons.sharkyMascot, emitSharkyEvent, lang]);
 
+    const notifyChallengeCompleted = useCallback((challengeTitle) => {
+        if (!addons.sharkyMascot || !challengeTitle) return;
+        const msg = lang === 'en' ? `Challenge completed: ${challengeTitle}!` : `¡Reto completado: ${challengeTitle}!`;
+        emitSharkyEvent('challengeCompleted', {
+            message: msg,
+            duration: 5000,
+            force: true,
+            celebration: { title: lang === 'en' ? 'Challenge completed' : 'Reto completado', bookName: challengeTitle },
+        });
+    }, [addons.sharkyMascot, emitSharkyEvent, lang]);
+
+    const notifySessionRecord = useCallback((minutes) => {
+        if (!addons.sharkyMascot || !minutes) return;
+        const msg = lang === 'en' ? `New record: ${minutes} min in one sitting!` : `¡Récord nuevo: ${minutes} min de lectura seguida!`;
+        emitSharkyEvent('sessionRecord', { message: msg, duration: 5000, force: true });
+    }, [addons.sharkyMascot, emitSharkyEvent, lang]);
+
     // ── Cosméticos ──
     const unlockedCosmetics = useMemo(() => [
         { id: 'auto',    label: 'Auto',                                         unlocked: true },
@@ -856,8 +875,10 @@ export const SharkyProvider = ({
             notifyBookAnniversary: notifyBookAnniversaryFormal,
             notifyNextInSeries: notifyNextInSeriesFormal,
             notifyStreakLost: notifyStreakLostFormal,
+            notifyChallengeCompleted,
+            notifySessionRecord,
         };
-    }, [actionsRef, notifyMilestone, notifyBookFinishedFormal, notifySessionEndFormal, notifyBookOpenedFormal, notifyStreakMilestoneFormal, notifyBookAnniversaryFormal, notifyNextInSeriesFormal, notifyStreakLostFormal]);
+    }, [actionsRef, notifyMilestone, notifyBookFinishedFormal, notifySessionEndFormal, notifyBookOpenedFormal, notifyStreakMilestoneFormal, notifyBookAnniversaryFormal, notifyNextInSeriesFormal, notifyStreakLostFormal, notifyChallengeCompleted, notifySessionRecord]);
 
     const value = {
         sharkyOpen, setSharkyOpen,
