@@ -7,6 +7,7 @@ import {
     updateBookInList,
     toStoredBookRecord,
 } from '../bookModel';
+import { buildNewBookRecord } from '../bookImportHelpers';
 
 export function useBookImport({
     setBooks,
@@ -113,48 +114,11 @@ export function useBookImport({
                 new Promise(r => setTimeout(() => r(fallback), ms))
             ]);
 
-        const newBooks = uniqueValid.map(file => {
-            const id = Date.now().toString() + Math.random().toString(36).substr(2, 5);
-            const baseName = file.name.replace(/\.[^/.]+$/, '');
-            const type = /\.pdf$/i.test(file.name) ? 'pdf' : 'epub';
-            const unknownAuthor = t.unknownAuthor || 'Autor desconocido';
-            const nativeMeta = type === 'epub' ? file.nativeMeta : null;
-            const nativeTitle = (nativeMeta?.title || '').trim();
-            const nativeAuthor = (nativeMeta?.creator || '').trim();
-            return {
-                id, file, type,
-                url: URL.createObjectURL(file),
-                sourcePath: file.sourcePath || null,
-                name: nativeTitle || baseName,
-                author: nativeAuthor || unknownAuthor,
-                originalTitle: nativeTitle || baseName,
-                originalAuthor: nativeAuthor || unknownAuthor,
-                description: nativeMeta?.description || '',
-                publisher: nativeMeta?.publisher || '',
-                tags: nativeMeta?.subject || '',
-                series: '',
-                seriesIndex: 0,
-                coverUrl: nativeMeta?.coverBase64 || null,
-                color: `hsl(${200 + Math.random() * 40}, 70%, 40%)`,
-                isFav: false,
-                rating: 0,
-                progress: 0,
-                lastLocation: null,
-                dateAdded: Date.now(),
-                lastReadDate: 0,
-                bookmarks: [],
-                category: null,
-                notes: '',
-                isFinished: false,
-                dateStarted: null,
-                dateFinished: null,
-                readingMinutes: 0,
-                loading: false,
-                updatedAt: Date.now(),
-                progressUpdatedAt: Date.now(),
-                metadataUpdatedAt: Date.now(),
-            };
-        });
+        const unknownAuthor = t.unknownAuthor || 'Autor desconocido';
+        const newBooks = uniqueValid.map(file => ({
+            ...buildNewBookRecord(file, { unknownAuthorLabel: unknownAuthor }),
+            url: URL.createObjectURL(file),
+        }));
 
         newBooks.forEach(book => {
             bookDedupKeysRef.current.add(getBookDedupKey(book));

@@ -1,6 +1,7 @@
 // Paleta de comandos (Ctrl+K): buscador de acciones y libros.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Icons } from './icons';
+import { filterCommands, filterBooksForPalette } from './commandPaletteSearch';
 
 export default function CommandPalette({
     open,
@@ -56,27 +57,12 @@ export default function CommandPalette({
     }, [lastBook, onClose, openBook, setView, setSettingsOpen, setShowWorkshop, setSidebarOpen, setTheme, exportZipBackup, spinBookRoulette]);
 
     const results = useMemo(() => {
-        const q = query.trim().toLowerCase();
-        if (!q) {
-            return commands.map(cmd => ({ kind: 'command', ...cmd }));
-        }
-        const matchedCommands = commands
-            .filter(cmd => cmd.label.toLowerCase().includes(q) || cmd.keywords.includes(q))
-            .map(cmd => ({ kind: 'command', ...cmd }));
-        const matchedBooks = books
-            .filter(b => !b.loading && (
-                (b.name || '').toLowerCase().includes(q) ||
-                (b.author || '').toLowerCase().includes(q)
-            ))
-            .slice(0, 6)
-            .map(b => ({
-                kind: 'book',
-                id: `book-${b.id}`,
-                icon: b.type === 'pdf' ? '📄' : '📖',
-                label: b.name,
-                hint: b.author ? `${b.author} · ${b.progress || 0}%` : `${b.progress || 0}%`,
-                action: () => { openBook(b.id); onClose(); },
-            }));
+        const matchedCommands = filterCommands(query, commands).map(cmd => ({ kind: 'command', ...cmd }));
+        const matchedBooks = filterBooksForPalette(query, books).map(b => ({
+            kind: 'book',
+            ...b,
+            action: () => { openBook(b.bookId); onClose(); },
+        }));
         return [...matchedCommands, ...matchedBooks];
     }, [query, commands, books, openBook, onClose]);
 

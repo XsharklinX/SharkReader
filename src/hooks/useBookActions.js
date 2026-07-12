@@ -3,30 +3,7 @@ import { updateBookInList } from '../bookModel';
 import { deleteBookFromDB } from '../db';
 import { sounds } from '../sounds';
 import { getHighlightLabels } from '../highlightLabels';
-
-const HIGHLIGHT_COLOR_LABELS = {
-    yellow: 'importante',
-    green: 'idea',
-    blue: 'duda',
-    pink: 'cita',
-};
-
-const normalizeAnnotationKind = (bookmark = {}) => {
-    if (bookmark.kind === 'highlight' || bookmark.note?.includes('[Subrayado]')) return 'highlight';
-    if (bookmark.kind === 'note') return 'note';
-    return 'bookmark';
-};
-
-const normalizeAnnotationText = (bookmark = {}) => {
-    if (normalizeAnnotationKind(bookmark) === 'highlight') {
-        return String(bookmark.note || '')
-            .replace('[Subrayado] ', '')
-            .replace(/^"|"$/g, '')
-            .replace(/\.\.\.$/, '')
-            .trim();
-    }
-    return String(bookmark.note || '').trim();
-};
+import { normalizeAnnotationKind, buildAnnotationEntries, groupAnnotationsByBook, buildAnnotationExportContent, buildAnnotationExportFileName, HIGHLIGHT_COLOR_LABELS } from '../annotationExport';
 
 export function useBookActions({
     books,
@@ -206,28 +183,10 @@ export function useBookActions({
     }, [setVocabulary]);
 
     const getAnnotationEntries = useCallback((options = {}) => {
-        const scopedBooks = options.bookId
-            ? books.filter(book => book.id === options.bookId)
-            : books.filter(book => Array.isArray(book.bookmarks) && book.bookmarks.length > 0);
-
-        return scopedBooks.flatMap(book =>
-            (book.bookmarks || []).map((bookmark, index) => {
-                const kind = normalizeAnnotationKind(bookmark);
-                return {
-                    id: `${book.id}:${bookmark.cfi}:${bookmark.date || ''}:${index}`,
-                    bookId: book.id,
-                    bookName: book.name,
-                    bookAuthor: book.author,
-                    cfi: bookmark.cfi,
-                    date: bookmark.date || '',
-                    color: bookmark.color || 'yellow',
-                    colorLabel: kind === 'highlight' ? (getHighlightLabels()[bookmark.color] || HIGHLIGHT_COLOR_LABELS[bookmark.color] || HIGHLIGHT_COLOR_LABELS.yellow) : '',
-                    kind,
-                    text: normalizeAnnotationText(bookmark),
-                    rawNote: bookmark.note || '',
-                };
-            })
-        );
+        return buildAnnotationEntries(books, {
+            bookId: options.bookId,
+            getColorLabel: (color) => getHighlightLabels()[color] || HIGHLIGHT_COLOR_LABELS[color] || HIGHLIGHT_COLOR_LABELS.yellow,
+        });
     }, [books]);
 
     const exportAnnotations = useCallback((format = 'txt', options = {}) => {
@@ -237,72 +196,9 @@ export function useBookActions({
             return;
         }
 
-        const grouped = entries.reduce((acc, entry) => {
-            if (!acc[entry.bookId]) {
-                acc[entry.bookId] = {
-                    bookId: entry.bookId,
-                    bookName: entry.bookName,
-                    bookAuthor: entry.bookAuthor,
-                    items: [],
-                };
-            }
-            acc[entry.bookId].items.push(entry);
-            return acc;
-        }, {});
-        const booksWithMarks = Object.values(grouped);
-        const safeName = String(options.fileName || (booksWithMarks.length === 1 ? booksWithMarks[0].bookName : 'Mis_Anotaciones'))
-            .replace(/[\\/:*?"<>|]+/g, '_')
-            .replace(/\s+/g, '_')
-            .slice(0, 64);
-
-        let content = '';
-        let mime = 'text/plain';
-        let ext = 'txt';
-
-        if (format === 'md') {
-            content = '# Mis anotaciones — Shark Reader\n\n';
-            booksWithMarks.forEach(book => {
-                content += `## ${book.bookName}${book.bookAuthor ? ` — ${book.bookAuthor}` : ''}\n\n`;
-                book.items.forEach(item => {
-                    if (item.kind === 'highlight') content += `> ${item.text}\n>\n> ${item.colorLabel ? `_${item.colorLabel}_ · ` : ''}${item.date}\n\n`;
-                    else if (item.kind === 'note') content += `- Nota: **${item.text || 'Sin texto'}** _(${item.date})_\n`;
-                    else content += `- Marcador: **${item.text || 'Sin texto'}** _(${item.date})_\n`;
-                });
-                content += '\n---\n\n';
-            });
-            mime = 'text/markdown';
-            ext = 'md';
-        } else if (format === 'html') {
-            const sections = booksWithMarks.map(book => `
-                <section>
-                    <h2>${book.bookName}${book.bookAuthor ? ` — ${book.bookAuthor}` : ''}</h2>
-                    <ul>
-                        ${book.items.map(item => `<li><strong>${item.kind === 'highlight' ? 'Subrayado' : item.kind === 'note' ? 'Nota' : 'Marcador'}</strong>: ${item.text || 'Sin texto'}${item.colorLabel ? ` <em>(${item.colorLabel})</em>` : ''} <small>${item.date}</small></li>`).join('')}
-                    </ul>
-                </section>
-            `).join('\n');
-            content = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Mis anotaciones</title><style>body{font-family:Segoe UI,system-ui,sans-serif;background:#0f172a;color:#e2e8f0;padding:32px}section{background:#111827;border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:20px;margin:0 0 18px}h1{color:#7dd3fc}h2{margin:0 0 12px}ul{padding-left:18px}li{margin:0 0 10px;line-height:1.5}small{opacity:.7}</style></head><body><h1>Mis anotaciones — Shark Reader</h1>${sections}</body></html>`;
-            mime = 'text/html';
-            ext = 'html';
-        } else if (format === 'json') {
-            content = JSON.stringify({
-                exportedAt: new Date().toISOString(),
-                scope: options.bookId || 'library',
-                books: booksWithMarks,
-            }, null, 2);
-            mime = 'application/json';
-            ext = 'json';
-        } else {
-            content = 'SHARK READER - TUS ANOTACIONES\n\n';
-            booksWithMarks.forEach(book => {
-                content += `=========================================\n${book.bookName.toUpperCase()}${book.bookAuthor ? ` - ${book.bookAuthor}` : ''}\n=========================================\n\n`;
-                book.items.forEach(item => {
-                    const kindLabel = item.kind === 'highlight' ? 'Subrayado' : item.kind === 'note' ? 'Nota' : 'Marcador';
-                    const colorLabel = item.colorLabel ? ` [${item.colorLabel}]` : '';
-                    content += `[${item.date}] ${kindLabel}${colorLabel} - ${item.text || 'Sin texto'}\n(CFI: ${item.cfi})\n\n`;
-                });
-            });
-        }
+        const booksWithMarks = groupAnnotationsByBook(entries);
+        const safeName = buildAnnotationExportFileName(booksWithMarks, options.fileName);
+        const { content, mime, ext } = buildAnnotationExportContent(booksWithMarks, format, options.bookId || 'library');
 
         const url = URL.createObjectURL(new Blob([content], { type: mime }));
         const link = document.createElement('a');
