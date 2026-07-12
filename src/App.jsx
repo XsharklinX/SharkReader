@@ -50,6 +50,7 @@ import LibraryView from './LibraryView';
 import { sounds } from './sounds';
 import { TipToast } from './TipToast';
 import CommandPalette from './CommandPalette';
+import BookComparisonModal from './BookComparisonModal';
 import { TIPS } from './tips';
 
 const EpubReader = lazy(() => import('./EpubReader'));
@@ -118,6 +119,7 @@ const splitBookTags = (value) => String(value || '')
 
         // ── v2.9: MULTI-SELECT / BULK / COMBINED FILTERS / QUICK EDIT ──
         const [selectedBookIds, setSelectedBookIds] = useState(() => new Set());
+        const [showComparison, setShowComparison] = useState(false);
         const [isSelecting, setIsSelecting] = useState(false);
         const [filterTags, setFilterTags] = useState([]);
         const [filterAuthors, setFilterAuthors] = useState([]);
@@ -306,6 +308,7 @@ const splitBookTags = (value) => String(value || '')
             if (addons.soundFeedback && addonConfig.soundFeedback?.achievements !== false) {
                 sounds.achievement((addonConfig.soundFeedback?.volume ?? 100) / 100 * 0.3);
             }
+            sharkyActionsRef?.current?.notifyChallengeCompleted?.(done.title);
             clearTimeout(challengeToastTimerRef.current);
             challengeToastTimerRef.current = setTimeout(() => setAchievementToast(null), 4500);
         }, [challenges, stats, books, isStateHydrated, addons.soundFeedback, addonConfig.soundFeedback]);
@@ -1172,6 +1175,7 @@ const splitBookTags = (value) => String(value || '')
             sharkyActionsRef,
             addJournalEntry,
             setBooks,
+            setStats,
             setLastReadId,
             setView,
             isDbLoaded,
@@ -1463,6 +1467,23 @@ const splitBookTags = (value) => String(value || '')
                 id: `collection-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                 name,
                 bookIds: [],
+            };
+            setManualCollections(prev => [...prev, nextCollection].sort((a, b) => a.name.localeCompare(b.name)));
+            return nextCollection.id;
+        }, [manualCollections]);
+
+        // Colección inteligente: guarda una regla en vez de una lista fija de
+        // bookIds. Su contenido se recalcula en vivo en useLibrary (collectionLookup).
+        const createSmartCollection = useCallback((name, rule) => {
+            const cleanName = (name || '').trim();
+            if (!cleanName || !rule?.type || rule.value === '' || rule.value == null) return null;
+            const existing = manualCollections.find(collection => collection.name.toLowerCase() === cleanName.toLowerCase());
+            if (existing) return existing.id;
+            const nextCollection = {
+                id: `collection-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                name: cleanName,
+                emoji: '⚡',
+                rule,
             };
             setManualCollections(prev => [...prev, nextCollection].sort((a, b) => a.name.localeCompare(b.name)));
             return nextCollection.id;
@@ -2576,6 +2597,7 @@ const splitBookTags = (value) => String(value || '')
                     setShowRatingSection={setShowRatingSection}
                     manualCollections={manualCollections}
                     createManualCollection={createManualCollection}
+                    createSmartCollection={createSmartCollection}
                     removeManualCollection={removeManualCollection}
                     renameManualCollection={renameManualCollection}
                     moveManualCollection={moveManualCollection}
@@ -2663,6 +2685,7 @@ const splitBookTags = (value) => String(value || '')
                         bulkAssignCategory={bulkAssignCategory}
                         bulkAssignAuthor={bulkAssignAuthor}
                         bulkAssignSeries={bulkAssignSeries}
+                        onCompareBooks={() => { if (selectedBookIds.size >= 2 && selectedBookIds.size <= 4) setShowComparison(true); }}
                         bulkDeleteBooks={bulkDeleteBooks}
                         bulkAddToCollection={bulkAddToCollection}
                         customCategories={customCategories}
@@ -2691,6 +2714,13 @@ const splitBookTags = (value) => String(value || '')
                     onCreateCollection={createManualCollection}
                     coverInputRef={coverInputRef} customCategories={customCategories} manualCollections={manualCollections} t={t}
                 />
+
+                {showComparison && (
+                    <BookComparisonModal
+                        books={books.filter(b => selectedBookIds.has(b.id))}
+                        onClose={() => setShowComparison(false)}
+                    />
+                )}
 
                 {/* ── MODAL SETTINGS (extracted) ── */}
                 {settingsOpen && (
