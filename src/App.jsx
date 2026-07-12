@@ -42,8 +42,8 @@ import { useStats } from './hooks/useStats';
 import { useUI } from './hooks/useUI';
 import { useLibrary } from './hooks/useLibrary';
 import { useReaderTabSummaries } from './hooks/useReaderTabSummaries';
-import { useStableReaderBook } from './hooks/useStableReaderBook';
 import { useReaderPerformance } from './hooks/useReaderPerformance';
+import { useReaderOrchestration } from './hooks/useReaderOrchestration';
 import { buildBookContentExcerpt, buildBookContentIndex, CONTENT_INDEX_CACHE_PREFIX } from './contentIndex';
 import Sidebar from './Sidebar';
 import LibraryView from './LibraryView';
@@ -93,16 +93,10 @@ const splitBookTags = (value) => String(value || '')
         const [isDbLoaded, setIsDbLoaded] = useState(false);
         const [isStateHydrated, setIsStateHydrated] = useState(false);
 
-        // ── NAVEGACIÓN / TABS ──
+        // ── NAVEGACIÓN ──
         const [view, setView] = useState('library');
-        const [tabs, setTabs] = useState([]);
-        const [activeTabId, setActiveTabId] = useState(null);
-        const [tabTargetCfi, setTabTargetCfi] = useState({});
         const [lastReadId, setLastReadId] = useState(null);
-
-        // ── MULTI-PANEL ──
-        const [panelMode, setPanelMode] = useState(false);
-        const [rightTabId, setRightTabId] = useState(null);
+        // tabs/activeTabId/tabTargetCfi/panelMode/rightTabId viven en useReaderOrchestration
 
         // ── BIBLIOTECA ──
         const [searchTerm, setSearchTerm] = useState('');
@@ -272,7 +266,6 @@ const splitBookTags = (value) => String(value || '')
         }, [autoDarkMode, theme, themeClock]);
 
         const booksById = useMemo(() => new Map(books.map(book => [book.id, book])), [books]);
-        const readerTabBooks = useReaderTabSummaries(tabs, booksById);
         const { handleReaderPageTurn } = useReaderPerformance({ setStats, addonsRef, addonConfig });
         const readerLevel = useMemo(() => {
             const xp = readerXp({
@@ -564,7 +557,8 @@ const splitBookTags = (value) => String(value || '')
         }, [currentFilter, filterTags.length, filterAuthors.length]);
 
         // ── ¿SABÍAS QUE? — refs de estado en el momento de disparo ──
-        useEffect(() => { isReaderActiveRef.current = activeTabId !== null; }, [activeTabId]);
+        // El efecto de activeTabId se registra tras useReaderOrchestration (más abajo)
+        // porque activeTabId vive en ese hook.
         useEffect(() => { showingOnboardingRef.current = showWelcomeTutorial; }, [showWelcomeTutorial]);
 
         // ── ¿SABÍAS QUE? — scheduling de tips ──
@@ -1141,151 +1135,57 @@ const splitBookTags = (value) => String(value || '')
             };
         }, []);
 
-        useEffect(() => {
-            if (!isStateHydrated || isResettingRef.current) return;
-            const session = {
-                tabs,
-                activeTabId,
-                tabTargetCfi,
-                panelMode,
-                rightTabId,
+        // Definida antes de useReaderOrchestration porque el hook la usa en su
+        // llamada inicial (evita el TDZ: no puede referenciarse antes de existir).
+        const addJournalEntry = (bookName, minutes, progress) => {
+            if (!addons.readingJournal) return;
+            const entry = {
+                id: Date.now().toString(),
+                date: new Date().toLocaleDateString(),
+                dateTs: Date.now(),
+                bookName, minutes, progress
             };
-            saveAppData('readerSession', session).then(ok => {
-                if (ok === false) console.warn('[SharkReader] No se pudo persistir la sesion del lector');
-            });
-            localStorage.setItem('sharkreader_reader_session', JSON.stringify(session));
-        }, [tabs, activeTabId, tabTargetCfi, panelMode, rightTabId, isStateHydrated]);
+            setJournalEntries(prev => [entry, ...prev].slice(0, 100));
+        };
 
-        useEffect(() => {
-            if (!isDbLoaded || !isStateHydrated || isResettingRef.current) return;
-            if (!books.length && tabs.length === 0) return;
-            const validBookIds = new Set(books.map(book => book.id));
-            const validTabs = tabs.filter(tab => validBookIds.has(tab.bookId));
-            if (validTabs.length !== tabs.length) {
-                setTabs(validTabs);
-            }
-            if (activeTabId && !validTabs.some(tab => tab.id === activeTabId)) {
-                setActiveTabId(validTabs[0]?.id || null);
-            }
-            if (rightTabId && !validTabs.some(tab => tab.id === rightTabId)) {
-                setRightTabId(null);
-                setPanelMode(false);
-            }
-            setTabTargetCfi(prev => {
-                const next = Object.fromEntries(Object.entries(prev).filter(([tabId]) => validTabs.some(tab => tab.id === tabId)));
-                return Object.keys(next).length === Object.keys(prev).length ? prev : next;
-            });
-        }, [books, tabs, activeTabId, rightTabId, isDbLoaded, isStateHydrated]);
+        const {
+            tabs, setTabs,
+            activeTabId, setActiveTabId,
+            tabTargetCfi, setTabTargetCfi,
+            panelMode, setPanelMode,
+            rightTabId, setRightTabId,
+            openBook,
+            closeTab,
+            closeBook,
+            switchReaderTab,
+            activeTab,
+            currentBookData,
+            stableCurrentBookData,
+            currentTargetCfi,
+            rightBookData,
+            stableRightBookData,
+        } = useReaderOrchestration({
+            books,
+            booksRef,
+            booksById,
+            addonsRef,
+            sharkyActionsRef,
+            addJournalEntry,
+            setBooks,
+            setLastReadId,
+            setView,
+            isDbLoaded,
+            isStateHydrated,
+            isResettingRef,
+            openBookNotifyTimerRef,
+        });
 
-        // ─────────────────────────────────────────
-        // TABS
-        // ─────────────────────────────────────────
-        const openBook = useCallback((bookId, cfi = null) => {
-            const bookToOpen = booksRef.current.find(book => book.id === bookId);
-            const existing = tabs.find(t => t.bookId === bookId);
-            if (existing) {
-                setActiveTabId(existing.id);
-                if (cfi) setTabTargetCfi(p => ({ ...p, [existing.id]: cfi }));
-                setView('reader');
-                return;
-            }
-            const tabId = 'tab_' + Date.now();
-            const startMinutes = bookToOpen?.readingMinutes || 0;
-            const startProgress = bookToOpen?.progress || 0;
-            setTabs(prev => [...prev, { id: tabId, bookId, startMinutes, startProgress }]);
-            setActiveTabId(tabId);
-            if (cfi) setTabTargetCfi(p => ({ ...p, [tabId]: cfi }));
-            setLastReadId(bookId);
-            setBooks(prev => prev.map(b => {
-                if (b.id !== bookId) return b;
-                const now = Date.now();
-                return { ...b, lastReadDate: now, dateStarted: b.dateStarted || now, progressUpdatedAt: now, updatedAt: now };
-            }));
-            setView('reader');
-            const isNew = !bookToOpen?.lastReadDate;
-            clearTimeout(openBookNotifyTimerRef.current);
-            openBookNotifyTimerRef.current = setTimeout(() => {
-                openBookNotifyTimerRef.current = null;
-                sharkyActionsRef.current?.notifyBookOpened({
-                    bookName: bookToOpen?.name || '',
-                    progress: startProgress,
-                    lastReadDate: bookToOpen?.lastReadDate || null,
-                    isNew,
-                    hour: new Date().getHours(),
-                });
-            }, 800);
-        }, [tabs, showNoticeToast, sharkyActionsRef]);
-
-        const closeTab = useCallback((tabId, e) => {
-            if (e) { e.stopPropagation(); e.preventDefault(); }
-            if (!tabId) return;
-            // On close: Reading Journal + Auto Bookmark + Sharky session summary
-            setBooks(booksSnap => {
-                const closingTab = tabs.find(t => t.id === tabId);
-                if (closingTab) {
-                    const book = booksSnap.find(b => b.id === closingTab.bookId);
-                    if (book) {
-                        if (addonsRef.current.readingJournal && book.readingMinutes > 0) {
-                            addJournalEntry(book.name, book.readingMinutes, book.progress || 0);
-                        }
-                        if (addonsRef.current.autoBookmark && book.lastLocation) {
-                            const alreadyBookmarked = book.bookmarks?.some(bm => bm.cfi === book.lastLocation);
-                            if (!alreadyBookmarked) {
-                                const autoMark = { cfi: book.lastLocation, note: `📌 Auto — ${new Date().toISOString().slice(0, 10)}`, date: new Date().toISOString().slice(0, 10) };
-                                return booksSnap.map(b => b.id === closingTab.bookId ? { ...b, bookmarks: [...(b.bookmarks || []), autoMark], metadataUpdatedAt: Date.now(), updatedAt: Date.now() } : b);
-                            }
-                        }
-                        const sessionMins = Math.round((book.readingMinutes || 0) - (closingTab.startMinutes || 0));
-                        const startProgress = closingTab.startProgress ?? 0;
-                        const endProgress = book.progress || 0;
-                        const progressDelta = Math.max(0, endProgress - startProgress);
-                        sharkyActionsRef.current?.notifySessionEnd({
-                            bookName: book.name,
-                            sessionMins,
-                            startProgress,
-                            endProgress,
-                            progressDelta,
-                        });
-                    }
-                }
-                return booksSnap;
-            });
-            setTabs(prev => {
-                const newTabs = prev.filter(t => t.id !== tabId);
-                if (activeTabId === tabId) {
-                    if (newTabs.length > 0) { setActiveTabId(newTabs[newTabs.length - 1].id); setView('reader'); }
-                    else { setActiveTabId(null); setView('library'); }
-                }
-                if (rightTabId === tabId) { setPanelMode(false); setRightTabId(null); }
-                return newTabs;
-            });
-            setTabTargetCfi(prev => { const n = { ...prev }; delete n[tabId]; return n; });
-        }, [activeTabId, rightTabId, tabs, addonsRef, sharkyActionsRef]);
-
-        const closeBook = useCallback(() => {
-            closeTab(activeTabId);
-            if (document.fullscreenElement) document.exitFullscreen();
-        }, [activeTabId, closeTab]);
-
-        const switchReaderTab = useCallback((id) => {
-            setActiveTabId(id);
-            setView('reader');
-        }, []);
+        const readerTabBooks = useReaderTabSummaries(tabs, booksById);
+        useEffect(() => { isReaderActiveRef.current = activeTabId !== null; }, [activeTabId]);
 
         const toggleSpreadLayout = useCallback(() => {
             setReadLayout(prev => prev === 'auto' ? 'none' : 'auto');
         }, []);
-
-        const activeTab = tabs.find(t => t.id === activeTabId);
-        const currentBookData = useMemo(() => activeTab ? booksById.get(activeTab.bookId) || null : null, [activeTab, booksById]);
-        const stableCurrentBookData = useStableReaderBook(currentBookData);
-        const currentTargetCfi = tabTargetCfi[activeTabId] || null;
-        const rightBookData = useMemo(() => {
-            if (!panelMode || !rightTabId) return null;
-            const rt = tabs.find(t => t.id === rightTabId);
-            return rt ? booksById.get(rt.bookId) || null : null;
-        }, [panelMode, rightTabId, tabs, booksById]);
-        const stableRightBookData = useStableReaderBook(rightBookData);
 
         useEffect(() => {
             if (!isDbLoaded || !isStateHydrated || isResettingRef.current || view !== 'reader') return;
@@ -1879,17 +1779,6 @@ const splitBookTags = (value) => String(value || '')
                 .catch(() => showNoticeToast('No se pudo guardar el backup automatico.', 'warning'));
         }, [addonConfig, addons, books, customCategories, manualCollections, externalSources, isDbLoaded, isStateHydrated, stats, updateAddonConfig, userProfile, showNoticeToast]);
 
-        const addJournalEntry = (bookName, minutes, progress) => {
-            if (!addons.readingJournal) return;
-            const entry = {
-                id: Date.now().toString(),
-                date: new Date().toLocaleDateString(),
-                dateTs: Date.now(),
-                bookName, minutes, progress
-            };
-            setJournalEntries(prev => [entry, ...prev].slice(0, 100));
-        };
-
         const spinBookRoulette = useCallback(() => {
             const cfg = addonConfig.bookRoulette || {};
             let pool = books.filter(book => !book.loading);
@@ -2157,6 +2046,7 @@ const splitBookTags = (value) => String(value || '')
             searchResultsWithMatches,
             libraryDerived,
             virtualLibrary,
+            virtualSearchResults,
             annotationBookOptions,
             annotationGroups,
             annotationSummary,
@@ -2514,7 +2404,7 @@ const splitBookTags = (value) => String(value || '')
                 {view === 'library' && (
                     <div className="flex-shrink-0 flex items-center justify-between px-6 text-white shadow-lg topbar-glow z-20 h-16" style={{ backgroundColor: 'var(--topbar-bg)' }}>
                         <div className="flex items-center gap-5">
-                            <button onClick={() => setSidebarOpen(true)} className="p-2 hover:bg-black/20 rounded-full transition"><Icons.Menu /></button>
+                            <button onClick={() => setSidebarOpen(true)} aria-label="Abrir menú lateral" className="p-2 hover:bg-black/20 rounded-full transition"><Icons.Menu /></button>
                             <div className="flex items-center gap-2 cursor-pointer group" onClick={() => setCurrentFilter('all')}>
                                 <span className="text-2xl transition-transform group-hover:scale-110 duration-300 inline-block drop-shadow-md">🦈</span>
                                 <div className="flex flex-col leading-none">
@@ -2742,6 +2632,7 @@ const splitBookTags = (value) => String(value || '')
                         ref={libraryScrollRef}
                         searchTerm={searchTerm}
                         searchResultsWithMatches={searchResultsWithMatches}
+                        virtualSearchResults={virtualSearchResults}
                         displayedBooks={displayedBooks}
                         books={books}
                         currentFilter={currentFilter}
