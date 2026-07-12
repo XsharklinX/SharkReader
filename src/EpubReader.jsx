@@ -5,6 +5,7 @@ import { Icons } from './icons';
 import { getCachedLocations, setCachedLocations } from './locationsCache';
 import EpubReaderSettings, { READING_PRESETS } from './EpubReaderSettings';
 import { useHighlightLabels } from './highlightLabels';
+import { splitIntoSpeechChunks } from './ttsChunks';
 
 function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg, customText, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme }) {
     const fontStack =
@@ -1087,6 +1088,22 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             return -1;
         };
 
+        // Convierte bloques DOM en una cola de trozos {el, text} cortos (frases,
+        // fundiendo diálogo breve). Esto es lo que hace que cambiar voz/velocidad
+        // reinicie cerca de donde iba el usuario, no desde el principio del párrafo,
+        // y que cada síntesis sea rápida en vez de esperar un párrafo entero.
+        const TTS_CHUNK_MAX_LEN = 200;
+        const buildTtsQueue = useCallback((blocks) => {
+            const queue = [];
+            blocks.forEach(el => {
+                const text = (el.innerText || '').trim();
+                splitIntoSpeechChunks(text, TTS_CHUNK_MAX_LEN).forEach(chunkText => {
+                    queue.push({ el, text: chunkText });
+                });
+            });
+            return queue;
+        }, []);
+
         // Cola de lectura derivada de lo que hay EN PANTALLA ahora mismo.
         // Paginado: usa los CFI start/end de currentLocation() (respeta doble página,
         // tamaño de fuente, márgenes, etc.). Scroll: primer bloque visible → final.
@@ -1115,7 +1132,8 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 allBlocks.sort((a, b) => a.absTop - b.absTop);
                 const startIdx = allBlocks.findIndex(b => b.absBottom > vr.top + 8 && b.absTop < vr.bottom - 8);
                 if (startIdx === -1) return [];
-                return allBlocks.slice(startIdx).map(b => b.el).filter(el => !ttsSpokenRef.current.has(el));
+                const blocks = allBlocks.slice(startIdx).map(b => b.el).filter(el => !ttsSpokenRef.current.has(el));
+                return buildTtsQueue(blocks);
             }
 
             // Paginado: rango visible exacto vía CFI
@@ -1134,8 +1152,9 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 ? blockIndexOf(endRange.startContainer, blocks)
                 : blocks.length - 1;
             if (endIdx === -1) endIdx = blocks.length - 1;
-            return blocks.slice(startIdx, endIdx + 1).filter(el => !ttsSpokenRef.current.has(el));
-        }, [readFlow, ensureTtsStyles, ttsBlocksOf]);
+            const visibleBlocks = blocks.slice(startIdx, endIdx + 1).filter(el => !ttsSpokenRef.current.has(el));
+            return buildTtsQueue(visibleBlocks);
+        }, [readFlow, ensureTtsStyles, ttsBlocksOf, buildTtsQueue]);
 
         const stopTts = useCallback(() => {
             ttsActiveRef.current = false;
@@ -1153,8 +1172,8 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
         // Sintetiza (y cachea) el audio neuronal de un índice de la cola — permite prefetch
         const fetchNeuralAudio = useCallback((index) => {
-            const el = ttsQueueRef.current[index];
-            const text = (el?.innerText || '').trim();
+            const chunk = ttsQueueRef.current[index];
+            const text = (chunk?.text || '').trim();
             if (!text || !window.electronAPI?.synthesizeNeuralTts) return Promise.resolve(null);
             const cache = ttsAudioCacheRef.current;
             if (!cache.has(index)) {
@@ -1206,24 +1225,29 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
         const speakTtsEl = useCallback((index) => {
             if (!ttsActiveRef.current) return;
-            const els = ttsQueueRef.current;
-            if (index >= els.length) {
+            const queue = ttsQueueRef.current;
+            if (index >= queue.length) {
                 clearTtsHighlight();
                 advanceTtsPage();
                 return;
             }
-            const el = els[index];
+            const { el, text } = queue[index];
             ttsIndexRef.current = index;
-            const text = (el?.innerText || '').trim();
             if (!text) { speakTtsEl(index + 1); return; }
 
-            // Sombrear el párrafo que se está leyendo
-            clearTtsHighlight();
-            try { el.classList.add('shark-tts-active'); ttsHighlightRef.current = el; } catch (_) {}
-            scrollTtsElIntoView(el);
+            // Sombrear el párrafo — solo si cambiamos de elemento, para no parpadear
+            // entre frases consecutivas del mismo párrafo.
+            if (ttsHighlightRef.current !== el) {
+                clearTtsHighlight();
+                try { el.classList.add('shark-tts-active'); ttsHighlightRef.current = el; } catch (_) {}
+                scrollTtsElIntoView(el);
+            }
 
             const advance = () => {
-                ttsSpokenRef.current.add(el);
+                // Marcar el bloque como ya leído solo al terminar su última frase,
+                // así una página que corta un párrafo a mitad no lo da por leído.
+                const next = queue[index + 1];
+                if (!next || next.el !== el) ttsSpokenRef.current.add(el);
                 if (!ttsActiveRef.current) return;
                 speakTtsEl(index + 1);
             };
