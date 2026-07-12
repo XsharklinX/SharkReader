@@ -305,12 +305,14 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             readerTimeoutsRef.current.clear();
         }, []);
 
-        // Block page-turn wheel while any panel/overlay is open
+        // Block page-turn wheel while any panel/overlay is open.
+        // showTtsPanel queda fuera a propósito: se deja abierto mientras se escucha,
+        // y el propio popup ya corta la propagación de wheel sobre sí mismo.
         const anyPanelOpenRef = useRef(false);
         useEffect(() => {
             anyPanelOpenRef.current = showToc || showFontMenu || showBrightness || showSearch ||
-                showAutoScrollPanel || showAnnotationsPanel || showTtsPanel || !!pendingBookmarkCfi || !!quoteModal;
-        }, [showToc, showFontMenu, showBrightness, showSearch, showAutoScrollPanel, showAnnotationsPanel, showTtsPanel, pendingBookmarkCfi, quoteModal]);
+                showAutoScrollPanel || showAnnotationsPanel || !!pendingBookmarkCfi || !!quoteModal;
+        }, [showToc, showFontMenu, showBrightness, showSearch, showAutoScrollPanel, showAnnotationsPanel, pendingBookmarkCfi, quoteModal]);
 
         // Focus mode: hide toolbar on mouse idle, show on hover near top
         const focusToolbarHideTimer = useRef(null);
