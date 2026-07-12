@@ -41,6 +41,7 @@ const SettingsPanel = ({
     lang, setLang,
     aiProvider, setAiProvider, aiApiKey, setAiApiKey,
     syncFolder, setSyncFolder,
+    webdavConfig, setWebdavConfig,
     accentColor, setAccentColor,
     tutorialEnabled, setTutorialEnabled,
     onRestartTutorial,
@@ -56,6 +57,10 @@ const SettingsPanel = ({
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [appVersion, setAppVersion] = useState('');
     const [updateState, setUpdateState] = useState({ status: 'idle', info: null });
+    const [webdavDraft, setWebdavDraft] = useState({ url: '', username: '', password: '' });
+    const [webdavTesting, setWebdavTesting] = useState(false);
+    const [webdavStatus, setWebdavStatus] = useState('');
+    const [webdavErrorMsg, setWebdavErrorMsg] = useState('');
     const assocStatusTimerRef = useRef(null);
 
     useEffect(() => {
@@ -263,6 +268,57 @@ const SettingsPanel = ({
                                     </button>
                                     {assocStatus === 'sync_ok' && <p className="mt-2 text-xs font-bold text-green-500">Carpeta guardada. El progreso se sincronizará automáticamente.</p>}
                                     {assocStatus === 'sync_err' && <p className="mt-2 text-xs font-bold text-red-500">Error al seleccionar carpeta.</p>}
+                                </section>
+                            )}
+
+                            {typeof window !== 'undefined' && window.electronAPI?.webdavTestConnection && (
+                                <section>
+                                    <label className="mb-1 block pl-1 text-xs font-black uppercase tracking-widest opacity-50">Sync WebDAV</label>
+                                    <p className="mb-3 px-1 text-xs opacity-50">Alternativa sin terceros: sincroniza con tu propio Nextcloud, ownCloud o cualquier servidor WebDAV (puede estar en tu red local).</p>
+                                    {webdavConfig?.url ? (
+                                        <div className="mb-3 flex items-center gap-2 rounded-xl border border-green-500/30 bg-green-500/10 px-4 py-2.5">
+                                            <span className="text-sm text-green-500">OK</span>
+                                            <span className="flex-1 truncate font-mono text-xs opacity-70">{webdavConfig.url}</span>
+                                            <button onClick={() => { setWebdavConfig({ url: '', username: '', password: '' }); setWebdavDraft({ url: '', username: '', password: '' }); setWebdavStatus(''); }} className="text-xs text-red-500 opacity-60 hover:opacity-100">Quitar</button>
+                                        </div>
+                                    ) : (
+                                        <div className="mb-3 space-y-2">
+                                            <input type="text" value={webdavDraft.url} onChange={e => setWebdavDraft(prev => ({ ...prev, url: e.target.value }))}
+                                                placeholder="https://mi-nextcloud.com/remote.php/dav/files/usuario/"
+                                                className="w-full rounded-xl bg-black/5 dark:bg-white/5 px-3 py-2.5 text-xs font-mono outline-none border border-transparent focus:border-[var(--highlight)] transition"
+                                                style={{ color: 'var(--text-color)' }} />
+                                            <input type="text" value={webdavDraft.username} onChange={e => setWebdavDraft(prev => ({ ...prev, username: e.target.value }))}
+                                                placeholder="Usuario (opcional)"
+                                                className="w-full rounded-xl bg-black/5 dark:bg-white/5 px-3 py-2.5 text-xs outline-none border border-transparent focus:border-[var(--highlight)] transition"
+                                                style={{ color: 'var(--text-color)' }} />
+                                            <input type="password" value={webdavDraft.password} onChange={e => setWebdavDraft(prev => ({ ...prev, password: e.target.value }))}
+                                                placeholder="Contraseña (opcional)"
+                                                className="w-full rounded-xl bg-black/5 dark:bg-white/5 px-3 py-2.5 text-xs outline-none border border-transparent focus:border-[var(--highlight)] transition"
+                                                style={{ color: 'var(--text-color)' }} />
+                                        </div>
+                                    )}
+                                    {!webdavConfig?.url && (
+                                        <button onClick={async () => {
+                                            if (!webdavDraft.url.trim()) return;
+                                            setWebdavTesting(true);
+                                            setWebdavStatus('');
+                                            const result = await window.electronAPI.webdavTestConnection(webdavDraft).catch(err => ({ ok: false, msg: err?.message }));
+                                            setWebdavTesting(false);
+                                            if (result?.ok) {
+                                                setWebdavConfig({ ...webdavDraft });
+                                                setWebdavStatus('ok');
+                                            } else {
+                                                setWebdavStatus('err');
+                                                setWebdavErrorMsg(result?.msg || 'No se pudo conectar.');
+                                            }
+                                        }} disabled={webdavTesting || !webdavDraft.url.trim()}
+                                            className="w-full rounded-xl py-2.5 text-sm font-bold text-white transition hover:brightness-110 disabled:opacity-50"
+                                            style={{ backgroundColor: 'var(--highlight)' }}>
+                                            {webdavTesting ? 'Probando conexión…' : 'Conectar'}
+                                        </button>
+                                    )}
+                                    {webdavStatus === 'ok' && <p className="mt-2 text-xs font-bold text-green-500">Conectado. El progreso se sincronizará automáticamente.</p>}
+                                    {webdavStatus === 'err' && <p className="mt-2 text-xs font-bold text-red-500">{webdavErrorMsg || 'No se pudo conectar al servidor.'}</p>}
                                 </section>
                             )}
 

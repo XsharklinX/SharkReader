@@ -14,6 +14,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     pickFolder: () => ipcRenderer.invoke('pick-folder'),
     writeSyncFile: (folder, content) => ipcRenderer.invoke('write-sync-file', folder, content),
     readSyncFile: (folder) => ipcRenderer.invoke('read-sync-file', folder),
+    // ── Sync WebDAV (Nextcloud/ownCloud/servidor propio) ──
+    webdavTestConnection: (config) => ipcRenderer.invoke('webdav-test-connection', config),
+    webdavWriteSyncFile: (config, content) => ipcRenderer.invoke('webdav-write-sync-file', config, content),
+    webdavReadSyncFile: (config) => ipcRenderer.invoke('webdav-read-sync-file', config),
     registerFileAssociations: () => ipcRenderer.invoke('register-file-associations'),
     removeFileAssociations: () => ipcRenderer.invoke('remove-file-associations'),
     onOpenFile: (handler) => ipcRenderer.on('open-file', (_e, filePath) => handler(filePath)),

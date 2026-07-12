@@ -863,6 +863,59 @@ ipcMain.handle('read-sync-file', async (_e, folderPath) => {
     }
 });
 
+// ── Sync WebDAV (Nextcloud, ownCloud o cualquier servidor WebDAV propio) ────
+// Alternativa a la carpeta local para quien no quiere depender de OneDrive/
+// Dropbox. allowPrivateNetwork siempre true aquí: es un servidor que el propio
+// usuario escribe en Ajustes (a menudo autoalojado en su LAN), mismo nivel de
+// confianza que ya se le da a la carpeta de sync local con acceso a disco.
+const WEBDAV_SYNC_FILENAME = 'sharkreader_sync.json';
+
+async function getWebdavClient(config) {
+    const { createClient } = await import('webdav');
+    return createClient(config.url, {
+        username: config.username || undefined,
+        password: config.password || undefined,
+    });
+}
+
+ipcMain.handle('webdav-test-connection', async (_e, config) => {
+    try {
+        if (!config?.url || !isSafeHttpUrl(config.url)) return { ok: false, msg: 'URL no válida' };
+        await assertNetworkTargetAllowed(config.url, true);
+        const client = await getWebdavClient(config);
+        await client.getDirectoryContents('/');
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, msg: err?.message || 'No se pudo conectar al servidor' };
+    }
+});
+
+ipcMain.handle('webdav-write-sync-file', async (_e, config, content) => {
+    try {
+        if (!config?.url || !isSafeHttpUrl(config.url)) return { ok: false, msg: 'URL no válida' };
+        await assertNetworkTargetAllowed(config.url, true);
+        const client = await getWebdavClient(config);
+        await client.putFileContents(WEBDAV_SYNC_FILENAME, content, { overwrite: true });
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, msg: err?.message || 'No se pudo escribir en el servidor' };
+    }
+});
+
+ipcMain.handle('webdav-read-sync-file', async (_e, config) => {
+    try {
+        if (!config?.url || !isSafeHttpUrl(config.url)) return { ok: false };
+        await assertNetworkTargetAllowed(config.url, true);
+        const client = await getWebdavClient(config);
+        const exists = await client.exists(WEBDAV_SYNC_FILENAME);
+        if (!exists) return { ok: false };
+        const content = await client.getFileContents(WEBDAV_SYNC_FILENAME, { format: 'text' });
+        return { ok: true, content };
+    } catch (err) {
+        return { ok: false, msg: err?.message };
+    }
+});
+
 // Registrar asociaciones de archivo en Windows (requiere permisos de admin)
 ipcMain.handle('register-file-associations', async () => {
     if (process.platform !== 'win32') return { ok: false, msg: 'Solo disponible en Windows' };

@@ -199,6 +199,7 @@ const splitBookTags = (value) => String(value || '')
 
         // ── SYNC CARPETA LOCAL ──
         const [syncFolder, setSyncFolder] = useState('');
+        const [webdavConfig, setWebdavConfig] = useState({ url: '', username: '', password: '' });
 
         // ── ACCENT COLOR ──
         const [accentColor, setAccentColor] = useState(() => safeParse('sharkreader_accent', null));
@@ -231,6 +232,7 @@ const splitBookTags = (value) => String(value || '')
         const syncTimerRef = useRef(null);
         const syncDirtyRef = useRef(false);
         const syncSnapshotRef = useRef(null);
+        const webdavSyncTimerRef = useRef(null);
         const activeBookIdRef = useRef(null);
         const metadataRepairingRef = useRef(new Set());
         const bookDedupKeysRef = useRef(new Set());
@@ -771,6 +773,7 @@ const splitBookTags = (value) => String(value || '')
                     applyStoredValue('aiProvider', setAiProvider),
                     applyStoredValue('aiApiKey', setAiApiKey),
                     applyStoredValue('syncFolder', setSyncFolder),
+                    applyStoredValue('webdavConfig', setWebdavConfig, value => value && typeof value === 'object'),
                     applyStoredValue('libraryView', setLibraryView),
                     applyStoredValue('dailyGoalMins', setDailyGoalMins, value => Number.isFinite(Number(value))),
                     applyStoredValue('yearlyGoal', setYearlyGoal, value => Number.isFinite(Number(value))),
@@ -1014,6 +1017,35 @@ const splitBookTags = (value) => String(value || '')
             return () => clearTimeout(syncTimerRef.current);
         }, [books, customCategories, manualCollections, stats, userProfile, addons, addonConfig, externalSources, isDbLoaded, isStateHydrated, syncFolder]);
 
+        // Sync WebDAV: mismo patrón que la carpeta local (lee lo remoto, fusiona,
+        // escribe), pero como alternativa independiente — no se cruzan entre sí.
+        useEffect(() => {
+            if (!isDbLoaded || !isStateHydrated || isResettingRef.current || !webdavConfig?.url || !window.electronAPI?.webdavWriteSyncFile) return;
+            clearTimeout(webdavSyncTimerRef.current);
+            webdavSyncTimerRef.current = setTimeout(async () => {
+                const bookRecords = books.filter(b => !b.loading).map(b => toStoredBookRecord(b, {}, { includeFile: false }));
+                const localBackup = buildPortableBackup({
+                    books: bookRecords.map(({ file, ...record }) => record),
+                    categories: customCategories,
+                    collections: manualCollections,
+                    stats,
+                    user: userProfile || {},
+                    workshop: migrateWorkshopData({ addons, addonConfig, externalSources }),
+                });
+                let backupToWrite = localBackup;
+                try {
+                    const existing = await window.electronAPI.webdavReadSyncFile(webdavConfig);
+                    if (existing?.ok && existing.content) {
+                        backupToWrite = mergeBackupData(localBackup, JSON.parse(existing.content));
+                    }
+                } catch (err) {
+                    console.warn('[SharkReader] No se pudo fusionar backup de WebDAV existente:', err);
+                }
+                window.electronAPI.webdavWriteSyncFile(webdavConfig, JSON.stringify(backupToWrite, null, 2)).catch(() => {});
+            }, 5000);
+            return () => clearTimeout(webdavSyncTimerRef.current);
+        }, [books, customCategories, manualCollections, stats, userProfile, addons, addonConfig, externalSources, isDbLoaded, isStateHydrated, webdavConfig]);
+
         // Flush del sync al cerrar la app: si el debounce de 5s no llegó a disparar,
         // los últimos cambios se escribirían nunca. beforeunload envía el IPC
         // fire-and-forget antes del teardown del renderer.
@@ -1109,6 +1141,7 @@ const splitBookTags = (value) => String(value || '')
                     saveAppData('aiProvider', aiProvider),
                     saveAppData('aiApiKey', aiApiKey),
                     saveAppData('syncFolder', syncFolder),
+                    saveAppData('webdavConfig', webdavConfig),
                     saveAppData('externalSources', externalSources),
                     saveAppData('addons', addons),
                     saveAppData('addonConfig', addonConfig),
@@ -1118,7 +1151,7 @@ const splitBookTags = (value) => String(value || '')
                 });
             }, 1500);
             return () => clearTimeout(persistAddonsRef.current);
-        }, [aiProvider, aiApiKey, syncFolder, externalSources, addons, addonConfig, isDbLoaded, isStateHydrated]);
+        }, [aiProvider, aiApiKey, syncFolder, webdavConfig, externalSources, addons, addonConfig, isDbLoaded, isStateHydrated]);
 
         // Cleanup incremental de ObjectURL para portadas/libros hidratados desde IndexedDB.
         useEffect(() => {
@@ -2736,6 +2769,7 @@ const splitBookTags = (value) => String(value || '')
                         aiProvider={aiProvider} setAiProvider={setAiProvider}
                         aiApiKey={aiApiKey} setAiApiKey={setAiApiKey}
                         syncFolder={syncFolder} setSyncFolder={setSyncFolder}
+                        webdavConfig={webdavConfig} setWebdavConfig={setWebdavConfig}
                         accentColor={accentColor} setAccentColor={setAccentColor}
                         tutorialEnabled={tutorialEnabled} setTutorialEnabled={setTutorialEnabled}
                         onRestartTutorial={restartTutorial}
