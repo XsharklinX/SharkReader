@@ -1,30 +1,38 @@
 import { getBookDedupKey, getBookTitleDedupKey } from './bookModel';
+import { BACKUP_SCHEMA_VERSION } from './backupValidation';
 
 const newerTimestamp = (...values) => Math.max(...values.map(value => Number(value || 0)));
+const resolvedTimestamp = (...values) => newerTimestamp(...values) || Date.now();
+const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
+const winnerValue = (winner, key, fallback) => hasOwn(winner, key) ? winner[key] : fallback;
 
-const getBookMergeTimestamp = (book = {}) => newerTimestamp(
+export const getBookMergeTimestamp = (book = {}) => newerTimestamp(
     book.updatedAt,
     book.metadataUpdatedAt,
     book.progressUpdatedAt,
+    book.annotationsUpdatedAt,
     book.lastReadDate,
     book.dateFinished,
     book.dateStarted,
     book.dateAdded,
 );
 
+export const isBookDeletedByTombstone = (book, deletedBooks = {}) =>
+    Number(deletedBooks?.[book?.id] || 0) >= getBookMergeTimestamp(book);
+
 const mergeProgressFields = (base = {}, next = {}) => {
     const baseTs = newerTimestamp(base.progressUpdatedAt, base.lastReadDate);
     const nextTs = newerTimestamp(next.progressUpdatedAt, next.lastReadDate);
     const winner = nextTs >= baseTs ? next : base;
     return {
-        progress: winner.progress ?? base.progress ?? 0,
-        lastLocation: winner.lastLocation ?? base.lastLocation ?? null,
-        lastReadDate: winner.lastReadDate ?? base.lastReadDate ?? 0,
+        progress: winnerValue(winner, 'progress', base.progress ?? next.progress ?? 0),
+        lastLocation: winnerValue(winner, 'lastLocation', base.lastLocation ?? next.lastLocation ?? null),
+        lastReadDate: winnerValue(winner, 'lastReadDate', base.lastReadDate ?? next.lastReadDate ?? 0),
         readingMinutes: Math.max(Number(base.readingMinutes || 0), Number(next.readingMinutes || 0)),
-        isFinished: !!(base.isFinished || next.isFinished),
-        dateStarted: base.dateStarted || next.dateStarted || null,
-        dateFinished: base.dateFinished || next.dateFinished || null,
-        progressUpdatedAt: Math.max(baseTs, nextTs, Date.now()),
+        isFinished: !!winner.isFinished,
+        dateStarted: winnerValue(winner, 'dateStarted', base.dateStarted ?? next.dateStarted ?? null),
+        dateFinished: winnerValue(winner, 'dateFinished', base.dateFinished ?? next.dateFinished ?? null),
+        progressUpdatedAt: resolvedTimestamp(baseTs, nextTs),
     };
 };
 
@@ -44,39 +52,59 @@ const mergeMetadataFields = (base = {}, next = {}) => {
     return {
         originalTitle: winner.originalTitle || base.originalTitle || next.originalTitle,
         originalAuthor: winner.originalAuthor || base.originalAuthor || next.originalAuthor,
-        customTitle: winner.customTitle ?? base.customTitle ?? '',
-        customAuthor: winner.customAuthor ?? base.customAuthor ?? '',
-        coverBase64: winner.coverBase64 ?? base.coverBase64 ?? null,
-        customCover: winner.customCover ?? base.customCover ?? null,
-        description: winner.description ?? base.description ?? '',
-        publisher: winner.publisher ?? base.publisher ?? '',
-        tags: winner.tags ?? base.tags ?? '',
-        series: winner.series ?? base.series ?? '',
-        seriesIndex: winner.seriesIndex ?? base.seriesIndex ?? 0,
-        category: winner.category ?? base.category ?? null,
-        rating: winner.rating ?? base.rating ?? 0,
-        isFav: !!(base.isFav || next.isFav),
-        notes: winner.notes ?? base.notes ?? '',
-        bookmarks: mergeBookmarkArrays(base.bookmarks, next.bookmarks),
-        metadataUpdatedAt: Math.max(baseTs, nextTs, Date.now()),
+        customTitle: winnerValue(winner, 'customTitle', base.customTitle ?? next.customTitle ?? ''),
+        customAuthor: winnerValue(winner, 'customAuthor', base.customAuthor ?? next.customAuthor ?? ''),
+        coverBase64: winnerValue(winner, 'coverBase64', base.coverBase64 ?? next.coverBase64 ?? null),
+        customCover: winnerValue(winner, 'customCover', base.customCover ?? next.customCover ?? null),
+        description: winnerValue(winner, 'description', base.description ?? next.description ?? ''),
+        publisher: winnerValue(winner, 'publisher', base.publisher ?? next.publisher ?? ''),
+        tags: winnerValue(winner, 'tags', base.tags ?? next.tags ?? ''),
+        series: winnerValue(winner, 'series', base.series ?? next.series ?? ''),
+        seriesIndex: winnerValue(winner, 'seriesIndex', base.seriesIndex ?? next.seriesIndex ?? 0),
+        category: winnerValue(winner, 'category', base.category ?? next.category ?? null),
+        rating: winnerValue(winner, 'rating', base.rating ?? next.rating ?? 0),
+        pdfScale: winnerValue(winner, 'pdfScale', base.pdfScale ?? next.pdfScale ?? 1.2),
+        readerPreferences: winnerValue(winner, 'readerPreferences', base.readerPreferences || next.readerPreferences || null),
+        isFav: !!winner.isFav,
+        notes: winnerValue(winner, 'notes', base.notes ?? next.notes ?? ''),
+        metadataUpdatedAt: resolvedTimestamp(baseTs, nextTs),
+    };
+};
+
+const mergeAnnotationFields = (base = {}, next = {}) => {
+    const baseTs = newerTimestamp(base.annotationsUpdatedAt, base.metadataUpdatedAt, base.updatedAt);
+    const nextTs = newerTimestamp(next.annotationsUpdatedAt, next.metadataUpdatedAt, next.updatedAt);
+    if (baseTs === nextTs) {
+        return {
+            bookmarks: mergeBookmarkArrays(base.bookmarks, next.bookmarks),
+            annotationsUpdatedAt: resolvedTimestamp(baseTs, nextTs),
+        };
+    }
+    const winner = nextTs > baseTs ? next : base;
+    return {
+        bookmarks: Array.isArray(winner.bookmarks) ? winner.bookmarks : [],
+        annotationsUpdatedAt: resolvedTimestamp(baseTs, nextTs),
     };
 };
 
 const mergeBookRecord = (base = {}, next = {}) => {
     const progress = mergeProgressFields(base, next);
     const metadata = mergeMetadataFields(base, next);
+    const annotations = mergeAnnotationFields(base, next);
     const latest = getBookMergeTimestamp(next) >= getBookMergeTimestamp(base) ? next : base;
+    const dateAddedCandidates = [base.dateAdded, next.dateAdded].map(Number).filter(value => value > 0);
     return {
         ...base,
         ...next,
         ...metadata,
         ...progress,
+        ...annotations,
         id: base.id || next.id,
         file: base.file || next.file || null,
         sourcePath: base.sourcePath || next.sourcePath || null,
         type: base.type || next.type || latest.type || 'epub',
-        dateAdded: Math.min(Number(base.dateAdded || Date.now()), Number(next.dateAdded || Date.now())),
-        updatedAt: Math.max(getBookMergeTimestamp(base), getBookMergeTimestamp(next), Date.now()),
+        dateAdded: dateAddedCandidates.length ? Math.min(...dateAddedCandidates) : Date.now(),
+        updatedAt: resolvedTimestamp(getBookMergeTimestamp(base), getBookMergeTimestamp(next)),
     };
 };
 
@@ -107,6 +135,7 @@ const mergeCollections = (localCollections = [], incomingCollections = []) => {
         const current = merged.get(key);
         if (!current) {
             merged.set(key, {
+                ...collection,
                 id: collection.id || key,
                 name: normalizedName || 'Colección',
                 bookIds: Array.from(new Set(collection.bookIds || [])).filter(Boolean),
@@ -114,8 +143,10 @@ const mergeCollections = (localCollections = [], incomingCollections = []) => {
             return;
         }
         merged.set(key, {
+            ...current,
+            ...collection,
             id: current.id || collection.id || key,
-            name: current.name || normalizedName || 'Colección',
+            name: normalizedName || current.name || 'Colección',
             bookIds: Array.from(new Set([...(current.bookIds || []), ...(collection.bookIds || [])])).filter(Boolean),
         });
     };
@@ -149,26 +180,73 @@ export const mergeBookSnapshots = (localBooks = [], incomingBooks = []) => {
     return Array.from(merged.values());
 };
 
-export const mergeBackupData = (localBackup, incomingBackup) => ({
-    schemaVersion: 2,
-    app: 'SharkReader',
-    exportedAt: new Date().toISOString(),
-    books: mergeBookSnapshots(localBackup.books || [], incomingBackup.books || []),
-    categories: Array.from(new Set([...(localBackup.categories || []), ...(incomingBackup.categories || [])])).filter(cat => String(cat).toLowerCase() !== 'favoritos'),
-    collections: mergeCollections(localBackup.collections || [], incomingBackup.collections || []),
-    stats: mergeStats(localBackup.stats || {}, incomingBackup.stats || {}),
-    user: Object.keys(incomingBackup.user || {}).length ? incomingBackup.user : (localBackup.user || {}),
-    workshop: incomingBackup.workshop || localBackup.workshop,
-});
+const mergeDeletedBooks = (localDeleted = {}, incomingDeleted = {}) => {
+    const merged = { ...localDeleted };
+    Object.entries(incomingDeleted || {}).forEach(([bookId, timestamp]) => {
+        merged[bookId] = Math.max(Number(merged[bookId] || 0), Number(timestamp || 0));
+    });
+    return merged;
+};
 
-export const buildPortableBackup = ({ books, categories, collections, stats, user, workshop }) => ({
-    schemaVersion: 2,
+// Unión de logros: un logro desbloqueado en cualquiera de los dos lados
+// queda desbloqueado, conservando el `unlockedAt` MÁS ANTIGUO de los dos —
+// esa es la fecha real en la que se ganó, no la fecha del último sync.
+export const mergeAchievements = (localAchievements = {}, incomingAchievements = {}) => {
+    const merged = { ...localAchievements };
+    Object.entries(incomingAchievements || {}).forEach(([id, data]) => {
+        const localUnlock = Number(merged[id]?.unlockedAt || 0);
+        const incomingUnlock = Number(data?.unlockedAt || 0);
+        if (!incomingUnlock) return;
+        if (!localUnlock || incomingUnlock < localUnlock) {
+            merged[id] = { unlockedAt: incomingUnlock };
+        }
+    });
+    return merged;
+};
+
+export const mergeBackupData = (localBackup, incomingBackup) => {
+    const deletedBooks = mergeDeletedBooks(localBackup.deletedBooks, incomingBackup.deletedBooks);
+    // Workshop/ajustes son un blob de configuración opaco — no tiene sentido
+    // fusionarlo campo a campo, así que gana el lado con settingsUpdatedAt
+    // más reciente (todo el bloque junto), igual que metadataUpdatedAt
+    // decide el ganador del grupo de campos de metadata en cada libro.
+    const localSettingsTs = Number(localBackup.settingsUpdatedAt || 0);
+    const incomingSettingsTs = Number(incomingBackup.settingsUpdatedAt || 0);
+    const settingsWinner = incomingSettingsTs >= localSettingsTs ? incomingBackup : localBackup;
+    return {
+        schemaVersion: BACKUP_SCHEMA_VERSION,
+        app: 'SharkReader',
+        exportedAt: new Date().toISOString(),
+        books: mergeBookSnapshots(localBackup.books || [], incomingBackup.books || [])
+            .filter(book => !isBookDeletedByTombstone(book, deletedBooks)),
+        deletedBooks,
+        categories: Array.from(new Set([...(localBackup.categories || []), ...(incomingBackup.categories || [])])).filter(cat => String(cat).toLowerCase() !== 'favoritos'),
+        collections: mergeCollections(localBackup.collections || [], incomingBackup.collections || []),
+        stats: mergeStats(localBackup.stats || {}, incomingBackup.stats || {}),
+        user: Object.keys(incomingBackup.user || {}).length ? incomingBackup.user : (localBackup.user || {}),
+        workshop: settingsWinner.workshop || localBackup.workshop || incomingBackup.workshop,
+        achievements: mergeAchievements(localBackup.achievements, incomingBackup.achievements),
+        settingsUpdatedAt: Math.max(localSettingsTs, incomingSettingsTs) || Date.now(),
+    };
+};
+
+export const buildPortableBackup = ({ books, deletedBooks, categories, collections, stats, user, workshop, achievements, settingsUpdatedAt }) => ({
+    schemaVersion: BACKUP_SCHEMA_VERSION,
     app: 'SharkReader',
     exportedAt: new Date().toISOString(),
     books,
+    deletedBooks: deletedBooks || {},
     categories,
-    collections: collections || [],
+    // OJO: a diferencia de `deletedBooks`/`achievements`, NO se le pone `|| []`
+    // aquí — un backup selectivo (export/import selectivo, Fase 6) puede omitir
+    // `collections` a propósito para que ese campo quede ausente y no se
+    // toque al restaurar. Si defaulteara a `[]`, applyBackupObject vería un
+    // array válido (Array.isArray([]) === true) y BORRARÍA las colecciones
+    // del usuario en cualquier restauración parcial que no las incluyera.
+    collections,
     stats,
     user,
     workshop,
+    achievements: achievements || {},
+    settingsUpdatedAt: Number(settingsUpdatedAt || 0),
 });

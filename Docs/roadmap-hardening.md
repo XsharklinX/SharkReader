@@ -320,8 +320,8 @@ Recommended next:
 
 ### Phase 5 - Persistence cleanup follow-up
 
-- Add an explicit one-time cleanup for old legacy `localStorage` keys after successful migration.
-- Consider moving startup visual preferences to a tiny preload-safe settings cache if we want to remove `localStorage` entirely.
+- Completed: critical legacy `localStorage` values are removed after a verified migration to IndexedDB.
+- Remaining: consider moving startup-only visual preferences to a tiny settings cache if we want to remove `localStorage` entirely.
 
 ### Phase 6 - Release hardening
 
@@ -339,3 +339,205 @@ Recommended next:
 - `src/App.jsx` is still too large and centralizes too much app state.
 - The app still mixes shell UI, library logic, account state, import state and reader orchestration in one component.
 - Several files still contain encoding issues in user-facing strings.
+
+## Phase 7 - Stability and state coherence
+
+### Goals
+
+- Prevent deleted state from reappearing.
+- Make reader restoration deterministic.
+- Make folder-import cancellation stop late work and stale IPC updates.
+- Avoid global IPC cleanup from removing listeners owned by other panels.
+- Keep file-association opening reliable during renderer startup.
+
+### Implemented
+
+- Added normalized reader-session snapshots:
+  - duplicate/stale tabs are removed
+  - invalid active/right tabs are repaired
+  - stale target CFIs are discarded
+  - session writes are debounced and stored only in IndexedDB
+- Added exact IPC subscriptions in `preload.js`; cleanup now removes only the listener created by each component.
+- Added a renderer-ready handshake and pending-file queue in the main process, so file-association events cannot be lost before React subscribes.
+- Folder imports now await each book metadata task before advancing progress.
+- Cancellation invalidates the active session immediately, clears queued batches and cancels the main-process scan.
+- Concurrent folder-import sessions are rejected instead of replacing the active session silently.
+- Completed import sessions are removed from main-process memory immediately.
+- Total account/data reset now:
+  - blocks persistence while cleanup runs
+  - clears runtime timers, imports, overlays, tabs, caches and object URLs
+  - resets all relevant React state in memory
+  - clears all app `localStorage`
+  - verifies IndexedDB stores without depending on a reload to finish
+- Legacy critical state is removed from `localStorage` only after its IndexedDB migration succeeds.
+- Legacy book migration markers are no longer written when the migration itself fails.
+- Tutorial hints no longer advance or disappear automatically.
+
+### Verification
+
+- `node --check main.js`
+- `node --check preload.js`
+- `pnpm test` (209/209)
+- `pnpm build:renderer`
+
+### Remaining risks
+
+- `App.jsx` still owns too many modal booleans and reset setters. A dedicated app-session/account-state hook is the next safe extraction.
+- Cancellation stops queued work, but a file already committed before the cancel click remains imported; this is intentional to avoid destructive rollback.
+- Real installed-app regression testing is still required for file associations and very large folder imports.
+
+## Phase 8 - Architectural decomposition
+
+### Goals
+
+- Keep `App.jsx` focused on composition and visible application behavior.
+- Give startup, persistence, reset and background jobs explicit owners.
+- Preserve the existing React state model without introducing a risky global-store rewrite.
+
+### Implemented
+
+- `App.jsx` reduced from 3,243 to 2,665 lines.
+- Added `useAppHydration` to coordinate reset verification, book loading, legacy migration and state restoration.
+- Added `useAppPersistence` to own IndexedDB writes, settings, user data, addons, local sync, WebDAV and close-time flush.
+- Added `useAccountReset` with a guarded `try/finally` reset transaction.
+- Added `useContentIndexing` for cache hydration and the background indexing queue.
+- Added `useMetadataRepair` for delayed EPUB cover/metadata recovery.
+- Removed seven persistence/sync timer refs from `App.jsx`.
+- Pending idle writes are cancelled during total reset.
+- Metadata repair stops before writing when a total reset is active.
+- Corrected local-folder sync merge to consume the IPC `content` field.
+
+### Verification
+
+- `pnpm test` (209/209)
+- `pnpm build:renderer`
+- `node --check main.js`
+- `node --check preload.js`
+
+### Remaining risks
+
+- `App.jsx` still owns many feature-level modal states and command callbacks.
+- `useBookImport` and `useLibrary` should only be split by real subdomain boundaries.
+- `EpubReader.jsx` and `PdfReader.jsx` remain large independent applications and need staged decomposition.
+
+## Phase 9 - Premium reader hardening
+
+### Goals
+
+- Prevent EPUB/PDF state from leaking between tabs.
+- Make internal search deterministic and safe.
+- Persist EPUB typography with the book instead of only in browser storage.
+- Make PDF annotations compatible with the unified library annotation model.
+
+### Implemented
+
+- Reader components are keyed by `book.id`, so switching between two EPUBs or PDFs cannot reuse stale search, typography, TTS or panel state.
+- Added `useReaderSearchTask`:
+  - every search gets an identity
+  - old searches cannot overwrite newer results
+  - closing/unmounting invalidates pending work
+- EPUB search now unloads every spine item in `finally` and enforces the 50-result limit exactly.
+- PDF search now checks cancellation between pages and ignores stale results.
+- `Ctrl+F` opens SharkReader search in PDF, EPUB and inside the EPUB iframe.
+- Reader keyboard navigation ignores inputs, textareas, selects and editable content.
+- Added `ReaderSearchExcerpt` to highlight matches with React nodes instead of `dangerouslySetInnerHTML`.
+- EPUB reader preferences now persist in the book model:
+  - font family and size
+  - line height and margins
+  - paragraph/letter spacing
+  - justification, indentation and hyphenation
+  - custom colors
+  - column width
+- Existing `sr_font_<bookId>` preferences migrate automatically when the book is opened.
+- Reader preferences participate in IndexedDB persistence, backup/import and timestamp-aware sync merge.
+- Structured PDF highlights now expose real text, color and page in the unified annotation panel/export.
+- Opening a PDF annotation from the library now targets its page.
+- Annotation deletion now uses the exact raw payload for both EPUB and PDF.
+
+### Verification
+
+- `pnpm test` (217/217)
+- `pnpm build:renderer`
+- `git diff --check`
+
+### Remaining risks
+
+- EPUB search still scans spine resources on demand; very large books may benefit from the existing background content index in a later phase.
+- PDF search is cancellation-safe but still performs page text extraction on the renderer thread.
+- EPUB and PDF topbars still duplicate substantial UI and should be unified only after interaction regression tests.
+
+## Phase 10 - Large-library performance
+
+### Goals
+
+- Keep library interactions responsive while unrelated application state changes.
+- Prevent background content indexing from competing with user input.
+- Reduce unnecessary browser resources retained for every imported book.
+- Capture real renderer stalls in exported diagnostics.
+
+### Implemented
+
+- Stabilized file/folder picker and drag/drop callbacks so `LibraryView` memoization is effective.
+- Removed unused drag state props from `LibraryView`; the global category drop tray keeps its existing behavior.
+- Added memoized grid wrappers and list rows so unchanged books do not rerender when another visible item changes.
+- Series grouping is memoized and off-screen series groups use `content-visibility`.
+- Manual collection counts now use precomputed membership-set sizes instead of scanning every collection for every book.
+- Content indexing now queues four books at a time and waits for browser idle windows before and between expensive extraction jobs.
+- Removed per-book `ObjectURL` creation because EPUB/PDF readers consume the stored `File` directly.
+- Diagnostics now capture renderer long tasks over 180 ms for installed-app investigation.
+
+### Verification
+
+- `pnpm test` (218/218)
+- `pnpm build:renderer`
+
+### Remaining risks
+
+- PDF text extraction and EPUB parsing still execute in the renderer; idle scheduling reduces contention but a dedicated worker remains the long-term solution.
+- Series view avoids off-screen layout/paint but is not geometrically virtualized because group heights are variable.
+- Real measurements with 300, 1,000 and 3,000-book libraries are still needed to tune thresholds and overscan.
+
+## Phase 11 - Backup, sync and data integrity
+
+### Goals
+
+- Reject malformed or unrelated backups before changing application state.
+- Make sync merges idempotent and allow explicit removals to propagate.
+- Prevent local bulk deletions from reappearing after restart.
+- Keep local sync recoverable if a cloud-folder write is interrupted.
+
+### Implemented
+
+- Backup schema advanced to v3.
+- Added `backupValidation` as the trust boundary for JSON/ZIP restore and sync input.
+- Future schema versions and unrelated JSON payloads are rejected.
+- Invalid book records are skipped with a user-visible warning.
+- ZIP manifests are validated before any embedded EPUB/PDF is read.
+- Full ZIP restore processes files in batches of eight and waits for metadata completion.
+- Restore writes are awaited and reported instead of continuing after partial persistence failures.
+- Merge timestamps no longer advance on every merge, making repeated sync idempotent.
+- Favorite, finished, category, custom cover, reader preferences and other nullable fields follow their newest field timestamp, including `false` and `null`.
+- Added `annotationsUpdatedAt`; deleted annotations no longer revive through permanent array union.
+- Added persistent book deletion tombstones:
+  - local single/bulk/duplicate deletion records a deletion timestamp
+  - startup filters and purges stale IndexedDB records
+  - backup/sync merge rejects books older than their tombstone
+  - a deliberately newer reimport can supersede an older tombstone
+- Bulk deletion paths now delete both the `books` and `files` IndexedDB records.
+- Local sync uses temporary writes plus a `.bak` recovery copy.
+- Sync reads automatically fall back to a valid `.bak` when the primary JSON is missing or corrupt.
+- Local and WebDAV write failures are preserved in diagnostics instead of being silently ignored.
+
+### Verification
+
+- `pnpm test` (227/227)
+- `pnpm build:renderer`
+- `node --check main.js`
+- `node --check preload.js`
+- `git diff --check`
+
+### Remaining risks
+
+- Category and collection deletion still use conservative union merge and do not yet have their own tombstones.
+- WebDAV atomicity depends on the remote server implementation.
+- A full restore validates and persists safely, but IndexedDB has no single transaction spanning books, settings and files stores.

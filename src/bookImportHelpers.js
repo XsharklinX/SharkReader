@@ -40,5 +40,6 @@ export function buildNewBookRecord(file, { unknownAuthorLabel = 'Autor desconoci
         updatedAt: now,
         progressUpdatedAt: now,
         metadataUpdatedAt: now,
+        annotationsUpdatedAt: now,
     };
 }

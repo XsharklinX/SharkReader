@@ -174,11 +174,6 @@ export function useLibrary({
             if (book.category && categoryCounts.has(book.category)) {
                 categoryCounts.set(book.category, (categoryCounts.get(book.category) || 0) + 1);
             }
-            manualCollections.forEach(collection => {
-                if (collectionLookup.bookSets.get(collection.id)?.has(book.id)) {
-                    collectionCounts.set(collection.id, (collectionCounts.get(collection.id) || 0) + 1);
-                }
-            });
             splitBookTags(book.tags).forEach(tag => {
                 tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
             });
@@ -186,6 +181,9 @@ export function useLibrary({
             if (rating >= 1 && rating <= 5) {
                 ratingCounts.set(rating, (ratingCounts.get(rating) || 0) + 1);
             }
+        });
+        manualCollections.forEach(collection => {
+            collectionCounts.set(collection.id, collectionLookup.bookSets.get(collection.id)?.size || 0);
         });
 
         return {
@@ -350,16 +348,16 @@ export function useLibrary({
             return { ...folderImport, title: 'No se encontraron libros', detail: 'La carpeta seleccionada no contiene EPUB ni PDF.', progress: 100, indeterminate: false, canCancel: false };
         }
         if (folderImport.phase === 'error') {
-            return { ...folderImport, title: 'La importacion se detuvo', detail: folderImport.error || 'Ocurrio un error inesperado durante la importacion.', progress: 100, indeterminate: false, canCancel: false };
+            return { ...folderImport, title: 'La importación se detuvo', detail: folderImport.error || 'Ocurrió un error inesperado durante la importación.', progress: 100, indeterminate: false, canCancel: false };
         }
         if (folderImport.phase === 'cancelled') {
             const skippedText = skippedDuplicates > 0 ? ` Se omitieron ${skippedDuplicates} duplicado(s).` : '';
-            return { ...folderImport, title: 'Importacion cancelada', detail: `Se procesaron ${metadataProcessed} de ${total || imported || 0} libros antes de detenerse.${skippedText}`, progress: total > 0 ? Math.round((metadataProcessed / total) * 100) : 0, indeterminate: false, canCancel: false };
+            return { ...folderImport, title: 'Importación cancelada', detail: `Se procesaron ${metadataProcessed} de ${total || imported || 0} libros antes de detenerse.${skippedText}`, progress: total > 0 ? Math.round((metadataProcessed / total) * 100) : 0, indeterminate: false, canCancel: false };
         }
         if (folderImport.phase === 'done') {
             const skippedText = skippedDuplicates > 0 ? ` Se omitieron ${skippedDuplicates} duplicado(s).` : '';
             const failedText = failedCount > 0 ? ` ${failedCount} archivo(s) fallaron.` : '';
-            return { ...folderImport, title: failedCount > 0 ? 'Importacion completada con avisos' : 'Importacion completada', detail: `Se agregaron ${addedCount} libros${folderImport.folderName ? ` desde ${folderImport.folderName}` : ''}.${skippedText}${failedText}`, progress: 100, indeterminate: false, canCancel: false, failedCount };
+            return { ...folderImport, title: failedCount > 0 ? 'Importación completada con avisos' : 'Importación completada', detail: `Se agregaron ${addedCount} libros${folderImport.folderName ? ` desde ${folderImport.folderName}` : ''}.${skippedText}${failedText}`, progress: 100, indeterminate: false, canCancel: false, failedCount };
         }
         if (folderImport.phase === 'metadata') {
             return { ...folderImport, title: 'Extrayendo portadas y metadatos', detail: `${metadataProcessed} de ${total || 0} libros listos.`, progress: total > 0 ? Math.round((metadataProcessed / total) * 100) : 0, indeterminate: false, canCancel: !folderImport.isCancelling };

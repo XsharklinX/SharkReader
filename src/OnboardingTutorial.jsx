@@ -6,7 +6,7 @@ import appLogo from '../icon.png';
 const BOOK_STEPS = [
     {
         id: 'welcome',
-        chapter: 'Prologo',
+        chapter: 'Prólogo',
         kicker: 'Antes de empezar',
         title: 'Lee a tu ritmo. Todo se queda contigo.',
         body: 'SharkReader guarda tu biblioteca, avances y notas en tu propio equipo. Sin cuentas obligatorias, sin ruido y sin convertir la lectura en una red social.',
@@ -18,74 +18,75 @@ const BOOK_STEPS = [
     },
     {
         id: 'library',
-        chapter: 'Capitulo 1',
+        chapter: 'Capítulo 1',
         kicker: 'Biblioteca',
         title: 'Tus libros, ordenados sin esfuerzo.',
         body: 'Importa archivos o carpetas completas. SharkReader intenta detectar portadas, metadatos y duplicados para que no tengas que organizarlo todo a mano.',
         accent: '#34d399',
-        cta: 'Siguiente pagina',
+        cta: 'Siguiente página',
         notes: ['Carpetas completas', 'Portadas', 'Duplicados'],
         visual: 'shelf',
+        skipIfHasBooks: true,
     },
     {
         id: 'reader',
-        chapter: 'Capitulo 2',
+        chapter: 'Capítulo 2',
         kicker: 'Lector',
-        title: 'Un lector comodo para sesiones largas.',
-        body: 'Ajusta fuente, tamano, margenes, tema, doble pagina o modo dislexia. La meta es simple: que el texto se sienta bien en tu pantalla.',
+        title: 'Un lector cómodo para sesiones largas.',
+        body: 'Ajusta fuente, tamaño, márgenes, tema, doble página o modo dislexia. La meta es simple: que el texto se sienta bien en tu pantalla.',
         accent: '#a78bfa',
-        cta: 'Siguiente pagina',
-        notes: ['Tipografia', 'Modo Dx', 'Doble pagina'],
+        cta: 'Siguiente página',
+        notes: ['Tipografía', 'Modo Dx', 'Doble página'],
         visual: 'reader',
     },
     {
         id: 'annotations',
-        chapter: 'Capitulo 3',
+        chapter: 'Capítulo 3',
         kicker: 'Notas',
         title: 'Marca lo que vale la pena recordar.',
         body: 'Subraya frases, deja notas y guarda marcadores. Luego puedes volver a esas ideas y exportarlas a Markdown u Obsidian.',
         accent: '#f59e0b',
-        cta: 'Siguiente pagina',
+        cta: 'Siguiente página',
         notes: ['Subrayados', 'Notas', 'Exportar'],
         visual: 'notes',
     },
     {
         id: 'workshop',
-        chapter: 'Capitulo 4',
+        chapter: 'Capítulo 4',
         kicker: 'Workshop',
         title: 'Funciones extra, solo si las quieres.',
-        body: 'Activa addons para adaptar la app a tu forma de leer: foco, backups, sonidos, ruleta, fuentes externas o Sharky. Nada esta impuesto.',
+        body: 'Activa addons para adaptar la app a tu forma de leer: foco, backups, sonidos, ruleta, fuentes externas o Sharky. Nada está impuesto.',
         accent: '#22d3ee',
-        cta: 'Siguiente pagina',
+        cta: 'Siguiente página',
         notes: ['Modular', 'Configurable', 'Opcional'],
         visual: 'workshop',
     },
     {
         id: 'sharky',
-        chapter: 'Capitulo 5',
+        chapter: 'Capítulo 5',
         kicker: 'Sharky',
-        title: 'Un companero discreto, no una interrupcion.',
-        body: 'Sharky puede celebrar hitos, resumir una sesion o darte un empujon cuando toca. Si no lo quieres presente, puedes limitarlo o esconderlo.',
+        title: 'Un compañero discreto, no una interrupción.',
+        body: 'Sharky puede celebrar hitos, resumir una sesión o darte un empujón cuando toca. Si no lo quieres presente, puedes limitarlo o esconderlo.',
         accent: '#2dd4bf',
-        cta: 'Siguiente pagina',
+        cta: 'Siguiente página',
         notes: ['Hitos reales', 'Sesiones', 'Presencia'],
         visual: 'sharky',
         hasActivateButton: true,
     },
     {
         id: 'analytics',
-        chapter: 'Capitulo 6',
+        chapter: 'Capítulo 6',
         kicker: 'Progreso',
-        title: 'Entiende tu habito sin obsesionarte.',
-        body: 'Rachas, metas, diario, logros y resumen anual estan ahi para darte contexto. Uselos como guia, no como presion.',
+        title: 'Entiende tu hábito sin obsesionarte.',
+        body: 'Rachas, metas, diario, logros y resumen anual están ahí para darte contexto. Úsalos como guía, no como presión.',
         accent: '#fbbf24',
-        cta: 'Siguiente pagina',
+        cta: 'Siguiente página',
         notes: ['Rachas', 'Metas', 'Resumen anual'],
         visual: 'analytics',
     },
     {
         id: 'profile',
-        chapter: 'Epilogo',
+        chapter: 'Epílogo',
         kicker: 'Perfil',
         title: 'Ponle nombre a tu espacio de lectura.',
         body: 'Tu perfil separa progreso, logros, preferencias y la presencia de Sharky. Todo sigue siendo local y puedes borrarlo cuando quieras.',
@@ -99,16 +100,14 @@ const BOOK_STEPS = [
         id: 'done',
         chapter: 'Listo',
         kicker: 'Ya puedes entrar',
-        title: 'La biblioteca esta lista para crecer.',
-        body: 'Empieza importando un libro, abre el lector y ajusta la experiencia a tu gusto. Si necesitas este recorrido de nuevo, estara en Configuracion.',
+        title: 'La biblioteca está lista para crecer.',
+        body: 'Empieza importando un libro, abre el lector y ajusta la experiencia a tu gusto. Si necesitas este recorrido de nuevo, estará en Configuración.',
         accent: '#38bdf8',
         cta: 'Entrar',
         notes: ['Importar', 'Leer', 'Personalizar'],
         visual: 'done',
     },
 ];
-
-const PROFILE_STEP_INDEX = BOOK_STEPS.findIndex(step => step.id === 'profile');
 
 function MiniIllustration({ type, accent }) {
     const line = { stroke: accent, strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', fill: 'none' };
@@ -151,11 +150,24 @@ export default function OnboardingTutorial({
     onActivateSharky,
     onCreateProfile,
     hasProfile = false,
+    bookCount = 0,
 }) {
+    // Si ya tiene libros importados, el paso "cómo importar tu biblioteca"
+    // no le aporta nada nuevo — se lo saltamos para acortar el recorrido.
+    const steps = useMemo(
+        () => (bookCount > 0 ? BOOK_STEPS.filter(item => !item.skipIfHasBooks) : BOOK_STEPS),
+        [bookCount]
+    );
+    const profileStepIndex = useMemo(() => steps.findIndex(item => item.id === 'profile'), [steps]);
+    const prefersReducedMotion = useMemo(
+        () => typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches,
+        []
+    );
+
     const [stepIndex, setStepIndex] = useState(() => {
         try {
             const saved = JSON.parse(localStorage.getItem('sharkreader_tutorial_pos') || 'null');
-            return Number.isInteger(saved?.index) ? Math.max(0, Math.min(saved.index, BOOK_STEPS.length - 1)) : 0;
+            return Number.isInteger(saved?.index) ? Math.max(0, Math.min(saved.index, steps.length - 1)) : 0;
         } catch {
             return 0;
         }
@@ -167,28 +179,33 @@ export default function OnboardingTutorial({
     const [profileAvatar, setProfileAvatar] = useState(RANDOM_EMOJIS[0]);
     const avatarFileRef = useRef(null);
     const turnTimerRef = useRef(null);
-    const step = BOOK_STEPS[stepIndex];
+    const step = steps[stepIndex];
     const isFirst = stepIndex === 0;
-    const isLast = stepIndex === BOOK_STEPS.length - 1;
+    const isLast = stepIndex === steps.length - 1;
 
-    const progress = useMemo(() => Math.round(((stepIndex + 1) / BOOK_STEPS.length) * 100), [stepIndex]);
+    const progress = useMemo(() => Math.round(((stepIndex + 1) / steps.length) * 100), [stepIndex, steps.length]);
 
     const persistIndex = useCallback((index) => {
         try { localStorage.setItem('sharkreader_tutorial_pos', JSON.stringify({ index })); } catch (_) {}
     }, []);
 
     const turnTo = useCallback((nextIndex, direction = 1) => {
-        const clamped = Math.max(0, Math.min(nextIndex, BOOK_STEPS.length - 1));
+        const clamped = Math.max(0, Math.min(nextIndex, steps.length - 1));
         if (clamped === stepIndex || turning) return;
         window.clearTimeout(turnTimerRef.current);
         setTurnDirection(direction);
+        if (prefersReducedMotion) {
+            setStepIndex(clamped);
+            persistIndex(clamped);
+            return;
+        }
         setTurning(true);
         turnTimerRef.current = window.setTimeout(() => {
             setStepIndex(clamped);
             persistIndex(clamped);
-            window.setTimeout(() => setTurning(false), 210);
+            window.setTimeout(() => setTurning(false), 180);
         }, 180);
-    }, [persistIndex, stepIndex, turning]);
+    }, [persistIndex, prefersReducedMotion, stepIndex, steps.length, turning]);
 
     const complete = useCallback(() => {
         try { localStorage.removeItem('sharkreader_tutorial_pos'); } catch (_) {}
@@ -207,7 +224,7 @@ export default function OnboardingTutorial({
     }, [complete, isLast, onCreateProfile, profileAvatar, profileName, step.id, stepIndex, turnTo]);
 
     const goBack = useCallback(() => turnTo(stepIndex - 1, -1), [stepIndex, turnTo]);
-    const skipToProfile = useCallback(() => turnTo(PROFILE_STEP_INDEX, 1), [turnTo]);
+    const skipToProfile = useCallback(() => turnTo(profileStepIndex, 1), [profileStepIndex, turnTo]);
 
     const skipAll = useCallback(() => {
         try { localStorage.removeItem('sharkreader_tutorial_pos'); } catch (_) {}
@@ -277,7 +294,7 @@ export default function OnboardingTutorial({
                                     value={profileName}
                                     onChange={event => setProfileName(event.target.value)}
                                     onKeyDown={event => event.key === 'Enter' && !isProfileCtaDisabled && goNext()}
-                                    placeholder="Como te llamamos?"
+                                    placeholder="¿Cómo te llamamos?"
                                     autoFocus
                                 />
                             </div>
@@ -297,7 +314,7 @@ export default function OnboardingTutorial({
                             </div>
                         </div>
                         <div className="onboarding-book-dots">
-                            {BOOK_STEPS.map((item, index) => (
+                            {steps.map((item, index) => (
                                 <button
                                     key={item.id}
                                     aria-label={`Ir a ${item.chapter}`}
@@ -317,8 +334,13 @@ export default function OnboardingTutorial({
 
                 <div className="onboarding-book-actions">
                     <button onClick={isFirst ? skipToProfile : goBack} disabled={turning}>
-                        {isFirst ? step.skipLabel : 'Pagina anterior'}
+                        {isFirst ? step.skipLabel : 'Página anterior'}
                     </button>
+                    {step.id !== 'done' && (
+                        <button className="onboarding-book-later" onClick={skipAll} disabled={turning}>
+                            Ver más tarde
+                        </button>
+                    )}
                     <button className="primary" onClick={goNext} disabled={turning || isProfileCtaDisabled} style={{ '--book-accent': step.accent }}>
                         {primaryCta}
                     </button>

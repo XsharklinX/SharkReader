@@ -5,7 +5,9 @@ const http = require('http');
 const https = require('https');
 const dns = require('dns');
 const net = require('net');
-const { execSync } = require('child_process');
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const execAsync = promisify(exec);
 const JSZip = require('jszip');
 const { autoUpdater } = require('electron-updater');
 
@@ -19,6 +21,8 @@ app.commandLine.appendSwitch('js-flags', '--harmony');
 // ─────────────────────────────────────────────────────────────────────────────
 
 let mainWindow = null;
+let rendererIsReady = false;
+const pendingOpenFiles = new Set();
 const folderImportSessions = new Map();
 const IMPORT_BATCH_SIZE = 12;
 const CATALOG_MAX_BYTES = 2 * 1024 * 1024;
@@ -28,6 +32,31 @@ const EXTERNAL_FETCH_TIMEOUT_MS = 15000;
 // Extraer ruta de archivo epub/pdf de los argumentos
 function getFileFromArgs(argv) {
     return argv.slice(1).find(a => /\.(epub|pdf)$/i.test(a)) || null;
+}
+
+function sendOpenFile(filePath) {
+    if (!filePath) return;
+    if (
+        rendererIsReady &&
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        !mainWindow.webContents.isDestroyed()
+    ) {
+        mainWindow.webContents.send('open-file', filePath);
+        return;
+    }
+    pendingOpenFiles.add(filePath);
+}
+
+function flushPendingOpenFiles() {
+    if (
+        !rendererIsReady ||
+        !mainWindow ||
+        mainWindow.isDestroyed() ||
+        mainWindow.webContents.isDestroyed()
+    ) return;
+    pendingOpenFiles.forEach(filePath => mainWindow.webContents.send('open-file', filePath));
+    pendingOpenFiles.clear();
 }
 
 // Single-instance: si ya hay una ventana abierta, enfócarla y enviarle el archivo
@@ -40,7 +69,7 @@ if (!gotLock) {
         if (mainWindow) {
             if (mainWindow.isMinimized()) mainWindow.restore();
             mainWindow.focus();
-            if (filePath) mainWindow.webContents.send('open-file', filePath);
+            if (filePath) sendOpenFile(filePath);
         }
     });
 }
@@ -48,6 +77,7 @@ if (!gotLock) {
 const isDev = process.env.VITE_DEV === '1';
 
 function createWindow() {
+    rendererIsReady = false;
     mainWindow = new BrowserWindow({
         width: 1280,
         height: 800,
@@ -76,19 +106,26 @@ function createWindow() {
 
     // Enviar archivo al renderer cuando esté listo
     const startFile = getFileFromArgs(process.argv);
-    if (startFile) {
-        mainWindow.webContents.once('did-finish-load', () => {
-            mainWindow.webContents.send('open-file', startFile);
-        });
-    }
+    if (startFile) pendingOpenFiles.add(startFile);
 
-    mainWindow.on('closed', () => { mainWindow = null; });
+    mainWindow.on('closed', () => {
+        rendererIsReady = false;
+        folderImportSessions.forEach(session => { session.cancelled = true; });
+        folderImportSessions.clear();
+        mainWindow = null;
+    });
 }
 
 function notifyRenderer(channel, payload) {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
     mainWindow.webContents.send(channel, payload);
 }
+
+ipcMain.handle('renderer-ready', async () => {
+    rendererIsReady = true;
+    flushPendingOpenFiles();
+    return { ok: true };
+});
 
 // Seleccionar carpeta de sincronización
 const BOOK_EXTENSIONS = new Set(['.epub', '.pdf']);
@@ -469,17 +506,27 @@ async function extractEpubMeta(buffer, filePath = 'unknown') {
 
 async function readBookPayload(filePath) {
     try {
-        if (!fs.existsSync(filePath)) {
+        let stats;
+        try {
+            stats = await fs.promises.stat(filePath);
+        } catch (_) {
             console.error(`[SharkReader] Archivo no existe: ${filePath}`);
-            return null;
+            const err = new Error(`Archivo no encontrado: ${filePath}`);
+            err.code = 'NOT_FOUND';
+            throw err;
         }
-        const stats = fs.statSync(filePath);
         if (stats.size === 0) {
             console.error(`[SharkReader] Archivo vacío (0 bytes): ${filePath}`);
-            return null;
+            const err = new Error(`Archivo vacío: ${filePath}`);
+            err.code = 'EMPTY';
+            throw err;
         }
 
-        const data = fs.readFileSync(filePath);
+        // readFile async: readBookPayload puede correr sobre archivos de cientos
+        // de MB (EPUB/PDF grandes) — la versión síncrona bloqueaba TODO el proceso
+        // main de Electron (ventana, IPC, tray) mientras duraba la lectura + el
+        // base64-encode, lo que se sentía como que la app entera se congelaba.
+        const data = await fs.promises.readFile(filePath);
         const ext = path.extname(filePath).toLowerCase();
         let meta = null;
         if (ext === '.epub') {
@@ -667,9 +714,7 @@ async function runFolderImportSession(sessionId, rootPath) {
             error: err.message,
         });
     } finally {
-        setTimeout(() => {
-            folderImportSessions.delete(sessionId);
-        }, 60000);
+        folderImportSessions.delete(sessionId);
     }
 }
 
@@ -698,7 +743,7 @@ ipcMain.handle('start-folder-import', async () => {
     if (!mainWindow) return null;
     const result = await dialog.showOpenDialog(mainWindow, {
         properties: ['openDirectory'],
-        title: 'AÃ±adir carpeta de libros'
+        title: 'Añadir carpeta de libros'
     });
     if (result.canceled || !result.filePaths[0]) return null;
 
@@ -771,7 +816,7 @@ ipcMain.handle('start-folder-import-path', async (_e, rootPath) => {
 ipcMain.handle('cancel-folder-import', async (_e, sessionId) => {
     const session = folderImportSessions.get(sessionId);
     if (session) session.cancelled = true;
-    return { ok: true };
+    return { ok: true, found: !!session };
 });
 
 ipcMain.handle('read-book-file', async (_e, filePath) => {
@@ -780,7 +825,11 @@ ipcMain.handle('read-book-file', async (_e, filePath) => {
         return await readBookPayload(filePath);
     } catch (err) {
         console.error('[SharkReader] No se pudo abrir libro desde ruta:', filePath, err);
-        return null;
+        // Antes se devolvía `null` liso, perdiendo el motivo real (archivo
+        // borrado, vacío, sin permisos...) — el renderer solo podía mostrar
+        // un "no se pudo leer" genérico. __importError marca la forma para
+        // que resolveImportEntryToFile la distinga de un payload real.
+        return { __importError: true, code: err?.code || 'UNREADABLE' };
     }
 });
 
@@ -843,10 +892,57 @@ ipcMain.handle('pick-folder', async () => {
     return result.canceled ? null : result.filePaths[0];
 });
 
-// Escribir archivo de sync
+const getSyncFilePaths = (folderPath) => {
+    const target = path.join(folderPath, 'sharkreader_sync.json');
+    return {
+        target,
+        backup: `${target}.bak`,
+        temporary: `${target}.tmp-${process.pid}-${Date.now()}`,
+    };
+};
+
+const writeSyncFileSafely = async (folderPath, content) => {
+    JSON.parse(content);
+    const stats = await fs.promises.stat(folderPath);
+    if (!stats.isDirectory()) throw new Error('La ruta de sync no es una carpeta.');
+    const paths = getSyncFilePaths(folderPath);
+    await fs.promises.writeFile(paths.temporary, content, 'utf-8');
+    try {
+        await fs.promises.copyFile(paths.target, paths.backup).catch(error => {
+            if (error?.code !== 'ENOENT') throw error;
+        });
+        try {
+            await fs.promises.rename(paths.temporary, paths.target);
+        } catch (error) {
+            if (!['EEXIST', 'EPERM'].includes(error?.code)) throw error;
+            await fs.promises.rm(paths.target, { force: true });
+            await fs.promises.rename(paths.temporary, paths.target);
+        }
+    } finally {
+        await fs.promises.rm(paths.temporary, { force: true }).catch(() => {});
+    }
+};
+
+const readValidSyncFile = async (folderPath) => {
+    const paths = getSyncFilePaths(folderPath);
+    let lastError = null;
+    for (const candidate of [paths.target, paths.backup]) {
+        try {
+            const content = await fs.promises.readFile(candidate, 'utf-8');
+            JSON.parse(content);
+            return { content, recoveredFromBackup: candidate === paths.backup };
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    throw lastError || new Error('No se encontró un archivo de sync válido.');
+};
+
+// La carpeta suele estar sincronizada por OneDrive/Dropbox. Se escribe primero
+// en un temporal y se conserva una copia válida anterior para recuperación.
 ipcMain.handle('write-sync-file', async (_e, folderPath, content) => {
     try {
-        fs.writeFileSync(path.join(folderPath, 'sharkreader_sync.json'), content, 'utf-8');
+        await writeSyncFileSafely(folderPath, content);
         return { ok: true };
     } catch (err) {
         return { ok: false, msg: err.message };
@@ -856,10 +952,10 @@ ipcMain.handle('write-sync-file', async (_e, folderPath, content) => {
 // Leer archivo de sync
 ipcMain.handle('read-sync-file', async (_e, folderPath) => {
     try {
-        const content = fs.readFileSync(path.join(folderPath, 'sharkreader_sync.json'), 'utf-8');
-        return { ok: true, content };
-    } catch {
-        return { ok: false };
+        const result = await readValidSyncFile(folderPath);
+        return { ok: true, ...result };
+    } catch (err) {
+        return { ok: false, msg: err?.message };
     }
 });
 
@@ -933,24 +1029,28 @@ ipcMain.handle('register-file-associations', async () => {
         { ext: '.pdf', progId: 'SharkReader.pdf', desc: 'PDF Document', contentType: 'application/pdf' },
     ];
 
+    // execAsync (no execSync): cada `reg add` lanza reg.exe y espera su salida;
+    // encadenados de forma síncrona bloqueaban el proceso main entero (ventana,
+    // IPC, tray) durante todo el registro. Awaited en secuencia, el orden de
+    // ejecución es el mismo pero el event loop sigue vivo mientras se espera.
     try {
         for (const fmt of formats) {
             // Asociar extensión al ProgId
-            execSync(`reg add "HKCU\\Software\\Classes\\${fmt.ext}" /ve /d "${fmt.progId}" /f`);
-            execSync(`reg add "HKCU\\Software\\Classes\\${fmt.ext}" /v "Content Type" /d "${fmt.contentType}" /f`);
+            await execAsync(`reg add "HKCU\\Software\\Classes\\${fmt.ext}" /ve /d "${fmt.progId}" /f`);
+            await execAsync(`reg add "HKCU\\Software\\Classes\\${fmt.ext}" /v "Content Type" /d "${fmt.contentType}" /f`);
 
             // Registrar ProgId
-            execSync(`reg add "HKCU\\Software\\Classes\\${fmt.progId}" /ve /d "${fmt.desc} — Shark Reader" /f`);
+            await execAsync(`reg add "HKCU\\Software\\Classes\\${fmt.progId}" /ve /d "${fmt.desc} — Shark Reader" /f`);
 
             // Ícono
-            execSync(`reg add "HKCU\\Software\\Classes\\${fmt.progId}\\DefaultIcon" /ve /d "${exePath},0" /f`);
+            await execAsync(`reg add "HKCU\\Software\\Classes\\${fmt.progId}\\DefaultIcon" /ve /d "${exePath},0" /f`);
 
             // Comando de apertura
-            execSync(`reg add "HKCU\\Software\\Classes\\${fmt.progId}\\shell\\open\\command" /ve /d "${openCmd}" /f`);
+            await execAsync(`reg add "HKCU\\Software\\Classes\\${fmt.progId}\\shell\\open\\command" /ve /d "${openCmd}" /f`);
         }
 
         // Notificar a Explorer para que refresque los iconos
-        execSync('ie4uinit.exe -show', { stdio: 'ignore' });
+        await execAsync('ie4uinit.exe -show');
 
         return { ok: true, msg: 'Asociaciones registradas correctamente' };
     } catch (err) {
@@ -961,17 +1061,11 @@ ipcMain.handle('register-file-associations', async () => {
 ipcMain.handle('remove-file-associations', async () => {
     if (process.platform !== 'win32') return { ok: false };
     try {
-        [
-            'SharkReader.epub',
-            'SharkReader.pdf',
-            '.epub',
-            '.pdf',
-        ].forEach(key => {
-            try {
-                execSync(`reg delete "HKCU\\Software\\Classes\\${key}" /f`);
-            } catch (_) {}
-        });
-        try { execSync('ie4uinit.exe -show', { stdio: 'ignore' }); } catch (_) {}
+        const keys = ['SharkReader.epub', 'SharkReader.pdf', '.epub', '.pdf'];
+        for (const key of keys) {
+            try { await execAsync(`reg delete "HKCU\\Software\\Classes\\${key}" /f`); } catch (_) {}
+        }
+        try { await execAsync('ie4uinit.exe -show'); } catch (_) {}
         return { ok: true };
     } catch (err) {
         return { ok: false, msg: err.message };

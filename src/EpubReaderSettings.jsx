@@ -176,6 +176,15 @@ export default function EpubReaderSettings({
                             className="w-6 h-6 rounded-full border-0 cursor-pointer p-0"
                             style={{ outline: '2px solid rgba(128,128,128,0.3)' }} />
                     </div>
+                    <div className="mt-3 rounded-xl border p-3 transition-colors"
+                        style={{
+                            backgroundColor: customBg || 'var(--bg-color)',
+                            color: customText || 'var(--text-color)',
+                            borderColor: 'rgba(128,128,128,0.25)',
+                        }}>
+                        <p className="text-[9px] font-black uppercase tracking-widest opacity-50 mb-1">Vista previa</p>
+                        <p className="text-xs leading-relaxed">Así se ve un párrafo con estos colores. Ajusta fondo y texto hasta que se sienta cómodo para leer un rato largo.</p>
+                    </div>
                     <div className="border-t my-2 mt-3" style={{ borderColor: 'rgba(128,128,128,0.2)' }}></div>
                     <p className="text-[9px] font-black uppercase opacity-40 tracking-widest mb-2">Mis temas</p>
                     {customThemes.length > 0 && (

@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { saveAppData } from '../db';
 import { useStableReaderBook } from './useStableReaderBook';
+import { buildReaderSessionSnapshot } from '../readerSession';
 
 // Dominio de "orquestación del lector": qué tabs hay abiertas, cuál está activa,
 // el panel derecho (split view) y los saltos a CFI pendientes por tab. Extraído
@@ -27,16 +28,31 @@ export function useReaderOrchestration({
     const [tabTargetCfi, setTabTargetCfi] = useState({});
     const [panelMode, setPanelMode] = useState(false);
     const [rightTabId, setRightTabId] = useState(null);
+    const sessionPersistTimerRef = useRef(null);
+    const sessionSnapshotRef = useRef(null);
+    const tabSequenceRef = useRef(0);
 
     // Persistencia de la sesión del lector (tabs abiertas, activa, split, CFIs pendientes)
     useEffect(() => {
         if (!isStateHydrated || isResettingRef.current) return;
-        const session = { tabs, activeTabId, tabTargetCfi, panelMode, rightTabId };
-        saveAppData('readerSession', session).then(ok => {
-            if (ok === false) console.warn('[SharkReader] No se pudo persistir la sesion del lector');
-        });
-        localStorage.setItem('sharkreader_reader_session', JSON.stringify(session));
+        const session = buildReaderSessionSnapshot({ tabs, activeTabId, tabTargetCfi, panelMode, rightTabId });
+        sessionSnapshotRef.current = session;
+        clearTimeout(sessionPersistTimerRef.current);
+        sessionPersistTimerRef.current = setTimeout(() => {
+            sessionPersistTimerRef.current = null;
+            saveAppData('readerSession', sessionSnapshotRef.current).then(ok => {
+                if (ok === false) console.warn('[SharkReader] No se pudo persistir la sesion del lector');
+            });
+        }, 250);
+        return () => clearTimeout(sessionPersistTimerRef.current);
     }, [tabs, activeTabId, tabTargetCfi, panelMode, rightTabId, isStateHydrated]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => () => {
+        clearTimeout(sessionPersistTimerRef.current);
+        if (!isResettingRef.current && sessionSnapshotRef.current) {
+            saveAppData('readerSession', sessionSnapshotRef.current);
+        }
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Saneamiento: si un libro deja de existir (borrado), sus tabs/CFIs pendientes también
     useEffect(() => {
@@ -69,7 +85,8 @@ export function useReaderOrchestration({
             setView('reader');
             return;
         }
-        const tabId = 'tab_' + Date.now();
+        tabSequenceRef.current += 1;
+        const tabId = `tab_${Date.now()}_${tabSequenceRef.current}`;
         const startMinutes = bookToOpen?.readingMinutes || 0;
         const startProgress = bookToOpen?.progress || 0;
         setTabs(prev => [...prev, { id: tabId, bookId, startMinutes, startProgress }]);
@@ -112,7 +129,14 @@ export function useReaderOrchestration({
                         const alreadyBookmarked = book.bookmarks?.some(bm => bm.cfi === book.lastLocation);
                         if (!alreadyBookmarked) {
                             const autoMark = { cfi: book.lastLocation, note: `📌 Auto — ${new Date().toISOString().slice(0, 10)}`, date: new Date().toISOString().slice(0, 10) };
-                            return booksSnap.map(b => b.id === closingTab.bookId ? { ...b, bookmarks: [...(b.bookmarks || []), autoMark], metadataUpdatedAt: Date.now(), updatedAt: Date.now() } : b);
+                            const now = Date.now();
+                            return booksSnap.map(b => b.id === closingTab.bookId ? {
+                                ...b,
+                                bookmarks: [...(b.bookmarks || []), autoMark],
+                                annotationsUpdatedAt: now,
+                                metadataUpdatedAt: now,
+                                updatedAt: now,
+                            } : b);
                         }
                     }
                     const sessionMins = Math.round((book.readingMinutes || 0) - (closingTab.startMinutes || 0));

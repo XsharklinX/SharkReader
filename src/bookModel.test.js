@@ -9,6 +9,8 @@ import {
     hydrateStoredBook,
     applyImportedBookData,
     stripBookFilesForExport,
+    stripBookAssetsForSync,
+    findDuplicateBookGroups,
     UNKNOWN_AUTHOR_FALLBACK,
 } from './bookModel';
 
@@ -97,6 +99,78 @@ describe('getBookTitleDedupKey', () => {
     });
 });
 
+// ─── findDuplicateBookGroups ────────────────────────────────────────────────
+
+// ─── stripBookAssetsForSync ─────────────────────────────────────────────────
+
+describe('stripBookAssetsForSync', () => {
+    it('quita file, coverBase64 y customCover pero conserva el resto', () => {
+        const book = {
+            id: '1', name: 'Dune', author: 'Frank Herbert',
+            file: { name: 'dune.epub' },
+            coverBase64: 'data:image/jpeg;base64,AAAA',
+            customCover: 'data:image/jpeg;base64,BBBB',
+            progress: 42,
+        };
+        const record = stripBookAssetsForSync(book);
+        expect(record.file).toBeUndefined();
+        expect(record.coverBase64).toBeUndefined();
+        expect(record.customCover).toBeUndefined();
+        expect(record.progress).toBe(42);
+        expect(record.originalTitle).toBe('Dune');
+    });
+
+    it('no lanza si el libro no tiene portada', () => {
+        const book = { id: '1', name: 'Dune', progress: 0 };
+        expect(() => stripBookAssetsForSync(book)).not.toThrow();
+    });
+});
+
+describe('findDuplicateBookGroups', () => {
+    it('agrupa libros con el mismo archivo (nombre + tamaño)', () => {
+        const books = [
+            { id: '1', file: { name: 'dune.epub', size: 1000 } },
+            { id: '2', file: { name: 'dune.epub', size: 1000 } },
+            { id: '3', file: { name: 'otro.epub', size: 500 } },
+        ];
+        const groups = findDuplicateBookGroups(books);
+        expect(groups).toHaveLength(1);
+        expect(groups[0].books.map(b => b.id).sort()).toEqual(['1', '2']);
+    });
+
+    it('agrupa libros con mismo título+autor aunque el archivo sea distinto', () => {
+        const books = [
+            { id: '1', originalTitle: 'Dune', originalAuthor: 'Frank Herbert', file: { name: 'a.epub', size: 100 } },
+            { id: '2', originalTitle: 'DUNE', originalAuthor: 'frank herbert', file: { name: 'b.epub', size: 200 } },
+        ];
+        const groups = findDuplicateBookGroups(books);
+        expect(groups).toHaveLength(1);
+        expect(groups[0].reason).toBe('title');
+    });
+
+    it('no agrupa libros distintos', () => {
+        const books = [
+            { id: '1', originalTitle: 'Dune', originalAuthor: 'Frank Herbert', file: { name: 'a.epub', size: 100 } },
+            { id: '2', originalTitle: 'Otro libro', originalAuthor: 'Otro Autor', file: { name: 'b.epub', size: 200 } },
+        ];
+        expect(findDuplicateBookGroups(books)).toEqual([]);
+    });
+
+    it('no repite el mismo grupo cuando coincide por archivo y por título a la vez', () => {
+        const books = [
+            { id: '1', originalTitle: 'Dune', originalAuthor: 'Frank Herbert', file: { name: 'dune.epub', size: 1000 } },
+            { id: '2', originalTitle: 'Dune', originalAuthor: 'Frank Herbert', file: { name: 'dune.epub', size: 1000 } },
+        ];
+        const groups = findDuplicateBookGroups(books);
+        expect(groups).toHaveLength(1);
+    });
+
+    it('devuelve vacío para biblioteca sin duplicados o vacía', () => {
+        expect(findDuplicateBookGroups([])).toEqual([]);
+        expect(findDuplicateBookGroups([{ id: '1', file: { name: 'a.epub', size: 1 } }])).toEqual([]);
+    });
+});
+
 // ─── normalizeBookStem ──────────────────────────────────────────────────────
 
 describe('normalizeBookStem', () => {
@@ -168,11 +242,34 @@ describe('toStoredBookRecord', () => {
         const rec2 = toStoredBookRecord({ id: '1', name: 'Same', originalTitle: 'Same' });
         expect(rec2.customTitle).toBe('');
     });
+
+    it('stores EPUB reader preferences by book', () => {
+        const readerPreferences = {
+            fontFamily: 'Lora',
+            fontSize: 120,
+            lineHeight: 1.8,
+            columnWidth: 'narrow',
+        };
+        const record = toStoredBookRecord({
+            id: 'prefs',
+            name: 'Libro',
+            originalTitle: 'Libro',
+            readerPreferences,
+        }, {}, { includeFile: false });
+        expect(record.readerPreferences).toEqual(readerPreferences);
+    });
 });
 
 // ─── hydrateStoredBook ──────────────────────────────────────────────────────
 
 describe('hydrateStoredBook', () => {
+    it('does not create an ObjectURL for files kept in memory', () => {
+        const file = new Blob(['book'], { type: 'application/epub+zip' });
+        const hydrated = hydrateStoredBook({ id: '1', originalTitle: 'Book', file });
+        expect(hydrated.file).toBe(file);
+        expect(hydrated.url).toBeNull();
+    });
+
     it('reconstructs name from customTitle or originalTitle', () => {
         const withCustom = hydrateStoredBook({ id: '1', customTitle: 'Custom', originalTitle: 'Original' });
         expect(withCustom.name).toBe('Custom');
@@ -192,6 +289,12 @@ describe('hydrateStoredBook', () => {
         expect(h.isFav).toBe(false);
         expect(h.progress).toBe(0);
         expect(h.author).toBe(UNKNOWN_AUTHOR_FALLBACK);
+    });
+
+    it('hydrates EPUB reader preferences', () => {
+        const readerPreferences = { fontFamily: 'Georgia', fontSize: 130, columnWidth: 'wide' };
+        const hydrated = hydrateStoredBook({ id: 'prefs', readerPreferences });
+        expect(hydrated.readerPreferences).toEqual(readerPreferences);
     });
 });
 

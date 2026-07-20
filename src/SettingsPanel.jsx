@@ -2,6 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Icons } from './icons';
 import { translations, languageNames } from './translations';
 import { saveAppData } from './db';
+import { WORKSHOP_ADDONS, getLocalizedText } from './workshopModules';
+import { useModalA11y } from './hooks/useModalA11y';
+import { AI_PROVIDERS } from './ai';
 
 const ACCENT_PRESETS = [
     { name: 'Cielo', value: '#0ea5e9', topbar: '#0284c7' },
@@ -29,8 +32,12 @@ const SECTIONS = [
     { id: 'lectura', label: 'Lectura' },
     { id: 'biblioteca', label: 'Biblioteca' },
     { id: 'datos', label: 'Datos' },
+    { id: 'workshop', label: 'Workshop' },
+    { id: 'sharky', label: 'Sharky' },
     { id: 'avanzado', label: 'Avanzado' },
 ];
+
+const SHARKY_ADDON = WORKSHOP_ADDONS.find(addon => addon.id === 'sharkyMascot');
 
 const SettingsPanel = ({
     open, onClose,
@@ -40,15 +47,28 @@ const SettingsPanel = ({
     pageTransition, setPageTransition,
     lang, setLang,
     aiProvider, setAiProvider, aiApiKey, setAiApiKey,
+    aiTestStatus, aiTestMessage, onTestAIConnection, onResetAITestStatus,
     syncFolder, setSyncFolder,
     webdavConfig, setWebdavConfig,
     accentColor, setAccentColor,
+    highContrast, setHighContrast,
+    uiScale, setUiScale,
     tutorialEnabled, setTutorialEnabled,
     onRestartTutorial,
     onExportDiagnostics,
     onClearDiagnostics,
     onExportZipBackup,
+    onExportLibraryOnly,
+    onExportSettingsOnly,
+    onOpenLibraryRepair,
+    backupHistory,
+    importHistory,
     onDeleteAccount,
+    addons,
+    addonConfig,
+    onToggleAddon,
+    onUpdateAddonConfig,
+    onOpenWorkshop,
     t
 }) => {
     const [activeSection, setActiveSection] = useState('lectura');
@@ -66,8 +86,8 @@ const SettingsPanel = ({
     useEffect(() => {
         window.electronAPI?.getAppVersion?.().then(v => setAppVersion(v)).catch(() => {});
         const handler = (payload) => setUpdateState(payload || { status: 'idle' });
-        window.electronAPI?.onUpdateStatus?.(handler);
-        return () => window.electronAPI?.offUpdateStatus?.();
+        const subscription = window.electronAPI?.onUpdateStatus?.(handler);
+        return () => window.electronAPI?.offUpdateStatus?.(subscription);
     }, []);
 
     const showAssocStatus = (value, ms = 0) => {
@@ -77,6 +97,8 @@ const SettingsPanel = ({
     };
 
     useEffect(() => () => clearTimeout(assocStatusTimerRef.current), []);
+
+    const dialogRef = useModalA11y(open, onClose);
 
     if (!open) return null;
 
@@ -97,8 +119,9 @@ const SettingsPanel = ({
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm fade-in" onClick={onClose} onWheel={e => e.stopPropagation()}>
             <div
-                role="dialog" aria-modal="true" aria-label={t.settings}
-                className="relative max-h-[90vh] w-[720px] max-w-[95%] overflow-hidden rounded-3xl p-0 shadow-2xl"
+                ref={dialogRef}
+                role="dialog" aria-modal="true" aria-label={t.settings} tabIndex={-1}
+                className="relative max-h-[90vh] w-[720px] max-w-[95%] overflow-hidden rounded-3xl p-0 shadow-2xl outline-none"
                 style={{ backgroundColor: 'var(--surface-bg)', border: '1px solid var(--border-color)' }}
                 onClick={e => e.stopPropagation()}
                 onWheel={e => e.stopPropagation()}>
@@ -155,7 +178,32 @@ const SettingsPanel = ({
                                         description: 'Reduce el azul para leer con menos fatiga visual.',
                                         tone: 'warm',
                                     })}
+                                    {renderToggle({
+                                        active: highContrast,
+                                        onClick: () => setHighContrast(prev => !prev),
+                                        title: 'Alto contraste',
+                                        description: 'Bordes más marcados y texto secundario más legible. Se combina con cualquier tema.',
+                                    })}
                                 </div>
+                            </section>
+
+                            <section>
+                                <label className="mb-3 block pl-1 text-xs font-black uppercase tracking-widest opacity-50">Tamaño de la interfaz</label>
+                                <div className="grid grid-cols-4 gap-2">
+                                    {[
+                                        [0.9, 'Pequeño'],
+                                        [1, 'Normal'],
+                                        [1.15, 'Grande'],
+                                        [1.3, 'Muy grande'],
+                                    ].map(([value, label]) => (
+                                        <button key={value} onClick={() => setUiScale(value)}
+                                            aria-pressed={uiScale === value}
+                                            className={`rounded-2xl border py-3 text-xs font-bold transition ${uiScale === value ? 'border-[var(--highlight)] bg-[var(--highlight)]/10 text-[var(--highlight)]' : 'border-transparent bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10'}`}>
+                                            {label}
+                                        </button>
+                                    ))}
+                                </div>
+                                <p className="mt-2 pl-1 text-[10px] opacity-40">Agranda texto y controles en toda la app. El tamaño de letra del libro se ajusta aparte, dentro del lector.</p>
                             </section>
 
                             <section>
@@ -332,8 +380,76 @@ const SettingsPanel = ({
                                 <button onClick={() => onExportZipBackup(true)} className="w-full rounded-xl border border-[var(--highlight)]/40 bg-[var(--highlight)]/10 py-2.5 text-sm font-black text-[var(--highlight)] transition hover:bg-[var(--highlight)]/20">
                                     Exportar backup completo (con libros)
                                 </button>
-                                <p className="mt-3 text-[11px] opacity-45">Para restaurar cualquiera de los dos: menú de usuario → Importar y selecciona el .json o .zip.</p>
+
+                                {(onExportLibraryOnly || onExportSettingsOnly) && (
+                                    <>
+                                        <p className="mb-2 mt-4 text-xs opacity-60">O exporta solo una parte:</p>
+                                        <div className="flex gap-2">
+                                            {onExportLibraryOnly && (
+                                                <button onClick={onExportLibraryOnly} className="flex-1 rounded-xl bg-black/10 py-2 text-xs font-black transition hover:opacity-80 dark:bg-white/10">
+                                                    📚 Solo biblioteca
+                                                </button>
+                                            )}
+                                            {onExportSettingsOnly && (
+                                                <button onClick={onExportSettingsOnly} className="flex-1 rounded-xl bg-black/10 py-2 text-xs font-black transition hover:opacity-80 dark:bg-white/10">
+                                                    ⚙️ Solo ajustes
+                                                </button>
+                                            )}
+                                        </div>
+                                        <p className="mt-2 text-[11px] opacity-45">Para exportar solo tus anotaciones, usa el panel de Anotaciones (icono de marcador) → .MD / .HTML / .JSON.</p>
+                                    </>
+                                )}
+
+                                <p className="mt-3 text-[11px] opacity-45">Para restaurar cualquiera de estos: menú de usuario → Importar y selecciona el .json o .zip.</p>
+                                {backupHistory?.length > 0 && (
+                                    <div className="mt-4 border-t pt-3" style={{ borderColor: 'var(--border-color)' }}>
+                                        <p className="mb-2 text-[10px] font-black uppercase tracking-widest opacity-40">Historial reciente</p>
+                                        <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                                            {backupHistory.slice(0, 8).map(entry => (
+                                                <div key={entry.id} className="flex items-center justify-between gap-2 text-[11px] opacity-70">
+                                                    <span className="flex items-center gap-1.5 truncate">
+                                                        <span>{entry.type === 'import' ? '📥' : '📤'}</span>
+                                                        <span className="truncate">{entry.fileName || (entry.type === 'import' ? 'Importado' : 'Exportado')}</span>
+                                                    </span>
+                                                    <span className="flex-shrink-0 font-bold">{new Date(entry.timestamp).toLocaleDateString()}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                             </section>
+
+                            {importHistory?.length > 0 && (
+                                <section className="rounded-2xl border border-white/5 bg-black/5 p-4 dark:bg-white/[0.03]">
+                                    <label className="mb-2 block text-xs font-black uppercase tracking-widest opacity-50">Historial de importaciones</label>
+                                    <p className="mb-3 text-xs opacity-60">Últimas carpetas importadas — útil para saber si ya trajiste una carpeta antes.</p>
+                                    <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                                        {importHistory.slice(0, 10).map(entry => (
+                                            <div key={entry.id} className="flex items-center justify-between gap-2 rounded-xl bg-black/5 px-2.5 py-2 text-[11px] dark:bg-white/5">
+                                                <span className="flex items-center gap-1.5 truncate">
+                                                    <span>📂</span>
+                                                    <span className="truncate font-bold">{entry.folderName}</span>
+                                                </span>
+                                                <span className="flex-shrink-0 flex items-center gap-2 opacity-70">
+                                                    <span>{entry.addedCount} libro{entry.addedCount === 1 ? '' : 's'}</span>
+                                                    {entry.failedCount > 0 && <span className="text-amber-500 font-bold">{entry.failedCount} fallidos</span>}
+                                                    <span className="opacity-60">{new Date(entry.timestamp).toLocaleDateString()}</span>
+                                                </span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </section>
+                            )}
+
+                            {onOpenLibraryRepair && (
+                                <section className="rounded-2xl border border-white/5 bg-black/5 p-4 dark:bg-white/[0.03]">
+                                    <label className="mb-2 block text-xs font-black uppercase tracking-widest opacity-50">Reparador de biblioteca</label>
+                                    <p className="mb-3 text-xs opacity-60">Busca portadas faltantes, metadata dañada, libros duplicados y archivos sin biblioteca asociada.</p>
+                                    <button onClick={onOpenLibraryRepair} className="w-full rounded-xl bg-black/10 py-2.5 text-sm font-black transition hover:opacity-80 dark:bg-white/10">
+                                        🔧 Escanear biblioteca
+                                    </button>
+                                </section>
+                            )}
 
                             <section>
                                 <label className="mb-3 block pl-1 text-xs font-black uppercase tracking-widest opacity-50">Cuenta y datos</label>
@@ -355,24 +471,161 @@ const SettingsPanel = ({
                         </div>
                     )}
 
+                    {activeSection === 'workshop' && (() => {
+                        const activeAddons = WORKSHOP_ADDONS.filter(addon => addons?.[addon.id] && addon.status !== 'soon');
+                        const stableCount = WORKSHOP_ADDONS.filter(addon => addon.maturity === 'stable').length;
+                        const experimentalCount = WORKSHOP_ADDONS.filter(addon => addon.maturity === 'experimental').length;
+                        return (
+                            <div className="space-y-6">
+                                <section className="rounded-2xl border border-white/5 bg-black/5 p-4 dark:bg-white/[0.03]">
+                                    <label className="mb-1 block text-xs font-black uppercase tracking-widest opacity-50">Funciones extra</label>
+                                    <p className="mb-4 text-xs opacity-60">Activa addons opcionales para adaptar la app a tu forma de leer: foco, backups, sonidos, ruleta, fuentes externas o Sharky.</p>
+                                    <div className="grid grid-cols-3 gap-2 text-center">
+                                        <div className="rounded-xl bg-black/5 py-3 dark:bg-white/5">
+                                            <p className="text-lg font-black">{activeAddons.length}</p>
+                                            <p className="text-[10px] font-bold uppercase tracking-wider opacity-50">Activos</p>
+                                        </div>
+                                        <div className="rounded-xl bg-black/5 py-3 dark:bg-white/5">
+                                            <p className="text-lg font-black">{stableCount}</p>
+                                            <p className="text-[10px] font-bold uppercase tracking-wider opacity-50">Estables</p>
+                                        </div>
+                                        <div className="rounded-xl bg-black/5 py-3 dark:bg-white/5">
+                                            <p className="text-lg font-black text-amber-500">{experimentalCount}</p>
+                                            <p className="text-[10px] font-bold uppercase tracking-wider opacity-50">Experimentales</p>
+                                        </div>
+                                    </div>
+                                    {activeAddons.length > 0 && (
+                                        <div className="mt-4 flex flex-wrap gap-1.5">
+                                            {activeAddons.map(addon => (
+                                                <span key={addon.id} className="rounded-full bg-[var(--highlight)]/10 px-2.5 py-1 text-[10px] font-bold text-[var(--highlight)]">
+                                                    {getLocalizedText(addon.name, lang)}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    )}
+                                    <button onClick={onOpenWorkshop} disabled={!onOpenWorkshop} className="mt-4 w-full rounded-xl py-2.5 text-sm font-bold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50" style={{ backgroundColor: 'var(--highlight)' }}>
+                                        Abrir Workshop completo
+                                    </button>
+                                    <p className="mt-2 text-[11px] opacity-45">Desde ahí puedes activar cada addon, ver sus permisos y ajustar su configuración.</p>
+                                </section>
+                            </div>
+                        );
+                    })()}
+
+                    {activeSection === 'sharky' && (() => {
+                        const sharkyEnabled = !!addons?.sharkyMascot;
+                        const cfg = addonConfig?.sharkyMascot || {};
+                        const patchSharky = (patch) => onUpdateAddonConfig?.('sharkyMascot', patch);
+                        const PERSONALITY_LABELS = { friendly: 'Amigable', serious: 'Serio', funny: 'Bromista', minimal: 'Minimalista', silent: 'Silencioso' };
+                        const VISIBILITY_LABELS = { always: 'Siempre', library: 'Solo biblioteca', reader: 'Solo lector', events: 'Solo en eventos', hidden: 'Oculto' };
+                        const FREQUENCY_LABELS = { normal: 'Normal', reduced: 'Reducida', important: 'Solo importantes' };
+                        const POSITION_LABELS = { 'bottom-right': 'Abajo derecha', 'bottom-left': 'Abajo izquierda', 'top-right': 'Arriba derecha', 'top-left': 'Arriba izquierda', custom: 'Personalizada' };
+                        const selectClass = 'w-full rounded-xl border border-transparent bg-black/5 px-3 py-2.5 text-sm font-semibold outline-none transition focus:border-[var(--highlight)] dark:bg-white/5';
+                        return (
+                            <div className="space-y-6">
+                                <section>
+                                    <label className="mb-3 block pl-1 text-xs font-black uppercase tracking-widest opacity-50">Tu compañero de lectura</label>
+                                    {renderToggle({
+                                        active: sharkyEnabled,
+                                        onClick: () => onToggleAddon?.('sharkyMascot'),
+                                        title: 'Sharky',
+                                        description: getLocalizedText(SHARKY_ADDON?.desc, lang) || 'Aparece flotando en pantalla para celebrar hitos y darte contexto.',
+                                    })}
+                                </section>
+
+                                {sharkyEnabled && (
+                                    <section className="space-y-4 rounded-2xl bg-black/5 p-5 dark:bg-white/5">
+                                        <div>
+                                            <label className="mb-2 block text-sm font-bold opacity-80">Nombre</label>
+                                            <input
+                                                type="text"
+                                                value={cfg.name ?? 'Sharky'}
+                                                onChange={e => patchSharky({ name: e.target.value })}
+                                                className="w-full rounded-xl border border-transparent bg-black/5 px-3 py-2.5 text-sm font-semibold outline-none transition focus:border-[var(--highlight)] dark:bg-white/5"
+                                                style={{ color: 'var(--text-color)' }}
+                                            />
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label className="mb-2 block text-sm font-bold opacity-80">Personalidad</label>
+                                                <select value={cfg.personality ?? 'friendly'} onChange={e => patchSharky({ personality: e.target.value })} className={selectClass} style={{ color: 'var(--text-color)' }}>
+                                                    {Object.entries(PERSONALITY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="mb-2 block text-sm font-bold opacity-80">Posición</label>
+                                                <select value={cfg.position ?? 'bottom-right'} onChange={e => patchSharky({ position: e.target.value })} className={selectClass} style={{ color: 'var(--text-color)' }}>
+                                                    {Object.entries(POSITION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="mb-2 block text-sm font-bold opacity-80">Cuándo aparece</label>
+                                                <select value={cfg.visibility ?? 'always'} onChange={e => patchSharky({ visibility: e.target.value })} className={selectClass} style={{ color: 'var(--text-color)' }}>
+                                                    {Object.entries(VISIBILITY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="mb-2 block text-sm font-bold opacity-80">Frecuencia de mensajes</label>
+                                                <select value={cfg.eventFrequency ?? 'reduced'} onChange={e => patchSharky({ eventFrequency: e.target.value })} className={selectClass} style={{ color: 'var(--text-color)' }}>
+                                                    {Object.entries(FREQUENCY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <div className="space-y-3 pt-1">
+                                            {renderToggle({
+                                                active: cfg.showContextTips ?? true,
+                                                onClick: () => patchSharky({ showContextTips: !(cfg.showContextTips ?? true) }),
+                                                title: 'Consejos contextuales',
+                                                description: 'Sugerencias cortas según lo que estás haciendo en la app.',
+                                            })}
+                                            {renderToggle({
+                                                active: cfg.showSessionSummary ?? true,
+                                                onClick: () => patchSharky({ showSessionSummary: !(cfg.showSessionSummary ?? true) }),
+                                                title: 'Resumen de sesión',
+                                                description: 'Un mensaje breve al terminar una sesión de lectura larga.',
+                                            })}
+                                            {renderToggle({
+                                                active: cfg.milestoneReactions ?? true,
+                                                onClick: () => patchSharky({ milestoneReactions: !(cfg.milestoneReactions ?? true) }),
+                                                title: 'Reacciones a hitos',
+                                                description: 'Celebra rachas, libros terminados y logros nuevos.',
+                                            })}
+                                        </div>
+                                    </section>
+                                )}
+                            </div>
+                        );
+                    })()}
+
                     {activeSection === 'avanzado' && (
                         <div className="space-y-6">
                             <section>
                                 <label className="mb-3 block pl-1 text-xs font-black uppercase tracking-widest opacity-50">AI Assistant</label>
-                                <select value={aiProvider} onChange={e => setAiProvider(e.target.value)} className="mb-3 w-full rounded-xl border p-3 text-sm font-semibold outline-none transition" style={{ backgroundColor: 'var(--surface-bg)', color: 'var(--text-color)', borderColor: 'var(--border-color)' }}>
-                                    <option value="groq">Groq - Llama 3</option>
-                                    <option value="openrouter">OpenRouter - Llama / Mistral</option>
-                                    <option value="gemini">Google Gemini</option>
-                                    <option value="xai">xAI Grok</option>
+                                <p className="mb-3 px-1 text-xs opacity-60">Se usa para resúmenes, el chat de Sharky y otras funciones asistidas. Es totalmente opcional — sin clave, esas funciones simplemente quedan ocultas o usan alternativas locales.</p>
+                                <select value={aiProvider} onChange={e => { setAiProvider(e.target.value); onResetAITestStatus?.(); }} className="mb-3 w-full rounded-xl border p-3 text-sm font-semibold outline-none transition" style={{ backgroundColor: 'var(--surface-bg)', color: 'var(--text-color)', borderColor: 'var(--border-color)' }}>
+                                    {AI_PROVIDERS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
                                 </select>
-                                <input type="password" placeholder={aiProvider === 'groq' ? 'gsk_...' : aiProvider === 'openrouter' ? 'sk-or-v1-...' : aiProvider === 'xai' ? 'xai-...' : 'AIza...'} value={aiApiKey} onChange={e => setAiApiKey(e.target.value)} className="mb-2 w-full rounded-xl border border-transparent bg-black/5 p-3 font-mono text-sm outline-none transition focus:border-[var(--highlight)] dark:bg-white/5" style={{ color: 'var(--text-color)' }} />
-                                <button onClick={() => {
-                                    saveAppData('aiApiKey', aiApiKey);
-                                    saveAppData('aiProvider', aiProvider);
-                                    showAssocStatus('saved', 2000);
-                                }} className="w-full rounded-xl py-2.5 text-sm font-bold text-white transition hover:opacity-90" style={{ backgroundColor: 'var(--highlight)' }}>
-                                    {assocStatus === 'saved' ? 'Clave guardada' : 'Guardar clave'}
-                                </button>
+                                <input type="password" placeholder={AI_PROVIDERS.find(p => p.id === aiProvider)?.keyPlaceholder || 'API key'} value={aiApiKey} onChange={e => { setAiApiKey(e.target.value); onResetAITestStatus?.(); }} className="mb-2 w-full rounded-xl border border-transparent bg-black/5 p-3 font-mono text-sm outline-none transition focus:border-[var(--highlight)] dark:bg-white/5" style={{ color: 'var(--text-color)' }} />
+                                <div className="flex gap-2">
+                                    <button onClick={() => {
+                                        saveAppData('aiApiKey', aiApiKey);
+                                        saveAppData('aiProvider', aiProvider);
+                                        showAssocStatus('saved', 2000);
+                                    }} className="flex-1 rounded-xl py-2.5 text-sm font-bold text-white transition hover:opacity-90" style={{ backgroundColor: 'var(--highlight)' }}>
+                                        {assocStatus === 'saved' ? 'Clave guardada' : 'Guardar clave'}
+                                    </button>
+                                    <button onClick={onTestAIConnection} disabled={aiTestStatus === 'testing' || !aiApiKey.trim()}
+                                        className="flex-1 rounded-xl border py-2.5 text-sm font-bold transition hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-white/5"
+                                        style={{ borderColor: 'var(--border-color)' }}>
+                                        {aiTestStatus === 'testing' ? 'Probando…' : 'Probar conexión'}
+                                    </button>
+                                </div>
+                                {aiTestStatus === 'ok' && (
+                                    <p className="mt-2 flex items-center gap-1.5 text-xs font-bold text-green-500">✓ {aiTestMessage}</p>
+                                )}
+                                {aiTestStatus === 'error' && (
+                                    <p className="mt-2 flex items-center gap-1.5 text-xs font-bold text-red-500">✕ {aiTestMessage}</p>
+                                )}
                             </section>
 
                             {typeof window !== 'undefined' && window.electronAPI && (
@@ -403,6 +656,29 @@ const SettingsPanel = ({
                                     {assocStatus && !['saved', 'sync_ok', 'sync_err'].includes(assocStatus) && <p className={`mt-2 px-1 text-xs font-bold ${assocStatus.startsWith('Error') ? 'text-red-500' : 'text-green-500'}`}>{assocStatus}</p>}
                                 </section>
                             )}
+
+                            <section className="rounded-2xl border border-white/5 bg-black/5 p-4 dark:bg-white/[0.03]">
+                                <label className="mb-3 block text-xs font-black uppercase tracking-widest opacity-50">Atajos de teclado</label>
+                                <div className="space-y-4">
+                                    {[
+                                        { title: 'Global', items: [['Ctrl / Cmd + K', 'Abrir paleta de comandos'], ['Esc', 'Cerrar el panel o modal activo']] },
+                                        { title: 'Lector', items: [['← / →', 'Página anterior / siguiente'], ['Alt + ←', 'Volver a la posición anterior'], ['Ctrl / Cmd + "+"', 'Acercar (solo PDF)'], ['Ctrl / Cmd + "-"', 'Alejar (solo PDF)'], ['Ctrl / Cmd + 0', 'Restablecer zoom (solo PDF)']] },
+                                    ].map(group => (
+                                        <div key={group.title}>
+                                            <p className="mb-1.5 text-[10px] font-black uppercase tracking-widest opacity-40">{group.title}</p>
+                                            <div className="space-y-1">
+                                                {group.items.map(([keys, desc]) => (
+                                                    <div key={keys} className="flex items-center justify-between gap-3 rounded-lg px-2 py-1.5 text-xs hover:bg-black/5 dark:hover:bg-white/5">
+                                                        <span className="opacity-70">{desc}</span>
+                                                        <kbd className="flex-shrink-0 whitespace-nowrap rounded-md border px-2 py-0.5 font-mono text-[10px] font-bold opacity-70" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-color)' }}>{keys}</kbd>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                                <p className="mt-3 text-[11px] opacity-45">La reasignación personalizada de atajos todavía no está disponible — esta lista es de referencia.</p>
+                            </section>
 
                             <section className="rounded-2xl border border-white/5 bg-black/5 p-4 dark:bg-white/[0.03]">
                                 <label className="mb-3 block text-xs font-black uppercase tracking-widest opacity-50">Diagnóstico</label>

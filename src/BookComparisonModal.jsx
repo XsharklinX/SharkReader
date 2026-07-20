@@ -1,5 +1,6 @@
 import React from 'react';
 import { Icons } from './icons';
+import { useModalA11y } from './hooks/useModalA11y';
 
 const fmtTime = (mins) => {
     const m = Math.round(mins || 0);
@@ -19,11 +20,12 @@ const ROWS = [
 ];
 
 export default function BookComparisonModal({ books, onClose }) {
+    const dialogRef = useModalA11y(!!(books && books.length >= 2), onClose);
     if (!books || books.length < 2) return null;
     return (
         <div className="fixed inset-0 z-[350] flex items-center justify-center bg-black/60 backdrop-blur-sm fade-in p-4" onClick={onClose}>
-            <div role="dialog" aria-modal="true" aria-label="Comparación de libros"
-                className="w-full max-w-4xl max-h-[88vh] overflow-y-auto rounded-3xl shadow-2xl border"
+            <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Comparación de libros" tabIndex={-1}
+                className="w-full max-w-4xl max-h-[88vh] overflow-y-auto rounded-3xl shadow-2xl border outline-none"
                 style={{ backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)' }}
                 onClick={e => e.stopPropagation()}>
                 <div className="flex items-center justify-between px-6 py-4 border-b sticky top-0 z-10" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--surface-bg)' }}>

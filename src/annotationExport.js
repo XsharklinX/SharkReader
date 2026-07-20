@@ -14,8 +14,20 @@ export function normalizeAnnotationKind(bookmark = {}) {
     return 'bookmark';
 }
 
+const parseStructuredHighlight = (bookmark = {}) => {
+    if (bookmark.kind !== 'highlight' || typeof bookmark.note !== 'string') return null;
+    try {
+        const parsed = JSON.parse(bookmark.note);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+        return null;
+    }
+};
+
 export function normalizeAnnotationText(bookmark = {}) {
     if (normalizeAnnotationKind(bookmark) === 'highlight') {
+        const structured = parseStructuredHighlight(bookmark);
+        if (structured?.text) return String(structured.text).trim();
         return String(bookmark.note || '')
             .replace('[Subrayado] ', '')
             .replace(/^"|"$/g, '')
@@ -37,6 +49,8 @@ export function buildAnnotationEntries(books, { bookId, getColorLabel } = {}) {
     return scopedBooks.flatMap(book =>
         (book.bookmarks || []).map((bookmark, index) => {
             const kind = normalizeAnnotationKind(bookmark);
+            const structuredHighlight = kind === 'highlight' ? parseStructuredHighlight(bookmark) : null;
+            const color = bookmark.color || structuredHighlight?.color || 'yellow';
             return {
                 id: `${book.id}:${bookmark.cfi}:${bookmark.date || ''}:${index}`,
                 bookId: book.id,
@@ -44,11 +58,12 @@ export function buildAnnotationEntries(books, { bookId, getColorLabel } = {}) {
                 bookAuthor: book.author,
                 cfi: bookmark.cfi,
                 date: bookmark.date || '',
-                color: bookmark.color || 'yellow',
-                colorLabel: kind === 'highlight' ? resolveColorLabel(bookmark.color || 'yellow') : '',
+                color,
+                colorLabel: kind === 'highlight' ? resolveColorLabel(color) : '',
                 kind,
                 text: normalizeAnnotationText(bookmark),
                 rawNote: bookmark.note || '',
+                page: structuredHighlight?.pageNum || null,
             };
         })
     );

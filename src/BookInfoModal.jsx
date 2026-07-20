@@ -1,5 +1,6 @@
 import React from 'react';
 import { Icons } from './icons';
+import { useModalA11y } from './hooks/useModalA11y';
 
 const toDateInputValue = (timestamp) => {
     if (!timestamp) return '';
@@ -17,10 +18,11 @@ const fromDateInputValue = (value) => {
 };
 
 export default function BookInfoModal({ book, onChange, onClose, onSave, onMarkFinished, onRestoreOriginal, onToggleCollection, onCreateCollection, coverInputRef, customCategories, manualCollections = [], t }) {
+    const dialogRef = useModalA11y(!!book, onClose);
     if (!book) return null;
     return (
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm fade-in" onClick={onClose} onWheel={e => e.stopPropagation()}>
-            <div role="dialog" aria-modal="true" aria-label={`Ficha del libro: ${book.name}`} className="bg-[var(--surface-bg)] w-full max-w-4xl p-8 rounded-3xl shadow-2xl border border-[var(--border-color)] flex flex-col md:flex-row gap-8 relative max-h-[90vh] overflow-y-auto" style={{ overscrollBehavior: 'contain' }} onClick={e => e.stopPropagation()}>
+            <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={`Ficha del libro: ${book.name}`} tabIndex={-1} className="bg-[var(--surface-bg)] w-full max-w-4xl p-8 rounded-3xl shadow-2xl border border-[var(--border-color)] flex flex-col md:flex-row gap-8 relative max-h-[90vh] overflow-y-auto outline-none" style={{ overscrollBehavior: 'contain' }} onClick={e => e.stopPropagation()}>
                 <button onClick={onClose} aria-label="Cerrar ficha del libro" className="absolute top-6 right-6 p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-full transition"><Icons.Close /></button>
                 <div className="flex flex-col items-center w-full md:w-1/3">
                     <div className="w-full aspect-[2/3] rounded-xl shadow-xl mb-4 flex items-center justify-center text-white text-center p-4 bg-cover bg-center"

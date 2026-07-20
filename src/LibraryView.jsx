@@ -3,12 +3,109 @@ import { Icons } from './icons';
 import BookCard from './BookCard';
 import QuickEditCard from './QuickEditCard';
 
+const LibraryBookItem = React.memo(({
+    book,
+    isOpen,
+    openBook,
+    handleContextMenu,
+    isSelecting,
+    isSelected,
+    toggleSelectBook,
+    quickEditBookId,
+    setQuickEditBookId,
+    saveQuickEdit,
+    setDraggedBookId,
+    setDropTargetCat,
+    isDynamic,
+    isNext = false,
+}) => (
+    <div
+        draggable={!isSelecting && quickEditBookId !== book.id}
+        onDragStart={e => {
+            e.dataTransfer.setData('bookId', book.id);
+            setDraggedBookId(book.id);
+        }}
+        onDragEnd={() => {
+            setDraggedBookId(null);
+            setDropTargetCat(null);
+        }}
+        style={isNext ? { filter: 'drop-shadow(0 0 6px var(--highlight))' } : undefined}>
+        {quickEditBookId === book.id ? (
+            <QuickEditCard book={book} onSave={saveQuickEdit} onCancel={() => setQuickEditBookId(null)} />
+        ) : (
+            <BookCard
+                book={book}
+                isOpen={isOpen}
+                onOpen={isSelecting ? toggleSelectBook : openBook}
+                onContextMenu={handleContextMenu}
+                isSelecting={isSelecting}
+                isSelected={isSelected}
+                onSelect={toggleSelectBook}
+                onQuickEdit={setQuickEditBookId}
+                isDynamic={isDynamic}
+            />
+        )}
+    </div>
+));
+
+const LibraryListRow = React.memo(({
+    book,
+    isOpen,
+    isSelecting,
+    isSelected,
+    openBook,
+    toggleSelectBook,
+    handleContextMenu,
+}) => {
+    const statusIcon = book.isFinished ? '✅' : book.lastReadDate > 0 ? '📖' : '📚';
+    const rowLabel = [book.name, book.author, isSelecting ? (isSelected ? '(seleccionado)' : '(sin seleccionar)') : `${book.progress || 0}% leído`].filter(Boolean).join(', ');
+    return (
+        <div
+            role="button"
+            tabIndex={0}
+            aria-label={rowLabel}
+            aria-pressed={isSelecting ? isSelected : undefined}
+            className="flex items-center gap-4 p-3 rounded-2xl cursor-pointer border transition group"
+            style={{
+                backgroundColor: isSelected ? 'color-mix(in srgb, var(--highlight) 12%, var(--surface-bg))' : 'var(--surface-bg)',
+                borderColor: isSelected ? 'var(--highlight)' : 'transparent',
+            }}
+            onClick={() => isSelecting ? toggleSelectBook(book.id) : openBook(book.id)}
+            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); isSelecting ? toggleSelectBook(book.id) : openBook(book.id); } }}
+            onContextMenu={e => !isSelecting && handleContextMenu(e, book)}>
+            <div
+                className="w-10 h-14 rounded-lg flex-shrink-0 bg-cover bg-center shadow-md flex items-center justify-center text-white text-xs font-bold overflow-hidden"
+                style={{ backgroundImage: book.coverUrl ? `url(${book.coverUrl})` : 'none', backgroundColor: book.color }}>
+                {!book.coverUrl && book.name.charAt(0)}
+            </div>
+            <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                    <span className="font-bold text-sm truncate">{book.name}</span>
+                    {isOpen && <span className="text-[10px] font-black text-green-400 flex-shrink-0">● Abierto</span>}
+                </div>
+                <div className="text-xs opacity-50 truncate">{book.author}{book.series ? ` · ${book.series}${book.seriesIndex ? ` #${book.seriesIndex}` : ''}` : ''}</div>
+                {book.tags && <div className="text-[10px] opacity-40 truncate mt-0.5">{book.tags}</div>}
+            </div>
+            <div className="flex items-center gap-3 flex-shrink-0">
+                {book.rating > 0 && <span className="text-xs" style={{ color: '#f59e0b', letterSpacing: '-1px' }}>{'★'.repeat(book.rating)}</span>}
+                <span className="text-[10px]">{statusIcon}</span>
+                <div className="text-right">
+                    <div className="text-xs font-black" style={{ color: 'var(--highlight)' }}>{book.progress || 0}%</div>
+                    <div className="w-16 h-1 rounded-full bg-black/10 dark:bg-white/10 mt-1">
+                        <div className="h-full rounded-full" style={{ width: `${book.progress || 0}%`, backgroundColor: 'var(--highlight)' }} />
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+});
+
 const LibraryView = React.forwardRef(({
     searchTerm,
     searchResultsWithMatches,
     virtualSearchResults,
     displayedBooks,
-    books,
+    libraryBookCount,
     currentFilter,
     setCurrentFilter,
     setSearchTerm,
@@ -28,9 +125,7 @@ const LibraryView = React.forwardRef(({
     quickEditBookId,
     setQuickEditBookId,
     saveQuickEdit,
-    draggedBookId,
     setDraggedBookId,
-    dropTargetCat,
     setDropTargetCat,
     bulkToggleFav,
     bulkMarkFinished,
@@ -47,12 +142,51 @@ const LibraryView = React.forwardRef(({
         ? virtualSearchResults.items
         : searchResultsWithMatches;
 
+    // Navegación por flechas dentro de una grilla de portadas: con una
+    // portada enfocada, ←↑→↓ mueve el foco a la vecina en esa dirección en
+    // vez de saltar por todo el DOM con Tab. El número de columnas se mide
+    // en vivo (offsetTop de la primera fila) para no depender de si la
+    // grilla está virtualizada ni de cuántas columnas caben en la ventana.
+    const handleGridArrowNav = React.useCallback((e) => {
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+        const grid = e.currentTarget;
+        const cards = Array.from(grid.querySelectorAll('[role="button"]'));
+        const currentIndex = cards.indexOf(document.activeElement);
+        if (currentIndex === -1) return;
+        e.preventDefault();
+        let nextIndex = currentIndex;
+        if (e.key === 'ArrowLeft') nextIndex = currentIndex - 1;
+        else if (e.key === 'ArrowRight') nextIndex = currentIndex + 1;
+        else {
+            const firstTop = cards[0]?.offsetTop;
+            let columns = cards.findIndex((c, i) => i > 0 && c.offsetTop !== firstTop);
+            if (columns <= 0) columns = cards.length;
+            nextIndex = e.key === 'ArrowUp' ? currentIndex - columns : currentIndex + columns;
+        }
+        if (nextIndex >= 0 && nextIndex < cards.length) cards[nextIndex]?.focus();
+    }, []);
+    const seriesGroups = React.useMemo(() => {
+        if (libraryView !== 'series') return [];
+        const grouped = new Map();
+        displayedBooks.forEach(book => {
+            const key = book.series || '';
+            if (!grouped.has(key)) grouped.set(key, []);
+            grouped.get(key).push(book);
+        });
+        return [...grouped.entries()]
+            .map(([name, groupBooks]) => ({
+                name,
+                books: [...groupBooks].sort((a, b) => (a.seriesIndex || 0) - (b.seriesIndex || 0)),
+            }))
+            .sort((a, b) => a.name ? (b.name ? a.name.localeCompare(b.name) : -1) : 1);
+    }, [displayedBooks, libraryView]);
+
     return (
         <div ref={ref} className="flex-1 library-container w-full relative overflow-y-auto">
 
             {/* Vista de resultados de búsqueda */}
             {searchTerm && searchResultsWithMatches && (
-                <div className="p-5 max-w-3xl mx-auto fade-in">
+                <div className={`p-5 mx-auto fade-in ${libraryView === 'grid' ? 'max-w-none' : 'max-w-3xl'}`}>
                     <p className="text-xs font-black uppercase tracking-widest opacity-40 mb-4">
                         {searchResultsWithMatches.length} {searchResultsWithMatches.length === 1 ? 'resultado' : 'resultados'} para "{searchTerm}"
                     </p>
@@ -61,6 +195,17 @@ const LibraryView = React.forwardRef(({
                             <p className="text-5xl mb-4">🔍</p>
                             <p className="font-black text-lg">Sin resultados</p>
                             <p className="text-sm mt-2">Prueba con otro título, autor o etiqueta</p>
+                        </div>
+                    ) : libraryView === 'grid' ? (
+                        <div className="books-grid fade-in" onKeyDown={handleGridArrowNav}>
+                            {(visibleSearchResults || []).map(book => (
+                                <LibraryBookItem key={book.id} book={book}
+                                    isOpen={openBookIds.has(book.id)} openBook={openBook} handleContextMenu={handleContextMenu}
+                                    isSelecting={isSelecting} isSelected={selectedBookIds.has(book.id)} toggleSelectBook={toggleSelectBook}
+                                    quickEditBookId={quickEditBookId} setQuickEditBookId={setQuickEditBookId} saveQuickEdit={saveQuickEdit}
+                                    setDraggedBookId={setDraggedBookId} setDropTargetCat={setDropTargetCat}
+                                    isDynamic={!!addons.dynamicCovers} />
+                            ))}
                         </div>
                     ) : (
                         <div
@@ -71,9 +216,13 @@ const LibraryView = React.forwardRef(({
                                 style={virtualSearchResults.enabled ? { transform: `translateY(${virtualSearchResults.top}px)` } : undefined}>
                             {(visibleSearchResults || []).map(book => (
                                 <div key={book.id}
+                                    role="button"
+                                    tabIndex={0}
+                                    aria-label={[book.name, book.author].filter(Boolean).join(', ')}
                                     className="flex items-center gap-4 p-4 rounded-2xl cursor-pointer transition group border border-transparent hover:border-[var(--border-color)]"
                                     style={{ backgroundColor: 'var(--surface-bg)' }}
                                     onClick={() => openBook(book.id)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openBook(book.id); } }}
                                     onContextMenu={(e) => handleContextMenu(e, book)}>
                                     <div className="w-12 h-16 rounded-xl overflow-hidden flex-shrink-0 shadow-lg flex items-center justify-center text-white text-xs font-bold text-center bg-cover bg-center"
                                         style={{ backgroundImage: book.coverUrl ? `url(${book.coverUrl})` : 'none', backgroundColor: book.color }}>
@@ -110,7 +259,7 @@ const LibraryView = React.forwardRef(({
                     {displayedBooks.length === 0 && (() => {
                         const isSearch = !!searchTerm.trim();
                         const isFiltered = currentFilter !== 'all';
-                        const isEmptyLibrary = books.filter(b => !b.loading).length === 0;
+                        const isEmptyLibrary = libraryBookCount === 0;
 
                         const configs = {
                             search: { emoji: '🔍', title: `Sin resultados para "${searchTerm}"`, sub: 'Prueba con el título, autor, serie o un tag del libro.', accent: '#38bdf8', sharkyMood: 'sad' },
@@ -190,54 +339,35 @@ const LibraryView = React.forwardRef(({
                             <div className="virtual-library-spacer" style={{ height: virtualLibrary.totalHeight }}>
                                 <div
                                     className={`books-grid virtual-books-grid ${addons.netflixView ? 'netflix-grid' : ''}`}
+                                    onKeyDown={handleGridArrowNav}
                                     style={{
                                         transform: `translateY(${virtualLibrary.top}px)`,
                                         gridTemplateColumns: `repeat(${virtualLibrary.columns}, minmax(0, 1fr))`,
                                     }}>
                                     {virtualLibrary.items.map(book => (
-                                        <div key={book.id} draggable={!isSelecting && quickEditBookId !== book.id}
-                                            onDragStart={e => { e.dataTransfer.setData('bookId', book.id); setDraggedBookId(book.id); }}
-                                            onDragEnd={() => { setDraggedBookId(null); setDropTargetCat(null); }}>
-                                            {quickEditBookId === book.id ? (
-                                                <QuickEditCard book={book} onSave={saveQuickEdit} onCancel={() => setQuickEditBookId(null)} />
-                                            ) : (
-                                                <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={isSelecting ? toggleSelectBook : openBook} onContextMenu={handleContextMenu}
-                                                    isSelecting={isSelecting} isSelected={selectedBookIds.has(book.id)} onSelect={toggleSelectBook}
-                                                    onQuickEdit={setQuickEditBookId} isDynamic={!!addons.dynamicCovers} />
-                                            )}
-                                        </div>
+                                        <LibraryBookItem key={book.id} book={book}
+                                            isOpen={openBookIds.has(book.id)} openBook={openBook} handleContextMenu={handleContextMenu}
+                                            isSelecting={isSelecting} isSelected={selectedBookIds.has(book.id)} toggleSelectBook={toggleSelectBook}
+                                            quickEditBookId={quickEditBookId} setQuickEditBookId={setQuickEditBookId} saveQuickEdit={saveQuickEdit}
+                                            setDraggedBookId={setDraggedBookId} setDropTargetCat={setDropTargetCat}
+                                            isDynamic={!!addons.dynamicCovers} />
                                     ))}
                                 </div>
                             </div>
                         ) : (
-                            <div className={`books-grid fade-in ${addons.netflixView ? 'netflix-grid' : ''}`}>
+                            <div className={`books-grid fade-in ${addons.netflixView ? 'netflix-grid' : ''}`} onKeyDown={handleGridArrowNav}>
                                 {displayedBooks.map(book => (
-                                    <div key={book.id} draggable={!isSelecting && quickEditBookId !== book.id}
-                                        onDragStart={e => { e.dataTransfer.setData('bookId', book.id); setDraggedBookId(book.id); }}
-                                        onDragEnd={() => { setDraggedBookId(null); setDropTargetCat(null); }}>
-                                        {quickEditBookId === book.id ? (
-                                            <QuickEditCard book={book} onSave={saveQuickEdit} onCancel={() => setQuickEditBookId(null)} />
-                                        ) : (
-                                            <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={isSelecting ? toggleSelectBook : openBook} onContextMenu={handleContextMenu}
-                                                isSelecting={isSelecting} isSelected={selectedBookIds.has(book.id)} onSelect={toggleSelectBook}
-                                                onQuickEdit={setQuickEditBookId} isDynamic={!!addons.dynamicCovers} />
-                                        )}
-                                    </div>
+                                    <LibraryBookItem key={book.id} book={book}
+                                        isOpen={openBookIds.has(book.id)} openBook={openBook} handleContextMenu={handleContextMenu}
+                                        isSelecting={isSelecting} isSelected={selectedBookIds.has(book.id)} toggleSelectBook={toggleSelectBook}
+                                        quickEditBookId={quickEditBookId} setQuickEditBookId={setQuickEditBookId} saveQuickEdit={saveQuickEdit}
+                                        setDraggedBookId={setDraggedBookId} setDropTargetCat={setDropTargetCat}
+                                        isDynamic={!!addons.dynamicCovers} />
                                 ))}
                             </div>
                         )
                     )}
-                    {displayedBooks.length > 0 && libraryView === 'series' && (() => {
-                        const grouped = new Map();
-                        displayedBooks.forEach(book => {
-                            const key = book.series || '';
-                            if (!grouped.has(key)) grouped.set(key, []);
-                            grouped.get(key).push(book);
-                        });
-                        const seriesGroups = [...grouped.entries()]
-                            .map(([name, bks]) => ({ name, books: bks.sort((a, b) => (a.seriesIndex || 0) - (b.seriesIndex || 0)) }))
-                            .sort((a, b) => a.name ? (b.name ? a.name.localeCompare(b.name) : -1) : 1);
-                        return (
+                    {displayedBooks.length > 0 && libraryView === 'series' && (
                             <div className="p-4 md:p-6 space-y-8 fade-in max-w-5xl mx-auto w-full">
                                 {seriesGroups.map(({ name, books: grpBooks }) => {
                                     const finished = grpBooks.filter(b => b.isFinished).length;
@@ -247,7 +377,7 @@ const LibraryView = React.forwardRef(({
                                     const maxIdx = seriesIdxSet.size > 0 ? Math.max(...seriesIdxSet) : 0;
                                     const gaps = name && maxIdx > 1 ? Array.from({ length: maxIdx - 1 }, (_, i) => i + 1).filter(n => !seriesIdxSet.has(n)) : [];
                                     return (
-                                        <div key={name || '__noseries__'}>
+                                        <div key={name || '__noseries__'} className="series-library-group">
                                             <div className="flex items-center gap-3 mb-3 flex-wrap">
                                                 {name ? (
                                                     <>
@@ -264,22 +394,16 @@ const LibraryView = React.forwardRef(({
                                                     <h3 className="font-black text-xs uppercase tracking-widest opacity-30">Sin serie</h3>
                                                 )}
                                             </div>
-                                            <div className="books-grid">
+                                            <div className="books-grid" onKeyDown={handleGridArrowNav}>
                                                 {grpBooks.map(book => {
                                                     const isNext = nextToRead?.id === book.id;
                                                     return (
-                                                        <div key={book.id} draggable={!isSelecting}
-                                                            onDragStart={e => { e.dataTransfer.setData('bookId', book.id); setDraggedBookId(book.id); }}
-                                                            onDragEnd={() => { setDraggedBookId(null); setDropTargetCat(null); }}
-                                                            style={isNext ? { filter: 'drop-shadow(0 0 6px var(--highlight))' } : undefined}>
-                                                            {quickEditBookId === book.id ? (
-                                                                <QuickEditCard book={book} onSave={saveQuickEdit} onCancel={() => setQuickEditBookId(null)} />
-                                                            ) : (
-                                                                <BookCard book={book} isOpen={openBookIds.has(book.id)} onOpen={isSelecting ? toggleSelectBook : openBook} onContextMenu={handleContextMenu}
-                                                                    isSelecting={isSelecting} isSelected={selectedBookIds.has(book.id)} onSelect={toggleSelectBook}
-                                                                    onQuickEdit={setQuickEditBookId} isDynamic={!!addons.dynamicCovers} />
-                                                            )}
-                                                        </div>
+                                                        <LibraryBookItem key={book.id} book={book}
+                                                            isOpen={openBookIds.has(book.id)} openBook={openBook} handleContextMenu={handleContextMenu}
+                                                            isSelecting={isSelecting} isSelected={selectedBookIds.has(book.id)} toggleSelectBook={toggleSelectBook}
+                                                            quickEditBookId={quickEditBookId} setQuickEditBookId={setQuickEditBookId} saveQuickEdit={saveQuickEdit}
+                                                            setDraggedBookId={setDraggedBookId} setDropTargetCat={setDropTargetCat}
+                                                            isDynamic={!!addons.dynamicCovers} isNext={isNext} />
                                                     );
                                                 })}
                                                 {gaps.length > 0 && gaps.map(gapNum => (
@@ -299,8 +423,7 @@ const LibraryView = React.forwardRef(({
                                     );
                                 })}
                             </div>
-                        );
-                    })()}
+                    )}
                     {displayedBooks.length > 0 && libraryView === 'list' && (
                         <div
                             className={`p-4 flex flex-col gap-2 fade-in max-w-4xl mx-auto w-full ${virtualLibrary.enabled ? 'virtual-list-spacer' : ''}`}
@@ -308,40 +431,15 @@ const LibraryView = React.forwardRef(({
                             <div
                                 className="flex flex-col gap-2 w-full"
                                 style={virtualLibrary.enabled ? { transform: `translateY(${virtualLibrary.top}px)` } : undefined}>
-                            {(virtualLibrary.enabled ? virtualLibrary.items : displayedBooks).map(book => {
-                                const statusIcon = book.isFinished ? '✅' : book.lastReadDate > 0 ? '📖' : '📚';
-                                const listSelected = isSelecting && selectedBookIds.has(book.id);
-                                return (
-                                    <div key={book.id}
-                                        className="flex items-center gap-4 p-3 rounded-2xl cursor-pointer border transition group"
-                                        style={{ backgroundColor: listSelected ? 'color-mix(in srgb, var(--highlight) 12%, var(--surface-bg))' : 'var(--surface-bg)', borderColor: listSelected ? 'var(--highlight)' : 'transparent' }}
-                                        onClick={() => isSelecting ? toggleSelectBook(book.id) : openBook(book.id)}
-                                        onContextMenu={e => !isSelecting && handleContextMenu(e, book)}>
-                                        <div className="w-10 h-14 rounded-lg flex-shrink-0 bg-cover bg-center shadow-md flex items-center justify-center text-white text-xs font-bold overflow-hidden"
-                                            style={{ backgroundImage: book.coverUrl ? `url(${book.coverUrl})` : 'none', backgroundColor: book.color }}>
-                                            {!book.coverUrl && book.name.charAt(0)}
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                            <div className="flex items-center gap-2">
-                                                <span className="font-bold text-sm truncate">{book.name}</span>
-                                                {openBookIds.has(book.id) && <span className="text-[10px] font-black text-green-400 flex-shrink-0">● Abierto</span>}
-                                            </div>
-                                            <div className="text-xs opacity-50 truncate">{book.author}{book.series ? ` · ${book.series}${book.seriesIndex ? ` #${book.seriesIndex}` : ''}` : ''}</div>
-                                            {book.tags && <div className="text-[10px] opacity-40 truncate mt-0.5">{book.tags}</div>}
-                                        </div>
-                                        <div className="flex items-center gap-3 flex-shrink-0">
-                                            {book.rating > 0 && <span className="text-xs" style={{ color: '#f59e0b', letterSpacing: '-1px' }}>{'★'.repeat(book.rating)}</span>}
-                                            <span className="text-[10px]">{statusIcon}</span>
-                                            <div className="text-right">
-                                                <div className="text-xs font-black" style={{ color: 'var(--highlight)' }}>{book.progress || 0}%</div>
-                                                <div className="w-16 h-1 rounded-full bg-black/10 dark:bg-white/10 mt-1">
-                                                    <div className="h-full rounded-full" style={{ width: `${book.progress || 0}%`, backgroundColor: 'var(--highlight)' }} />
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                );
-                            })}
+                            {(virtualLibrary.enabled ? virtualLibrary.items : displayedBooks).map(book => (
+                                <LibraryListRow key={book.id} book={book}
+                                    isOpen={openBookIds.has(book.id)}
+                                    isSelecting={isSelecting}
+                                    isSelected={isSelecting && selectedBookIds.has(book.id)}
+                                    openBook={openBook}
+                                    toggleSelectBook={toggleSelectBook}
+                                    handleContextMenu={handleContextMenu} />
+                            ))}
                             </div>
                         </div>
                     )}
@@ -408,7 +506,7 @@ const LibraryView = React.forwardRef(({
                             className="text-xs font-bold px-3 py-1.5 rounded-xl bg-red-500/15 text-red-700 dark:text-red-400 hover:bg-red-500/25 transition disabled:opacity-40">
                             🗑️ Eliminar
                         </button>
-                        <button onClick={clearSelection} className="p-1.5 rounded-xl opacity-50 hover:opacity-100 transition" style={{ color: 'var(--text-color)' }}>
+                        <button onClick={clearSelection} aria-label="Cancelar selección" className="p-1.5 rounded-xl opacity-50 hover:opacity-100 transition" style={{ color: 'var(--text-color)' }}>
                             <Icons.Close />
                         </button>
                     </div>

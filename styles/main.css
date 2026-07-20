@@ -56,6 +56,76 @@
     outline-offset: 2px !important;
 }
 
+/* Accesibilidad: piso de contraste AA para texto "atenuado". La app usa
+   opacity-30..55 de Tailwind (sobre var(--text-color)) para prácticamente
+   todo el texto secundario — fechas, contadores, descripciones, etiquetas.
+   Con la paleta del tema claro eso da ~2.5:1 en el tramo más bajo, muy por
+   debajo del mínimo 4.5:1 de WCAG AA para texto normal. No es viable revisar
+   uno por uno los 300+ usos repartidos en toda la app, así que se sube el
+   piso globalmente: valores recalculados para que incluso el nivel más bajo
+   (opacity-30) llegue a ~4.6:1 sobre var(--bg-color) en claro/oscuro/sepia,
+   manteniendo el orden relativo (30 sigue siendo más tenue que 55). Esto
+   afecta también a algunos usos puramente decorativos (iconos, separadores)
+   que no lo necesitaban, pero unificar es lo que hace esto sostenible.
+   !important es necesario porque estas reglas deben ganarle a las utilidades
+   de Tailwind generadas con la misma especificidad. */
+.opacity-30 { opacity: 0.62 !important; }
+.opacity-35 { opacity: 0.64 !important; }
+.opacity-40 { opacity: 0.67 !important; }
+.opacity-45 { opacity: 0.70 !important; }
+.opacity-50 { opacity: 0.73 !important; }
+.opacity-55 { opacity: 0.76 !important; }
+
+/* Accesibilidad: reduce prácticamente a cero la duración de animaciones y
+   transiciones para quien tiene activado "reducir movimiento" en el SO —
+   colapsarlas a ~0ms (en vez de display:none) evita romper lógica que
+   depende de eventos transitionend/animationend en algún componente,
+   a la vez que elimina el movimiento real. Algunos componentes puntuales
+   (p. ej. el pase de página del onboarding) además saltan la animación
+   por completo desde JS para un corte más limpio; esta regla es el
+   paraguas general para todo lo demás. */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* Accesibilidad: modo alto contraste — activable a mano desde Ajustes,
+   independiente del tema claro/oscuro/sepia (se combina con cualquiera de
+   los tres, .high-contrast se añade junto a .theme-*). Sube el piso de
+   opacidad de texto secundario al máximo, marca bordes y anillos de foco
+   más gruesos, y evita depender solo de color en los estados activos. */
+.high-contrast {
+    --border-color: color-mix(in srgb, var(--text-color) 45%, var(--border-color));
+}
+
+.high-contrast .opacity-30,
+.high-contrast .opacity-35,
+.high-contrast .opacity-40,
+.high-contrast .opacity-45,
+.high-contrast .opacity-50,
+.high-contrast .opacity-55,
+.high-contrast .opacity-60,
+.high-contrast .opacity-65,
+.high-contrast .opacity-70 {
+    opacity: 0.92 !important;
+}
+
+.high-contrast :focus-visible {
+    outline-width: 3px !important;
+    outline-offset: 3px !important;
+}
+
+.high-contrast button,
+.high-contrast input,
+.high-contrast select,
+.high-contrast textarea {
+    border-color: color-mix(in srgb, var(--text-color) 35%, transparent);
+}
+
 body {
     background-color: var(--bg-color);
     color: var(--text-color);
@@ -511,6 +581,11 @@ body {
 
 .virtual-list-spacer > div {
     will-change: transform;
+}
+
+.series-library-group {
+    content-visibility: auto;
+    contain-intrinsic-size: 700px;
 }
 
 .book-container {
@@ -1023,6 +1098,19 @@ body {
     opacity: 0.45;
 }
 
+.onboarding-book-later {
+    background: transparent;
+    border-color: transparent;
+    color: rgba(255,255,255,0.42);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.onboarding-book-later:hover:not(:disabled) {
+    color: rgba(255,255,255,0.75);
+    transform: none;
+}
+
 .onboarding-book-turn-page {
     position: absolute;
     z-index: 20;
@@ -1091,6 +1179,14 @@ body {
 
 .onboarding-book.turn-back .onboarding-book-turn-back {
     border-radius: 0 28px 28px 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .onboarding-book.turn-next.is-turning .onboarding-book-turn-page,
+    .onboarding-book.turn-back.is-turning .onboarding-book-turn-page {
+        animation: none;
+        opacity: 0;
+    }
 }
 
 @keyframes pageTurnNext {
@@ -1321,9 +1417,22 @@ body {
     font-family: "OpenDyslexic", "Atkinson Hyperlegible", Verdana, Arial, sans-serif !important;
 }
 
+/* Guías habituales de legibilidad para dislexia, más allá de la tipografía:
+   más interlineado en texto de lectura (no en controles de una sola línea,
+   donde solo agrandaría la caja sin aportar nada) y sin cursiva — la
+   itálica es una de las formas que más cuesta distinguir letra a letra. */
+.addon-dyslexia p,
 .addon-dyslexia .book-info-under .title,
 .addon-dyslexia .book-info-under .author {
-    line-height: 1.45;
+    line-height: 1.6;
+}
+
+.addon-dyslexia em,
+.addon-dyslexia i,
+.addon-dyslexia .italic {
+    font-style: normal;
+    text-decoration: underline;
+    text-decoration-style: dotted;
 }
 
 .addon-dynamic-covers .book-container .book-cover {
@@ -2188,16 +2297,15 @@ body {
     image-rendering: pixelated;
 }
 
-.book-roulette-modal {
-    width: min(520px, 100%);
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 30px;
-    padding: 28px;
-    color: white;
-    background:
-        radial-gradient(circle at 20% 10%, rgba(14,165,233,0.24), transparent 34%),
-        linear-gradient(145deg, rgba(15,23,42,0.98), rgba(30,41,59,0.96));
-    box-shadow: 0 30px 90px rgba(2, 6, 23, 0.55);
+/* Revelado del libro ganador de la ruleta (BookRouletteModal.jsx) */
+.roulette-winner-pop {
+    animation: rouletteWinnerPop 0.5s cubic-bezier(0.2, 0.8, 0.3, 1.3) both;
+}
+
+@keyframes rouletteWinnerPop {
+    0% { opacity: 0; transform: scale(0.75) translateY(10px); }
+    60% { opacity: 1; transform: scale(1.04) translateY(0); }
+    100% { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 /* Zonas de navegación del lector */

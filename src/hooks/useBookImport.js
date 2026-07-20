@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, startTransition } from 'react';
 import { saveBookToDB, saveBooksToDB } from '../db';
 import { extractEpubMeta } from '../epubMeta';
+import { resizeCoverDataUrl } from '../coverResize';
 import {
     getBookDedupKey,
     getBookTitleDedupKey,
@@ -9,9 +10,23 @@ import {
 } from '../bookModel';
 import { buildNewBookRecord } from '../bookImportHelpers';
 
+// Motivo corto y humano para cada código de error que puede devolver
+// main.js al leer un archivo — antes todo caía en el mismo "No se pudo leer
+// el archivo" genérico sin decir por qué, obligando a adivinar o revisar el
+// diagnóstico exportado.
+const IMPORT_ERROR_LABELS = {
+    NOT_FOUND: 'Archivo no encontrado',
+    EMPTY: 'Archivo vacío',
+    EACCES: 'Sin permisos para leerlo',
+    EPERM: 'Sin permisos para leerlo',
+    EISDIR: 'Es una carpeta, no un archivo',
+    UNREADABLE: 'No se pudo leer',
+};
+
+export const describeImportErrorCode = (code) => IMPORT_ERROR_LABELS[code] || 'No se pudo importar';
+
 export function useBookImport({
     setBooks,
-    activeObjectUrlsRef,
     bookDedupKeysRef,
     bookTitleDedupKeysRef,
     fileInputRef,
@@ -22,6 +37,7 @@ export function useBookImport({
     externalCatalogState,
     setExternalCatalogState,
     bookPayloadsToFiles,
+    recordImportEvent,
 }) {
     const [isDragging, setIsDragging] = useState(false);
     const [folderImport, setFolderImport] = useState(null);
@@ -40,6 +56,11 @@ export function useBookImport({
         }
         if (!entry.path || !window.electronAPI?.readBookFile) return null;
         const payload = await window.electronAPI.readBookFile(entry.path);
+        if (payload?.__importError) {
+            const err = new Error(describeImportErrorCode(payload.code));
+            err.code = payload.code;
+            throw err;
+        }
         return payload ? (bookPayloadsToFiles([payload])[0] || null) : null;
     }, [bookPayloadsToFiles]);
 
@@ -47,6 +68,10 @@ export function useBookImport({
 
     const beginFolderImportSession = useCallback((session, folderName = 'Carpeta') => {
         if (!session?.sessionId) return false;
+        if (activeFolderImportIdRef.current && activeFolderImportIdRef.current !== session.sessionId) {
+            window.electronAPI?.cancelFolderImport?.(session.sessionId).catch(() => {});
+            return false;
+        }
         activeFolderImportIdRef.current = session.sessionId;
         cancelFolderImportRef.current = false;
         folderImportQueueRef.current = [];
@@ -72,6 +97,9 @@ export function useBookImport({
     const processFiles = useCallback(async (files, options = {}) => {
         const valid = files.filter(f => /\.(epub|pdf)$/i.test(f.name));
         if (!valid.length) { showNoticeToast('Solo se aceptan archivos .epub y .pdf', 'warning'); return; }
+        if (options.shouldContinue && !options.shouldContinue()) {
+            return { added: 0, skipped: 0, cancelled: true };
+        }
 
         const existingKeys = new Set(bookDedupKeysRef.current);
         const existingTitleKeys = new Set(bookTitleDedupKeysRef.current);
@@ -115,17 +143,15 @@ export function useBookImport({
             ]);
 
         const unknownAuthor = t.unknownAuthor || 'Autor desconocido';
-        const newBooks = uniqueValid.map(file => ({
-            ...buildNewBookRecord(file, { unknownAuthorLabel: unknownAuthor }),
-            url: URL.createObjectURL(file),
-        }));
+        const newBooks = uniqueValid.map(file =>
+            buildNewBookRecord(file, { unknownAuthorLabel: unknownAuthor })
+        );
 
         newBooks.forEach(book => {
             bookDedupKeysRef.current.add(getBookDedupKey(book));
             bookTitleDedupKeysRef.current.add(getBookTitleDedupKey(book));
         });
 
-        newBooks.forEach(b => { if (b.url) activeObjectUrlsRef.current.add(b.url); });
         setBooks(prev => [...prev, ...newBooks]);
 
         if (duplicateNames.length) {
@@ -133,11 +159,12 @@ export function useBookImport({
             showNoticeToast(`${duplicateNames.length} libro(s) duplicado(s) omitidos.`, 'warning');
         }
 
-        (async () => {
+        const metadataTask = (async () => {
             for (const book of newBooks) {
                 if (options.shouldContinue && !options.shouldContinue()) break;
 
                 await saveBookToDB(toStoredBookRecord(book));
+                if (options.shouldContinue && !options.shouldContinue()) break;
                 let metadataNotified = false;
                 const notifyMetadataProcessed = (result = null) => {
                     if (metadataNotified) return;
@@ -161,16 +188,22 @@ export function useBookImport({
                         await yieldToUi();
                         continue;
                     }
+                    if (options.shouldContinue && !options.shouldContinue()) break;
 
                     const title = (meta.title || '').trim() || book.originalTitle;
                     const creator = (meta.creator || '').trim() || book.originalAuthor;
+                    // La portada llega a resolución original (a veces 1-2MB) tanto desde
+                    // extractEpubMeta como desde nativeMeta (importación de carpeta) — se
+                    // reduce a tamaño de miniatura aquí, único punto por el que pasan ambas
+                    // rutas, para no cargar cientos de MB en memoria con bibliotecas grandes.
+                    const resizedCover = meta.coverBase64 ? await resizeCoverDataUrl(meta.coverBase64) : null;
                     const updated = {
                         name: title,
                         author: creator,
                         originalTitle: title,
                         originalAuthor: creator,
-                        coverBase64: meta.coverBase64 || null,
-                        coverUrl: meta.coverBase64 || null,
+                        coverBase64: resizedCover,
+                        coverUrl: resizedCover,
                         description: meta.description || '',
                         publisher: meta.publisher || '',
                         tags: meta.subject || '',
@@ -182,6 +215,7 @@ export function useBookImport({
                         setBooks(prev => updateBookInList(prev, book.id, updated));
                     });
                     await saveBookToDB(toStoredBookRecord({ ...book, ...updated }, {}, { includeFile: false }));
+                    if (options.shouldContinue && !options.shouldContinue()) break;
                     notifyMetadataProcessed(updated);
                 } catch (err) {
                     console.error('[SharkReader] Error finalizando metadata del libro:', book.name, err);
@@ -190,9 +224,15 @@ export function useBookImport({
 
                 await yieldToUi();
             }
-        })().catch(err => console.error('[SharkReader] Error procesando metadata en segundo plano:', err));
+        })();
+
+        if (options.awaitMetadata) {
+            await metadataTask;
+        } else {
+            metadataTask.catch(err => console.error('[SharkReader] Error procesando metadata en segundo plano:', err));
+        }
         return { added: newBooks.length, skipped: duplicateNames.length, duplicates: duplicateNames };
-    }, [bookDedupKeysRef, bookTitleDedupKeysRef, activeObjectUrlsRef, setBooks, showNoticeToast, t, yieldToUi]);
+    }, [bookDedupKeysRef, bookTitleDedupKeysRef, setBooks, showNoticeToast, t, yieldToUi]);
 
     const finishFolderImportOverlay = useCallback((updater) => {
         setFolderImport(prev => {
@@ -201,27 +241,44 @@ export function useBookImport({
             if (!next) return next;
             if (next.phase === 'done' || next.phase === 'cancelled' || next.phase === 'error' || next.phase === 'empty') {
                 activeFolderImportIdRef.current = null;
+                if (next.phase === 'done') {
+                    recordImportEvent?.({
+                        folderName: next.folderName || 'Importación',
+                        addedCount: next.addedCount || 0,
+                        failedCount: (next.failedFiles || []).length,
+                        skippedDuplicates: next.skippedDuplicates || 0,
+                    });
+                }
                 if (next.phase === 'done' && (next.failedFiles || []).length > 0) {
                     setFailedImportRetryQueue(next.failedFiles || []);
                     return next;
                 }
-                clearTimeout(overlayDismissTimerRef.current);
-                overlayDismissTimerRef.current = setTimeout(() => {
-                    setFolderImport(current => current?.sessionId === next.sessionId ? null : current);
-                    overlayDismissTimerRef.current = null;
-                }, next.phase === 'done' ? 1400 : 1800);
+                // 'error' no se autodescarta: el detalle puede ser el único diagnóstico
+                // disponible y 1-2s no alcanza para leerlo — el usuario lo cierra cuando
+                // quiera con el botón "Cerrar" (igual que el resto de fases terminales).
+                if (next.phase !== 'error') {
+                    clearTimeout(overlayDismissTimerRef.current);
+                    overlayDismissTimerRef.current = setTimeout(() => {
+                        setFolderImport(current => current?.sessionId === next.sessionId ? null : current);
+                        overlayDismissTimerRef.current = null;
+                    }, next.phase === 'done' ? 1400 : 1800);
+                }
             }
             return next;
         });
     }, []);
 
     const clearImportRuntime = useCallback(() => {
+        const sessionId = activeFolderImportIdRef.current;
         cancelFolderImportRef.current = true;
         folderImportQueueRef.current = [];
         folderImportProcessingRef.current = false;
         activeFolderImportIdRef.current = null;
         clearTimeout(overlayDismissTimerRef.current);
         overlayDismissTimerRef.current = null;
+        if (sessionId && window.electronAPI?.cancelFolderImport) {
+            window.electronAPI.cancelFolderImport(sessionId).catch(() => {});
+        }
     }, []);
 
     const resetImportState = useCallback(() => {
@@ -251,9 +308,11 @@ export function useBookImport({
                     }
 
                     let file = null;
+                    let importErrorMsg = null;
                     try {
                         file = await resolveImportEntryToFile(entry);
                     } catch (err) {
+                        importErrorMsg = err?.message || null;
                         console.error('[SharkReader] No se pudo leer el archivo de la cola de importacion:', entry?.path || entry?.name, err);
                     }
 
@@ -264,7 +323,7 @@ export function useBookImport({
                             const failedFile = {
                                 name: entry?.name || entry?.path || 'Archivo desconocido',
                                 path: entry?.path || null,
-                                reason: 'No se pudo leer el archivo',
+                                reason: importErrorMsg || 'No se pudo leer el archivo',
                             };
                             const readyForDone = prev.scanFinished && metadataProcessed >= (prev.total || 0) && folderImportQueueRef.current.length === 0;
                             return {
@@ -279,7 +338,11 @@ export function useBookImport({
                     }
 
                     await processFiles([file], {
-                        shouldContinue: () => !cancelFolderImportRef.current,
+                        awaitMetadata: true,
+                        shouldContinue: () => (
+                            !cancelFolderImportRef.current &&
+                            activeFolderImportIdRef.current === nextBatch.sessionId
+                        ),
                         onFileSkipped: (_, reason) => {
                             if (reason !== 'duplicate') return;
                             finishFolderImportOverlay(prev => {
@@ -331,6 +394,7 @@ export function useBookImport({
 
         cancelFolderImportRef.current = true;
         folderImportQueueRef.current = [];
+        activeFolderImportIdRef.current = null;
         setFolderImport(prev => prev && prev.sessionId === sessionId ? { ...prev, isCancelling: true } : prev);
         finishFolderImportOverlay(prev => prev && prev.sessionId === sessionId ? {
             ...prev,
@@ -383,7 +447,11 @@ export function useBookImport({
                 const file = await resolveImportEntryToFile(entry);
                 if (!file) throw new Error('No se pudo leer el archivo');
                 await processFiles([file], {
-                    shouldContinue: () => !cancelFolderImportRef.current,
+                    awaitMetadata: true,
+                    shouldContinue: () => (
+                        !cancelFolderImportRef.current &&
+                        activeFolderImportIdRef.current === retrySessionId
+                    ),
                     onFileSkipped: (_, reason) => {
                         if (reason !== 'duplicate') return;
                         setFolderImport(prev => prev?.sessionId === retrySessionId ? {
@@ -481,7 +549,7 @@ export function useBookImport({
                         error: payload.error,
                         failedFiles: [
                             ...(prev.failedFiles || []),
-                            { name: prev.folderName || 'Importacion', path: null, reason: payload.error },
+                            { name: prev.folderName || 'Importación', path: null, reason: payload.error },
                         ],
                     };
                 }
@@ -499,14 +567,14 @@ export function useBookImport({
             });
         };
 
-        window.electronAPI.onFolderImportProgress(handleProgress);
-        window.electronAPI.onFolderImportBatch(handleBatch);
-        window.electronAPI.onFolderImportDone(handleDone);
+        const progressSubscription = window.electronAPI.onFolderImportProgress(handleProgress);
+        const batchSubscription = window.electronAPI.onFolderImportBatch(handleBatch);
+        const doneSubscription = window.electronAPI.onFolderImportDone(handleDone);
 
         return () => {
-            window.electronAPI.offFolderImportProgress();
-            window.electronAPI.offFolderImportBatch();
-            window.electronAPI.offFolderImportDone();
+            window.electronAPI.offFolderImportProgress(progressSubscription);
+            window.electronAPI.offFolderImportBatch(batchSubscription);
+            window.electronAPI.offFolderImportDone(doneSubscription);
         };
     }, [finishFolderImportOverlay, pumpFolderImportQueue]);
 
@@ -534,15 +602,28 @@ export function useBookImport({
                 console.error('[SharkReader] Error abriendo archivo desde IPC:', e);
             }
         };
-        window.electronAPI.onOpenFile(handler);
-        return () => window.electronAPI.offOpenFile();
+        const subscription = window.electronAPI.onOpenFile(handler);
+        window.electronAPI.rendererReady?.().catch(() => {});
+        return () => window.electronAPI.offOpenFile(subscription);
     }, [processFiles, bookPayloadsToFiles]);
 
-    const handleDragOver = (e) => { e.preventDefault(); if (view === 'library') setIsDragging(true); };
-    const handleDragLeave = (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setIsDragging(false); };
-    const handleDrop = (e) => { e.preventDefault(); setIsDragging(false); if (view !== 'library') return; processFiles(Array.from(e.dataTransfer.files)); };
+    const handleDragOver = useCallback((e) => {
+        e.preventDefault();
+        if (view === 'library') setIsDragging(true);
+    }, [view]);
 
-    const openFilePicker = async () => {
+    const handleDragLeave = useCallback((e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) setIsDragging(false);
+    }, []);
+
+    const handleDrop = useCallback((e) => {
+        e.preventDefault();
+        setIsDragging(false);
+        if (view !== 'library') return;
+        processFiles(Array.from(e.dataTransfer.files));
+    }, [processFiles, view]);
+
+    const openFilePicker = useCallback(async () => {
         if (window.electronAPI?.pickBookFiles) {
             const payloads = await window.electronAPI.pickBookFiles();
             const files = bookPayloadsToFiles(payloads);
@@ -552,12 +633,14 @@ export function useBookImport({
         if (!fileInputRef.current) return;
         fileInputRef.current.value = '';
         fileInputRef.current.click();
-    };
+    }, [bookPayloadsToFiles, fileInputRef, processFiles]);
 
-    const openFolderPicker = async () => {
+    const openFolderPicker = useCallback(async () => {
         if (window.electronAPI?.startFolderImport) {
             const session = await window.electronAPI.startFolderImport();
-            if (session?.sessionId) beginFolderImportSession(session);
+            if (session?.sessionId && !beginFolderImportSession(session)) {
+                showNoticeToast('Ya hay una importación en curso.', 'warning');
+            }
             return;
         }
         if (window.electronAPI?.pickBookFolder) {
@@ -569,9 +652,9 @@ export function useBookImport({
         if (!folderInputRef.current) return;
         folderInputRef.current.value = '';
         folderInputRef.current.click();
-    };
+    }, [beginFolderImportSession, bookPayloadsToFiles, folderInputRef, processFiles, showNoticeToast]);
 
-    const handleFilesUpload = async (e) => {
+    const handleFilesUpload = useCallback(async (e) => {
         const selectedFiles = Array.from(e.target.files || []);
         try {
             await processFiles(selectedFiles);
@@ -583,7 +666,7 @@ export function useBookImport({
             if (fileInputRef.current) fileInputRef.current.value = '';
             if (folderInputRef.current) folderInputRef.current.value = '';
         }
-    };
+    }, [fileInputRef, folderInputRef, processFiles, showNoticeToast, t.importFailed]);
 
     const importExternalCatalogEntry = useCallback(async (entry) => {
         if (!entry?.downloadUrl || !window.electronAPI?.downloadExternalBook) return;

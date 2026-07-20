@@ -20,19 +20,56 @@ function fmtTime(mins) {
     return `${mins}m`;
 }
 
-const AchievementCard = ({ achievement, unlocked, unlockedAt }) => {
+// Progreso numérico aproximado para logros con un umbral simple codificado en
+// el id (library_20, streak_7, time_60...) — no cubre los logros con lógica
+// compleja (nivel, series, addons), que simplemente no muestran barra.
+const PROGRESS_GETTERS = {
+    library: ({ books }) => books.filter(b => !b.loading).length,
+    books_finished: ({ books }) => books.filter(b => b.isFinished).length,
+    streak: ({ stats }) => stats.streak || 0,
+    time: ({ stats }) => stats.timeRead || 0,
+    pages: ({ stats }) => stats.pagesTurned || 0,
+    bookmarks: ({ books }) => books.reduce((s, b) => s + (b.bookmarks?.length || 0), 0),
+    vocab: ({ vocabulary }) => vocabulary.length,
+    favorites: ({ books }) => books.filter(b => b.isFav).length,
+    roulette: ({ stats }) => stats.rouletteSpins || 0,
+};
+
+function getAchievementProgress(achievement, ctx) {
+    const match = achievement.id.match(/^([a-z_]+?)_(\d+)$/);
+    if (!match) return null;
+    const [, prefix, targetStr] = match;
+    const getter = PROGRESS_GETTERS[prefix];
+    if (!getter) return null;
+    const target = Number(targetStr);
+    if (!target) return null;
+    const current = getter(ctx);
+    return { current: Math.min(current, target), target };
+}
+
+const AchievementCard = ({ achievement, unlocked, unlockedAt, progress }) => {
     const r = RARITY[achievement.rarity];
+    const ratio = !unlocked && progress ? progress.current / progress.target : 0;
+    const showProgress = !unlocked && progress && ratio >= 0.8 && ratio < 1;
     return (
         <div title={unlocked ? `Desbloqueado ${unlockedAt ? new Date(unlockedAt).toLocaleDateString() : ''}` : 'Bloqueado'}
             className="rounded-2xl p-3 flex items-center gap-3 transition"
             style={{ backgroundColor: unlocked ? r.bg : 'rgba(128,128,128,0.05)', border: `1px solid ${unlocked ? r.border : 'rgba(128,128,128,0.1)'}`, opacity: unlocked ? 1 : 0.5 }}>
             <div className="text-2xl flex-shrink-0" style={{ filter: unlocked ? 'none' : 'grayscale(1)' }}>{achievement.emoji}</div>
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="font-black text-sm truncate">{achievement.name}</span>
                     <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full uppercase tracking-wider flex-shrink-0" style={{ backgroundColor: r.bg, color: r.color, border: `1px solid ${r.border}` }}>{r.label}</span>
                 </div>
                 <p className="text-[11px] opacity-60 leading-tight mt-0.5">{achievement.desc}</p>
+                {showProgress && (
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                        <div className="h-1 flex-1 rounded-full overflow-hidden" style={{ backgroundColor: 'rgba(128,128,128,0.2)' }}>
+                            <div className="h-full rounded-full" style={{ width: `${ratio * 100}%`, backgroundColor: r.color }} />
+                        </div>
+                        <span className="text-[9px] font-black opacity-50 flex-shrink-0">{progress.current}/{progress.target}</span>
+                    </div>
+                )}
             </div>
             {unlocked && (
                 <div className="flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
@@ -587,7 +624,7 @@ const AnalyticsView = ({ stats, books, vocabulary, achievements, yearlyGoal, add
                                     </div>
                                     <div className="grid sm:grid-cols-2 gap-2">
                                         {group.map(a => (
-                                            <AchievementCard key={a.id} achievement={a} unlocked={!!achievements[a.id]} unlockedAt={achievements[a.id]?.unlockedAt} />
+                                            <AchievementCard key={a.id} achievement={a} unlocked={!!achievements[a.id]} unlockedAt={achievements[a.id]?.unlockedAt} progress={getAchievementProgress(a, achievementContext)} />
                                         ))}
                                     </div>
                                 </div>

@@ -40,6 +40,14 @@ export function useUI() {
         setShowLoginModal(false);
         setShowUserMenu(false);
         setShowEditProfileModal(false);
+        setShowStreakModal(false);
+        setShowWorkshop(false);
+        setShowJournalModal(false);
+        setShowVocabPanel(false);
+        setShowAuthorSection(false);
+        setContextMenu(null);
+        setDraggedBookId(null);
+        setDropTargetCat(null);
         setNoticeToast(null);
         clearTimeout(noticeToastTimerRef.current);
     }, []);

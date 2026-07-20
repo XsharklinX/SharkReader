@@ -14,7 +14,12 @@ import {
     DIALOGUE, JOKE_POOL, CHAT_PATTERNS, CHAT_RESPONSES, SESSION_END, BOOK_OPENED,
     pickRandom, getLines, matchIntent, findSimilarBooks,
     getScriptedResponse, buildSystemPrompt, buildChatAIPrompt, buildSpecialAIPrompt,
+    PROMPT_VERSION,
 } from './sharkyDialogues';
+import { getActiveSeasonalEvent, getAppAnniversaryEvent } from './seasonalEvents';
+import { fetchAIMessage } from './ai';
+import { buildLocalSummary } from './localSummary';
+import { addDiagnosticEntry } from './diagnostics';
 
 const SharkyContext = createContext(null);
 
@@ -35,6 +40,8 @@ const SHARKY_EVENT_RULES = {
     anniversary: { priority: 'medium', cooldownMs: 0, expression: 'curious', emote: 'idea' },
     challengeCompleted: { priority: 'high', cooldownMs: 0, expression: 'laugh', emote: 'star' },
     sessionRecord: { priority: 'high', cooldownMs: 0, expression: 'happy', emote: 'star' },
+    seasonal: { priority: 'high', cooldownMs: 60 * 60 * 1000, expression: 'happy', emote: 'star' },
+    bookComment: { priority: 'medium', cooldownMs: 6 * 60 * 1000, expression: 'curious', emote: 'idea' },
 };
 
 const EVENT_FREQUENCY_PRIORITY = {
@@ -49,65 +56,7 @@ export const useSharky = () => {
     return ctx;
 };
 
-// ── AI helpers ─────────────────────────────────────────────────────────────
-async function fetchAIMessage({ provider, apiKey, prompt, history, maxTokens = 120 }) {
-    if (provider === 'gemini') {
-        const contents = [];
-        if (history && history.length > 0) {
-            history.forEach(m => {
-                contents.push({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.text }] });
-            });
-        }
-        contents.push({ role: 'user', parts: [{ text: prompt }] });
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents }),
-        });
-        if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            if (res.status === 429) throw new Error('Límite de velocidad alcanzado (Gemini). Espera unos segundos.');
-            if (res.status === 401 || res.status === 403) throw new Error('API key de Gemini inválida o sin permisos.');
-            throw new Error(`Gemini ${res.status}: ${body?.error?.message || res.statusText}`);
-        }
-        const data = await res.json();
-        return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
-    }
-    // OpenAI-compatible providers (xAI, OpenAI, OpenRouter, Mistral)
-    const OAI_CONFIG = {
-        xai:        { url: 'https://api.x.ai/v1/chat/completions',             model: 'grok-3-mini' },
-        openai:     { url: 'https://api.openai.com/v1/chat/completions',        model: 'gpt-4o-mini' },
-        openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions',     model: 'meta-llama/llama-3.1-8b-instruct:free' },
-        mistral:    { url: 'https://api.mistral.ai/v1/chat/completions',        model: 'mistral-small-latest' },
-    };
-    if (OAI_CONFIG[provider]) {
-        const { url, model } = OAI_CONFIG[provider];
-        const messages = [];
-        if (history?.length > 0) {
-            history.forEach(m => messages.push({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }));
-        }
-        messages.push({ role: 'user', content: prompt });
-        const extraHeaders = provider === 'openrouter'
-            ? { 'HTTP-Referer': 'https://sharkreader.app', 'X-Title': 'SharkReader' }
-            : {};
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}`, ...extraHeaders },
-            body: JSON.stringify({ model, messages, max_tokens: maxTokens }),
-        });
-        if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            if (res.status === 429) throw new Error(`Límite de velocidad alcanzado (${provider}). Espera unos segundos.`);
-            if (res.status === 401) throw new Error(`API key inválida (${provider})`);
-            if (res.status === 403) throw new Error(`Sin permisos (${provider})`);
-            throw new Error(`${provider} ${res.status}: ${body?.error?.message || res.statusText}`);
-        }
-        const data = await res.json();
-        return data?.choices?.[0]?.message?.content?.trim() || null;
-    }
-    return null;
-}
+// fetchAIMessage vive en ./ai.js (aislado de este contexto — ver import arriba).
 
 
 export const SharkyProvider = ({
@@ -336,7 +285,7 @@ export const SharkyProvider = ({
                 });
             }
         } catch (err) {
-            console.warn('[SharkReader] Sharky AI chat failed:', err);
+            addDiagnosticEntry('warning', `Sharky AI chat failed: ${err?.message || err}`, { source: 'ai', flow: 'chat', promptVersion: PROMPT_VERSION });
         }
 
         if (!reply) {
@@ -387,7 +336,13 @@ export const SharkyProvider = ({
                 });
             }
         } catch (err) {
-            console.warn('[SharkReader] Sharky special command failed:', err);
+            addDiagnosticEntry('warning', `Sharky special command (${type}) failed: ${err?.message || err}`, { source: 'ai', flow: 'specialCommand', promptVersion: PROMPT_VERSION });
+        }
+
+        if (!reply && type === 'summary') {
+            // Sin IA (o si falló), un resumen local extractivo a partir de las
+            // propias anotaciones sigue siendo mejor que un simple "actívala".
+            reply = buildLocalSummary(currentBook, { lang: l });
         }
 
         if (!reply) {
@@ -397,8 +352,8 @@ export const SharkyProvider = ({
                     en: currentBook ? `What do you think of "${currentBook.name}" so far?` : 'Tell me what you are reading!',
                 },
                 summary: {
-                    es: '¡Activa la IA en los ajustes de Sharky para obtener resúmenes de capítulos!',
-                    en: 'Enable AI in Sharky settings to get chapter summaries!',
+                    es: '¡Activa la IA en los ajustes de Sharky para obtener resúmenes de capítulos! (O deja algunos subrayados/notas y te armo un resumen con eso.)',
+                    en: 'Enable AI in Sharky settings to get chapter summaries! (Or leave some highlights/notes and I\'ll build a summary from those.)',
                 },
                 quiz: {
                     es: '¡Activa la IA en los ajustes de Sharky para el modo quiz!',
@@ -448,12 +403,45 @@ export const SharkyProvider = ({
                 return true;
             }
         } catch (err) {
-            console.warn('[SharkReader] Sharky AI message failed:', err);
+            addDiagnosticEntry('warning', `Sharky ambient AI message failed: ${err?.message || err}`, { source: 'ai', flow: 'ambient', promptVersion: PROMPT_VERSION });
         } finally {
             aiRequestInFlightRef.current = false;
         }
         return false;
     }, [addonConfig.sharkyMascot, books, clearMoodEventAfter, dailyGoalMins, globalAiApiKey, globalAiProvider, lang, readerLevel, stats]);
+
+    // ── IA: comentario sobre el libro que se está leyendo ahora ──
+    // Presencia opt-in (aparte de aiEnabled): comentarios contextuales sobre el
+    // libro abierto, no solo respuestas de chat a demanda.
+    const bookCommentInFlightRef = useRef(false);
+    const fetchAndShowBookComment = useCallback(async () => {
+        const cfg = addonConfig.sharkyMascot || {};
+        const resolvedAI = resolveAIConfig(cfg, globalAiProvider, globalAiApiKey);
+        if (!cfg.aiEnabled || !cfg.aiBookComments || !resolvedAI.apiKey || !resolvedAI.provider) return false;
+        const currentBook = booksById.get(lastReadId) || null;
+        if (!currentBook) return false;
+        if (bookCommentInFlightRef.current) return false;
+        bookCommentInFlightRef.current = true;
+        try {
+            const personality = cfg.personality || 'friendly';
+            const msg = await fetchAIMessage({
+                provider: resolvedAI.provider,
+                apiKey: resolvedAI.apiKey,
+                prompt: buildSpecialAIPrompt('bookTalk', { lang, personality, books, stats, readerLevel, dailyGoalMins, currentBook }),
+                maxTokens: 120,
+            });
+            if (msg) {
+                if (!isMountedRef.current) return false;
+                emitSharkyEvent('bookComment', { message: msg, duration: 4600 });
+                return true;
+            }
+        } catch (err) {
+            addDiagnosticEntry('warning', `Sharky book comment failed: ${err?.message || err}`, { source: 'ai', flow: 'bookComment', promptVersion: PROMPT_VERSION });
+        } finally {
+            bookCommentInFlightRef.current = false;
+        }
+        return false;
+    }, [addonConfig.sharkyMascot, booksById, lastReadId, lang, books, stats, readerLevel, dailyGoalMins, emitSharkyEvent, globalAiApiKey, globalAiProvider]);
 
     // ── Efecto: modo concentración ──
     useEffect(() => {
@@ -468,6 +456,16 @@ export const SharkyProvider = ({
         }
     }, [addons.sharkyMascot, lang, scheduleSharkyTimeout, userProfile, view]);
 
+    // ── Efecto: comentarios periódicos de IA mientras se lee ──
+    useEffect(() => {
+        const cfg = addonConfig.sharkyMascot || {};
+        if (!addons.sharkyMascot || !userProfile || view !== 'reader') return;
+        if (!cfg.aiEnabled || !cfg.aiBookComments) return;
+        const tick = () => { if (!document.hidden) fetchAndShowBookComment(); };
+        const timer = setInterval(tick, 7 * 60 * 1000);
+        return () => clearInterval(timer);
+    }, [addons.sharkyMascot, addonConfig.sharkyMascot?.aiEnabled, addonConfig.sharkyMascot?.aiBookComments, fetchAndShowBookComment, userProfile, view]);
+
     // ── Efecto: nuevo logro ──
     useEffect(() => {
         if (!addons.sharkyMascot || !userProfile || !achievementToast) return;
@@ -476,6 +474,32 @@ export const SharkyProvider = ({
             force: true,
         });
     }, [achievementToast, addons.sharkyMascot, emitSharkyEvent, lang, userProfile]);
+
+    // ── Efecto: eventos estacionales (calendario + aniversario de cuenta) ──
+    // Se muestran como mucho una vez por día (persistido, sobrevive a reinicios).
+    const seasonalShownRef = useRef({});
+    useEffect(() => {
+        loadAppData('sharkySeasonalShown').then(data => {
+            if (data && typeof data === 'object') seasonalShownRef.current = data;
+        });
+    }, []);
+    useEffect(() => {
+        if (!addons.sharkyMascot || !userProfile) return;
+        const l = lang === 'en' ? 'en' : 'es';
+        const dateKey = new Date().toDateString();
+        const candidates = [
+            getActiveSeasonalEvent(new Date(), l),
+            getAppAnniversaryEvent(userProfile.joinedAt, Date.now(), l),
+        ].filter(Boolean);
+        candidates.forEach(event => {
+            if (seasonalShownRef.current[event.id] === dateKey) return;
+            const shown = emitSharkyEvent('seasonal', { message: event.message, duration: 5200 });
+            if (shown) {
+                seasonalShownRef.current = { ...seasonalShownRef.current, [event.id]: dateKey };
+                saveAppData('sharkySeasonalShown', seasonalShownRef.current);
+            }
+        });
+    }, [addons.sharkyMascot, userProfile, lang, emitSharkyEvent]);
 
     // ── Efecto: mensajes periódicos ──
     useEffect(() => {

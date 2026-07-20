@@ -32,6 +32,12 @@ describe('normalizeAnnotationText', () => {
     it('devuelve el note tal cual (recortado) para notas/bookmarks', () => {
         expect(normalizeAnnotationText({ kind: 'note', note: '  una nota  ' })).toBe('una nota');
     });
+    it('extrae texto de highlights PDF estructurados', () => {
+        expect(normalizeAnnotationText({
+            kind: 'highlight',
+            note: JSON.stringify({ pageNum: 12, color: 'blue', text: 'Texto del PDF' }),
+        })).toBe('Texto del PDF');
+    });
 });
 
 const BOOK_A = {
@@ -66,6 +72,22 @@ describe('buildAnnotationEntries', () => {
         const note = entries.find(e => e.kind === 'note');
         expect(highlight.colorLabel).toBe('Importante');
         expect(note.colorLabel).toBe('');
+    });
+
+    it('normaliza color y pagina de highlights PDF', () => {
+        const pdfBook = {
+            id: 'pdf-1',
+            name: 'Documento',
+            bookmarks: [{
+                cfi: 'pdf-highlight-1',
+                kind: 'highlight',
+                note: JSON.stringify({ pageNum: 8, color: 'pink', text: 'Una cita PDF' }),
+            }],
+        };
+        const [entry] = buildAnnotationEntries([pdfBook], { getColorLabel: color => color });
+        expect(entry.text).toBe('Una cita PDF');
+        expect(entry.color).toBe('pink');
+        expect(entry.page).toBe(8);
     });
 
     it('usa el fallback interno de color si no se inyecta getColorLabel', () => {

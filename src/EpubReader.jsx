@@ -6,6 +6,10 @@ import { getCachedLocations, setCachedLocations } from './locationsCache';
 import EpubReaderSettings, { READING_PRESETS } from './EpubReaderSettings';
 import { useHighlightLabels } from './highlightLabels';
 import { splitIntoSpeechChunks } from './ttsChunks';
+import { NEURAL_VOICES } from './ttsVoices';
+import { useReaderSearchTask } from './hooks/useReaderSearchTask';
+import ReaderSearchExcerpt from './ReaderSearchExcerpt';
+import { addDiagnosticEntry } from './diagnostics';
 
 function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg, customText, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme }) {
     const fontStack =
@@ -60,23 +64,6 @@ function buildSharkCss({ fontFamily, fontSize, lineHeight, pageMargins, customBg
     return lines.join('\n');
 }
 
-// Voces neuronales del Edge Read Aloud API (requieren internet, calidad casi humana)
-const NEURAL_VOICES = [
-    { id: 'es-ES-ElviraNeural', label: 'Elvira — España (F)' },
-    { id: 'es-ES-AlvaroNeural', label: 'Álvaro — España (M)' },
-    { id: 'es-MX-DaliaNeural', label: 'Dalia — México (F)' },
-    { id: 'es-MX-JorgeNeural', label: 'Jorge — México (M)' },
-    { id: 'es-DO-RamonaNeural', label: 'Ramona — Rep. Dominicana (F)' },
-    { id: 'es-DO-EmilioNeural', label: 'Emilio — Rep. Dominicana (M)' },
-    { id: 'es-AR-ElenaNeural', label: 'Elena — Argentina (F)' },
-    { id: 'es-AR-TomasNeural', label: 'Tomás — Argentina (M)' },
-    { id: 'es-CO-SalomeNeural', label: 'Salomé — Colombia (F)' },
-    { id: 'es-CO-GonzaloNeural', label: 'Gonzalo — Colombia (M)' },
-    { id: 'en-US-AriaNeural', label: 'Aria — English US (F)' },
-    { id: 'en-US-GuyNeural', label: 'Guy — English US (M)' },
-    { id: 'en-GB-SoniaNeural', label: 'Sonia — English UK (F)' },
-];
-
 const HIGHLIGHT_PRESETS = {
     yellow: { label: 'Importante', fill: 'rgba(250, 204, 21, 0.62)' },
     green:  { label: 'Idea',       fill: 'rgba(34, 197, 94, 0.55)'  },
@@ -96,7 +83,7 @@ function formatRemainingText(minutes, lang) {
     return `${mins}min para terminar`;
 }
 
-const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout, updateLocationAndProgress, toggleBookmark, isFullscreen, focusMode, pageTransition, smartTocAddon, dyslexiaAddon, dyslexiaModeActive, onToggleDyslexiaMode, onClose, onOpenSettings, onStatsUpdate, onOpenBookInfo, onSaveWord, aiProvider, aiApiKey, tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary, onToggleSpread }) => {
+const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout, updateLocationAndProgress, toggleBookmark, isFullscreen, focusMode, pageTransition, smartTocAddon, dyslexiaAddon, dyslexiaModeActive, onToggleDyslexiaMode, onClose, onOpenSettings, onStatsUpdate, onOpenBookInfo, onSaveWord, tabs, activeTabId, allBooks, onSwitchTab, onCloseTab, onGoToLibrary, onToggleSpread, onPersistReaderPreferences }) => {
         const viewerRef = useRef(null);
         const renditionRef = useRef(null);
         const bookRef = useRef(null);
@@ -119,7 +106,17 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
         const highlightLabels = useHighlightLabels();
         const _bookFontKey = `sr_font_${bookData.id}`;
-        const _savedFont = (() => { try { const r = localStorage.getItem(_bookFontKey); return r ? JSON.parse(r) : null; } catch { return null; } })();
+        const _savedFont = (() => {
+            if (bookData.readerPreferences && typeof bookData.readerPreferences === 'object') {
+                return bookData.readerPreferences;
+            }
+            try {
+                const raw = localStorage.getItem(_bookFontKey);
+                return raw ? JSON.parse(raw) : null;
+            } catch {
+                return null;
+            }
+        })();
         const [fontSize, setFontSize] = useState(_savedFont?.fontSize ?? 110);
         const [fontFamily, setFontFamily] = useState(_savedFont?.fontFamily ?? 'Inter');
         const [lineHeight, setLineHeight] = useState(_savedFont?.lineHeight ?? 1.6);
@@ -161,6 +158,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const ttsVoiceRef = useRef(ttsVoiceURI);
         const ttsHighlightRef = useRef(null);       // elemento sombreado actualmente
         const stopTtsRef = useRef(() => {});        // acceso a stopTts desde callbacks definidos antes
+        const restartTtsFromCurrentRef = useRef(() => {}); // idem, para el fallback de resumeTts
         const jumpTtsToElementRef = useRef(() => {}); // salta la lectura al párrafo clicado
         const advanceTtsPageRef = useRef(() => {});   // pasa página y sigue leyendo (reusado al pasar página a mano)
         const ttsEngineRef = useRef(ttsEngine);
@@ -195,6 +193,13 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const [searchActiveIndex, setSearchActiveIndex] = useState(-1);
         const [isSearching, setIsSearching] = useState(false);
         const searchInputRef = useRef(null);
+        const { beginSearchTask, cancelSearchTask } = useReaderSearchTask();
+
+        useEffect(() => {
+            if (showSearch) return;
+            cancelSearchTask();
+            setIsSearching(false);
+        }, [showSearch, cancelSearchTask]);
         const [showAnnotationsPanel, setShowAnnotationsPanel] = useState(false);
 
         const [bookmarkNote, setBookmarkNote] = useState('');
@@ -223,6 +228,9 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const [showChapterHint, setShowChapterHint] = useState(false);
         const prevChapterRef = useRef(null);
         const chapterHintTimerRef = useRef(null);
+        // Anuncio para lectores de pantalla — cambia de página/capítulo es
+        // invisible sin ver la pantalla; esta región aria-live lo dice en voz.
+        const [readerAnnouncement, setReaderAnnouncement] = useState('');
         const [tocCollapsed, setTocCollapsed] = useState(false);
         const [tocSearch, setTocSearch] = useState('');
         const [tocActiveHref, setTocActiveHref] = useState('');
@@ -233,7 +241,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         const [letterSpacing, setLetterSpacing] = useState(_savedFont?.letterSpacing ?? 0);
         const [hyphenation, setHyphenation] = useState(_savedFont?.hyphenation ?? false);
         const [paragraphSpacing, setParagraphSpacing] = useState(_savedFont?.paragraphSpacing ?? 0);
-        const [columnWidth, setColumnWidth] = useState(() => readFlow === 'scrolled-doc' ? 'narrow' : 'normal');
+        const [columnWidth, setColumnWidth] = useState(() => _savedFont?.columnWidth || (readFlow === 'scrolled-doc' ? 'narrow' : 'normal'));
         const dyslexiaPreviousRef = useRef(null);
         const estimatedRemainingText = useMemo(() => {
             const progress = Number(currentPercent || 0);
@@ -517,10 +525,19 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             }, { passive: true });
                             // Relay arrow keys from inside the epub iframe to the parent
                             el.addEventListener('keydown', (e) => {
+                                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+                                    e.preventDefault();
+                                    window.dispatchEvent(new CustomEvent('epub-keydown', {
+                                        detail: { key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey },
+                                    }));
+                                    return;
+                                }
                                 if (readFlow !== 'paginated') return;
                                 if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
                                     e.preventDefault();
-                                    window.dispatchEvent(new CustomEvent('epub-keydown', { detail: { key: e.key } }));
+                                    window.dispatchEvent(new CustomEvent('epub-keydown', {
+                                        detail: { key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey },
+                                    }));
                                 }
                             }, { capture: true });
                         }
@@ -799,6 +816,8 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                 }
                                 prevChapterRef.current = ch;
                             }
+                            const pageBit = (displayed && displayed.total > 0) ? `Página ${displayed.page || 0} de ${displayed.total || 0}` : '';
+                            setReaderAnnouncement([pageBit, ch].filter(Boolean).join(' — '));
                         } catch (e) {
                             console.warn('[SharkReader] chapter hint update failed:', e);
                         }
@@ -956,8 +975,46 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         }, [fontFamily, fontSize, lineHeight, pageMargins, customBg, customText, textJustify, firstLineIndent, letterSpacing, hyphenation, paragraphSpacing, theme, isReady, readFlow]);
 
         useEffect(() => {
-            try { localStorage.setItem(_bookFontKey, JSON.stringify({ fontSize, fontFamily, lineHeight, pageMargins, paragraphSpacing, textJustify, firstLineIndent, letterSpacing, hyphenation, customBg, customText })); } catch (_) {}
-        }, [_bookFontKey, fontSize, fontFamily, lineHeight, pageMargins, paragraphSpacing, textJustify, firstLineIndent, letterSpacing, hyphenation, customBg, customText]);
+            const readerPreferences = {
+                fontSize,
+                fontFamily,
+                lineHeight,
+                pageMargins,
+                paragraphSpacing,
+                textJustify,
+                firstLineIndent,
+                letterSpacing,
+                hyphenation,
+                customBg,
+                customText,
+                columnWidth,
+            };
+            const timer = setTimeout(() => {
+                if (onPersistReaderPreferences) {
+                    onPersistReaderPreferences(bookData.id, readerPreferences);
+                    try { localStorage.removeItem(_bookFontKey); } catch (_) {}
+                    return;
+                }
+                try { localStorage.setItem(_bookFontKey, JSON.stringify(readerPreferences)); } catch (_) {}
+            }, 300);
+            return () => clearTimeout(timer);
+        }, [
+            _bookFontKey,
+            bookData.id,
+            columnWidth,
+            customBg,
+            customText,
+            firstLineIndent,
+            fontFamily,
+            fontSize,
+            hyphenation,
+            letterSpacing,
+            lineHeight,
+            onPersistReaderPreferences,
+            pageMargins,
+            paragraphSpacing,
+            textJustify,
+        ]);
 
         // When columnWidth changes, the #viewer div gets a new maxWidth — force epub.js to re-layout.
         useEffect(() => {
@@ -983,6 +1040,13 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 if (delta > 0) nextPage(); else if (delta < 0) prevPage();
             };
             const handleKeyDown = (e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+                    e.preventDefault();
+                    setShowSearch(true);
+                    setShowToc(false);
+                    setShowAnnotationsPanel(false);
+                    return;
+                }
                 const target = e.target;
                 if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
                 if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); goBackHistory(); return; }
@@ -992,6 +1056,12 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 if (e.key === 'ArrowRight') nextPage();
             };
             const handleEpubKey = (e) => {
+                if ((e.detail?.ctrlKey || e.detail?.metaKey) && String(e.detail?.key || '').toLowerCase() === 'f') {
+                    setShowSearch(true);
+                    setShowToc(false);
+                    setShowAnnotationsPanel(false);
+                    return;
+                }
                 if (readFlow !== 'paginated') return;
                 if (anyPanelOpenRef.current) return;
                 if (e.detail?.key === 'ArrowLeft') prevPage();
@@ -1312,14 +1382,25 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 fetchNeuralAudio(index).then(data => {
                     // Ignorar respuestas tardías si el usuario paró o saltó de párrafo
                     if (!ttsActiveRef.current || ttsIndexRef.current !== index) return;
-                    if (!data) { stopTts(); return; } // sin internet o fallo del servicio
+                    if (!data) {
+                        addDiagnosticEntry('warning', 'TTS neuronal: sin datos de audio (sin internet o servicio caído)', { source: 'tts', engine: 'neural' });
+                        stopTts();
+                        return;
+                    } // sin internet o fallo del servicio
                     fetchNeuralAudio(index + 1); // prefetch: elimina el hueco entre párrafos
                     const url = URL.createObjectURL(new Blob([data], { type: 'audio/mpeg' }));
                     const audio = new Audio(url);
                     ttsAudioRef.current = audio;
                     audio.onended = () => { URL.revokeObjectURL(url); advance(); };
-                    audio.onerror = () => { URL.revokeObjectURL(url); if (ttsActiveRef.current) stopTts(); };
-                    audio.play().catch(() => { if (ttsActiveRef.current) stopTts(); });
+                    audio.onerror = () => {
+                        addDiagnosticEntry('warning', 'TTS neuronal: error al reproducir el audio generado', { source: 'tts', engine: 'neural' });
+                        URL.revokeObjectURL(url);
+                        if (ttsActiveRef.current) stopTts();
+                    };
+                    audio.play().catch((err) => {
+                        addDiagnosticEntry('warning', `TTS neuronal: audio.play() rechazado — ${err?.message || err}`, { source: 'tts', engine: 'neural' });
+                        if (ttsActiveRef.current) stopTts();
+                    });
                 });
                 return;
             }
@@ -1334,6 +1415,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
             utt.onerror = (e) => {
                 // cancel() dispara 'interrupted'/'canceled' — no son errores reales
                 if (e?.error === 'interrupted' || e?.error === 'canceled') return;
+                addDiagnosticEntry('warning', `TTS del sistema: ${e?.error || 'error desconocido'}`, { source: 'tts', engine: 'system' });
                 if (ttsActiveRef.current) stopTts();
             };
             ttsUttRef.current = utt; // evitar GC del utterance en Chromium
@@ -1418,9 +1500,20 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 try { ttsAudioRef.current?.play?.(); } catch (_) {}
             } else {
                 try { window.speechSynthesis?.resume(); } catch (_) {}
+                // Bug conocido de speechSynthesis en varios motores (sobre todo
+                // Windows/Chromium): resume() no siempre reanuda de verdad tras
+                // una pausa larga. Si sigue marcada como pausada un instante
+                // después, se reinicia desde el mismo párrafo en vez de dejar la
+                // UI en "reproduciendo" con el audio detenido para siempre.
+                scheduleReaderTimeout(() => {
+                    if (ttsActiveRef.current && ttsEngineRef.current !== 'neural' && window.speechSynthesis?.paused) {
+                        addDiagnosticEntry('warning', 'TTS: resume() no reanudó la síntesis — reiniciando desde el párrafo actual', { source: 'tts', engine: 'system' });
+                        restartTtsFromCurrentRef.current();
+                    }
+                }, 400);
             }
             setTtsStatus('playing');
-        }, []);
+        }, [scheduleReaderTimeout]);
 
         // Cambiar velocidad/voz/motor en caliente: reinicia desde el párrafo actual
         const restartTtsFromCurrent = useCallback(() => {
@@ -1439,6 +1532,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                 speakTtsEl(index);
             }, 80);
         }, [scheduleReaderTimeout, speakTtsEl]);
+        useEffect(() => { restartTtsFromCurrentRef.current = restartTtsFromCurrent; }, [restartTtsFromCurrent]);
 
         // Cortar el TTS al desmontar el lector o cambiar de libro
         useEffect(() => () => {
@@ -1551,31 +1645,54 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
         };
 
         const SEARCH_LIMIT = 50;
-        const runSearch = async (query) => {
-            if (!bookRef.current || !query.trim()) { setSearchResults([]); setSearchActiveIndex(-1); return; }
+        const runSearch = useCallback(async (query) => {
+            const needle = query.trim();
+            if (!bookRef.current || !needle) {
+                cancelSearchTask();
+                setSearchResults([]);
+                setSearchActiveIndex(-1);
+                setIsSearching(false);
+                return;
+            }
+            const isCurrentSearch = beginSearchTask();
             setIsSearching(true);
             try {
                 const book = bookRef.current;
                 const allResults = [];
                 let truncated = false;
                 for (const item of book.spine.spineItems) {
-                    await item.load(book.load.bind(book));
-                    const found = item.find(query.trim());
-                    item.unload();
-                    found.forEach(r => allResults.push(r));
-                    if (allResults.length >= SEARCH_LIMIT) { truncated = true; break; }
+                    if (!isCurrentSearch()) return;
+                    try {
+                        await item.load(book.load.bind(book));
+                        if (!isCurrentSearch()) return;
+                        const found = item.find(needle);
+                        for (const result of found) {
+                            if (allResults.length >= SEARCH_LIMIT) {
+                                truncated = true;
+                                break;
+                            }
+                            allResults.push(result);
+                        }
+                    } finally {
+                        try { item.unload(); } catch (_) {}
+                    }
+                    if (truncated) break;
                 }
+                if (!isCurrentSearch()) return;
                 if (truncated) {
                     allResults._truncated = true;
                 }
                 setSearchResults(allResults);
                 setSearchActiveIndex(allResults.length > 0 ? 0 : -1);
             } catch (e) {
+                if (!isCurrentSearch()) return;
+                console.warn('[SharkReader] EPUB search failed:', e);
                 setSearchResults([]);
                 setSearchActiveIndex(-1);
+            } finally {
+                if (isCurrentSearch()) setIsSearching(false);
             }
-            setIsSearching(false);
-        };
+        }, [beginSearchTask, cancelSearchTask]);
 
         const jumpToSearchIndex = useCallback((index) => {
             const result = searchResults[index];
@@ -1910,7 +2027,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                         <button onClick={() => setAutoScroll(p => !p)}
                             className="w-full py-2 rounded-xl font-bold text-sm text-white transition"
                             style={{ backgroundColor: autoScroll ? '#ef4444' : 'var(--highlight)' }}>
-                            {autoScroll ? 'â¸ Pausar' : '▶ Iniciar auto-scroll'}
+                            {autoScroll ? '⏸ Pausar' : '▶ Iniciar auto-scroll'}
                         </button>
                     </div>
                 )}
@@ -2011,10 +2128,15 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                     ))}
                                 </select>
                             )}
+                            {ttsEngine === 'system' && ttsVoices.length === 0 && (
+                                <p className="mt-2 rounded-lg bg-amber-500/10 px-2 py-1.5 text-[10px] font-bold text-amber-500">
+                                    ⚠ No se encontraron voces instaladas en el sistema. Prueba el motor Neural, o instala voces desde la configuración de idioma de Windows.
+                                </p>
+                            )}
                             <p className="text-[9px] opacity-40 mt-2 leading-relaxed">
                                 {ttsEngine === 'neural'
                                     ? 'Voces neuronales de alta calidad (requieren internet). Si falla la conexión, la lectura se detiene.'
-                                    : 'Voces instaladas en Windows (funcionan sin internet).'}
+                                    : `Voces instaladas en Windows (funcionan sin internet)${ttsVoices.length > 0 ? ` — ${ttsVoices.length} disponibles` : ''}.`}
                                 {' '}Empieza en lo visible, sombrea el párrafo actual y pasa de página sola. Toca cualquier párrafo mientras lee para saltar ahí.
                             </p>
                         </div>
@@ -2082,8 +2204,8 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
                         {/* Fila 1: pestañas (solo cuando se pasan tabs) */}
                         {tabs && (
-                            <div className="flex items-stretch flex-shrink-0 overflow-x-auto overflow-y-hidden select-none" style={{ height: '30px', backgroundColor: 'rgba(0,0,0,0.22)', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-                                <button onClick={onGoToLibrary} className="px-3 h-full hover:bg-white/10 transition flex-shrink-0 flex items-center opacity-70 hover:opacity-100" title="Ir a biblioteca">
+                            <div role="tablist" aria-label="Libros abiertos" className="flex items-stretch flex-shrink-0 overflow-x-auto overflow-y-hidden select-none" style={{ height: '30px', backgroundColor: 'rgba(0,0,0,0.22)', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                                <button onClick={onGoToLibrary} aria-label="Ir a biblioteca" className="px-3 h-full hover:bg-white/10 transition flex-shrink-0 flex items-center opacity-70 hover:opacity-100" title="Ir a biblioteca">
                                     <Icons.Library />
                                 </button>
                                 <div className="w-px bg-white/10 flex-shrink-0 self-stretch my-1"></div>
@@ -2092,15 +2214,20 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                     const isTabActive = tab.id === activeTabId;
                                     return (
                                         <div key={tab.id}
+                                            role="tab"
+                                            aria-selected={isTabActive}
+                                            tabIndex={0}
                                             title={book?.name || 'Libro'}
                                             className={`flex items-center gap-1.5 px-3 flex-shrink-0 max-w-[180px] min-w-[80px] cursor-pointer group border-r border-white/10 relative transition-all ${isTabActive ? 'bg-white/15' : 'hover:bg-white/10 opacity-70 hover:opacity-100'}`}
-                                            onClick={() => onSwitchTab && onSwitchTab(tab.id)}>
+                                            onClick={() => onSwitchTab && onSwitchTab(tab.id)}
+                                            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSwitchTab && onSwitchTab(tab.id); } }}>
                                             {isTabActive && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white rounded-t" />}
                                             <span className="text-white text-[11px] font-semibold truncate flex-1 leading-none">
                                                 {book?.name || 'Cargando...'}
                                             </span>
                                             <button
                                                 onClick={(e) => onCloseTab && onCloseTab(tab.id, e)}
+                                                aria-label={`Cerrar pestaña: ${book?.name || 'Libro'}`}
                                                 className="opacity-0 group-hover:opacity-50 hover:!opacity-100 text-white hover:bg-white/20 rounded w-4 h-4 flex items-center justify-center flex-shrink-0 transition text-xs leading-none">
                                                 ×
                                             </button>
@@ -2140,7 +2267,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                 <DyslexiaBtn />
                                 {renderFontMenu(false)}
                                 <div className="w-px h-5 bg-white/20 mx-0.5"></div>
-                                <button onClick={handleAddBookmark} className="p-1.5 hover:bg-white/15 rounded-xl transition" title="Marcador r?pido">
+                                <button onClick={handleAddBookmark} className="p-1.5 hover:bg-white/15 rounded-xl transition" title="Marcador rápido">
                                     <Icons.Bookmark fill={isBookmarked ? "#facc15" : "none"} color={isBookmarked ? "#facc15" : "currentColor"} />
                                 </button>
                                 <button onClick={handleAddMarginNote} className="p-1.5 hover:bg-white/15 rounded-xl transition" title="Crear nota al margen">
@@ -2216,7 +2343,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
 
                             <div className="w-px h-5 bg-white/10 mx-1"></div>
 
-                            <button onClick={handleAddBookmark} className="p-2.5 hover:bg-white/15 rounded-full transition" title="Marcador r?pido">
+                            <button onClick={handleAddBookmark} className="p-2.5 hover:bg-white/15 rounded-full transition" title="Marcador rápido">
                                 <Icons.Bookmark fill={isBookmarked ? "#facc15" : "none"} color={isBookmarked ? "#facc15" : "currentColor"} />
                             </button>
                             <button onClick={handleAddMarginNote} className="p-2.5 hover:bg-white/15 rounded-full transition" title="Crear nota al margen">
@@ -2302,6 +2429,26 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                         }}
                     ></div>
 
+                    {/* Anuncio para lectores de pantalla: página/capítulo actual —
+                        invisible en pantalla, solo lo escucha un lector de pantalla. */}
+                    <div className="sr-only" role="status" aria-live="polite">{readerAnnouncement}</div>
+
+                    {/* Aviso de capítulo nuevo — discreto y auto-ocultable, orienta sin
+                        interrumpir la lectura en modo continuo. El estado ya existía
+                        (showChapterHint se disparaba en 'relocated') pero nunca se
+                        renderizaba nada con él. */}
+                    {showChapterHint && currentChapterTitle && (
+                        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 pointer-events-none fade-in" role="status" aria-live="polite">
+                            <div className="flex items-center gap-2.5 rounded-full border px-4 py-2 shadow-xl backdrop-blur-xl"
+                                style={{ backgroundColor: 'color-mix(in srgb, var(--surface-bg) 92%, transparent)', borderColor: 'var(--border-color)' }}>
+                                <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full" style={{ backgroundColor: 'color-mix(in srgb, var(--highlight) 18%, transparent)', color: 'var(--highlight)' }}>
+                                    <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5-5 5M6 7l5 5-5 5" /></svg>
+                                </span>
+                                <span className="min-w-0 truncate text-xs font-bold" style={{ color: 'var(--text-color)' }}>{currentChapterTitle}</span>
+                            </div>
+                        </div>
+                    )}
+
                     {/* Popup Diccionario */}
                     {dictionaryPopup && (
                         <div className="absolute z-50 bg-[var(--surface-bg)] border border-[var(--border-color)] shadow-2xl p-5 rounded-3xl max-w-[300px]"
@@ -2332,7 +2479,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                 style={{ backgroundColor: 'var(--highlight)' }}>
                                 <Icons.Quote /> Imagen de cita
                             </button>
-                            <button onClick={() => setQuotePrompt(null)} className="p-1.5 opacity-50 hover:opacity-100 transition">
+                            <button onClick={() => setQuotePrompt(null)} aria-label="Descartar" className="p-1.5 opacity-50 hover:opacity-100 transition">
                                 <Icons.Close />
                             </button>
                         </div>
@@ -2382,10 +2529,10 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                     >
                         <div className="flex items-center justify-between gap-2 p-3 border-b" style={{ borderColor: 'var(--border-color)' }}>
                             <div>
-                                <p className="text-[10px] font-black uppercase tracking-[0.22em] opacity-45">?ndice</p>
+                                <p className="text-[10px] font-black uppercase tracking-[0.22em] opacity-45">Índice</p>
                                 <p className="text-sm font-black">{flatToc.length} secciones</p>
                             </div>
-                            <button onClick={() => setShowToc(false)} className="p-2 opacity-50 hover:opacity-100 transition">
+                            <button onClick={() => setShowToc(false)} aria-label="Cerrar índice" className="p-2 opacity-50 hover:opacity-100 transition">
                                 <Icons.Close />
                             </button>
                         </div>
@@ -2397,18 +2544,18 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                         type="text"
                                         value={tocSearch}
                                         onChange={e => setTocSearch(e.target.value)}
-                                        placeholder="Buscar capitulo..."
+                                        placeholder="Buscar capítulo..."
                                         className="bg-transparent outline-none text-xs flex-1 min-w-0"
                                         style={{ color: 'var(--text-color)' }}
                                     />
-                                    {tocSearch && <button onClick={() => setTocSearch('')} className="opacity-40 hover:opacity-100 text-xs leading-none">×</button>}
+                                    {tocSearch && <button onClick={() => setTocSearch('')} aria-label="Limpiar búsqueda de índice" className="opacity-40 hover:opacity-100 text-xs leading-none">×</button>}
                                 </div>
                             </div>
                         )}
                         <div className="flex-1 overflow-y-auto p-3 space-y-1">
                             {toc.length === 0 ? (
                                 <div className="rounded-2xl border border-dashed border-black/10 dark:border-white/10 p-4 text-sm opacity-60">
-                                    No hay ?ndice disponible en este libro.
+                                    No hay índice disponible en este libro.
                                 </div>
                             ) : tocSearch.trim() ? (() => {
                                 const q = tocSearch.trim().toLowerCase();
@@ -2457,7 +2604,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                         </button>
                                     </>
                                 )}
-                                <button onClick={() => setShowAnnotationsPanel(false)} className="p-2 opacity-50 hover:opacity-100 transition">
+                                <button onClick={() => setShowAnnotationsPanel(false)} aria-label="Cerrar anotaciones" className="p-2 opacity-50 hover:opacity-100 transition">
                                     <Icons.Close />
                                 </button>
                             </div>
@@ -2503,7 +2650,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                         className="bg-transparent outline-none text-xs flex-1 min-w-0"
                                         style={{ color: 'var(--text-color)' }}
                                     />
-                                    {annotationSearch && <button onClick={() => setAnnotationSearch('')} className="opacity-40 hover:opacity-100 text-xs leading-none">×</button>}
+                                    {annotationSearch && <button onClick={() => setAnnotationSearch('')} aria-label="Limpiar búsqueda de anotaciones" className="opacity-40 hover:opacity-100 text-xs leading-none">×</button>}
                                 </div>
                             </div>
                         )}
@@ -2615,11 +2762,12 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                             </button>
                             {searchResults.length > 0 && (
                                 <div className="flex items-center gap-1">
-                                    <button onClick={() => moveSearchResult(-1)} className="px-2 py-2 rounded-xl text-xs font-black bg-black/5 dark:bg-white/5 hover:opacity-80">↑</button>
-                                    <button onClick={() => moveSearchResult(1)} className="px-2 py-2 rounded-xl text-xs font-black bg-black/5 dark:bg-white/5 hover:opacity-80">↓</button>
+                                    <button onClick={() => moveSearchResult(-1)} aria-label="Resultado anterior" className="px-2 py-2 rounded-xl text-xs font-black bg-black/5 dark:bg-white/5 hover:opacity-80">↑</button>
+                                    <button onClick={() => moveSearchResult(1)} aria-label="Resultado siguiente" className="px-2 py-2 rounded-xl text-xs font-black bg-black/5 dark:bg-white/5 hover:opacity-80">↓</button>
                                 </div>
                             )}
                             <button onClick={() => { setShowSearch(false); setSearchResults([]); setSearchQuery(''); setSearchActiveIndex(-1); }}
+                                aria-label="Cerrar búsqueda"
                                 className="p-2 opacity-50 hover:opacity-100 transition">
                                 <Icons.Close />
                             </button>
@@ -2649,13 +2797,10 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                     {searchResults.map((result, i) => (
                                         <button key={i} onClick={() => jumpToResult(result.cfi)}
                                             className={`w-full text-left px-3 py-3 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition mb-1 ${searchActiveIndex === i ? 'ring-1 ring-[var(--highlight)]' : ''}`}>
-                                            <p className="text-xs leading-relaxed font-medium opacity-80 line-clamp-3"
-                                                dangerouslySetInnerHTML={{
-                                                    __html: result.excerpt.replace(
-                                                        new RegExp(searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'),
-                                                        m => `<mark style="background:rgba(250,204,21,0.65);border-radius:3px;padding:0 2px">${m}</mark>`
-                                                    )
-                                                }}
+                                            <ReaderSearchExcerpt
+                                                text={result.excerpt}
+                                                query={searchQuery}
+                                                className="text-xs leading-relaxed font-medium opacity-80 line-clamp-3"
                                             />
                                         </button>
                                     ))}
@@ -2697,7 +2842,7 @@ const EpubReader = ({ bookData, targetCfi, theme, t, lang, readFlow, readLayout,
                                             className="flex-1 bg-transparent outline-none text-[11px] font-medium"
                                             style={{ color: 'var(--text-color)' }}
                                         />
-                                        {tocSearch && <button onClick={() => setTocSearch('')} className="opacity-40 hover:opacity-100 text-xs leading-none">×</button>}
+                                        {tocSearch && <button onClick={() => setTocSearch('')} aria-label="Limpiar búsqueda de índice" className="opacity-40 hover:opacity-100 text-xs leading-none">×</button>}
                                     </div>
                                 </div>
                                 <div className="flex-1 overflow-y-auto py-1 px-1">

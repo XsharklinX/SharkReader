@@ -1,23 +1,32 @@
 ﻿// SharkReader - App Component (v2 — Tabs + Optimizations + Series + Vocab + AI)
-import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense, startTransition, useDeferredValue } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense, useDeferredValue } from 'react';
 import JSZip from 'jszip';
 import { Icons, renderAvatar } from './icons';
 import { translations, languageNames, RANDOM_EMOJIS } from './translations';
-import { safeParse, loadBooksFromDB, saveBookToDB, saveBooksToDB, saveAppData, loadAppData, saveSetting, resetAllAppDataVerified, getAppDataCounts, saveCache, loadCacheByPrefix, loadFilesFromDB } from './db';
-import { extractEpubMeta } from './epubMeta';
+import { safeParse, saveBookToDB, saveBooksToDB, saveAppData, saveSetting, loadFilesFromDB, deleteBookFromDB } from './db';
 import { RARITY } from './achievements';
 import { DEFAULT_EXTERNAL_SOURCES, migrateWorkshopData, normalizeAddonConfig, normalizeAddonState, validateAddonToggle } from './workshopModules';
 import {
     applyImportedBookData,
     getBookDedupKey,
     getBookTitleDedupKey,
-    hydrateStoredBook,
     stripBookFilesForExport,
     toStoredBookRecord,
     updateBookInList,
 } from './bookModel';
-import { buildPortableBackup, mergeBackupData } from './backupMerge';
+import { buildPortableBackup, isBookDeletedByTombstone, mergeAchievements } from './backupMerge';
+import { validateBackupData } from './backupValidation';
+import { sha256Hex } from './checksum';
+import { computeBackupDiff } from './backupDiff';
+import BackupPreviewModal from './BackupPreviewModal';
+import { scanLibraryIssues } from './libraryRepair';
+import LibraryRepairModal from './LibraryRepairModal';
 import { clearDiagnosticEntries, getDiagnosticEntries, installDiagnostics } from './diagnostics';
+import { createWorkshopApi } from './workshopApi';
+import Tooltip from './Tooltip';
+import { useBookRouletteAddon } from './addons/useBookRouletteAddon';
+import { useWatchedFolderAddon } from './addons/useWatchedFolderAddon';
+import { useAutoBackupAddon } from './addons/useAutoBackupAddon';
 import { readerXp, readerLevelFromXp } from './readingProgress';
 import { settleChallenges, lastWeekSummary, isoWeekKey, createChallenge } from './challenges';
 import SettingsPanel from './SettingsPanel';
@@ -44,13 +53,21 @@ import { useLibrary } from './hooks/useLibrary';
 import { useReaderTabSummaries } from './hooks/useReaderTabSummaries';
 import { useReaderPerformance } from './hooks/useReaderPerformance';
 import { useReaderOrchestration } from './hooks/useReaderOrchestration';
-import { buildBookContentExcerpt, buildBookContentIndex, CONTENT_INDEX_CACHE_PREFIX } from './contentIndex';
+import { useAppHydration } from './hooks/useAppHydration';
+import { useAppPersistence } from './hooks/useAppPersistence';
+import { useAccountReset } from './hooks/useAccountReset';
+import { useContentIndexing } from './hooks/useContentIndexing';
+import { useMetadataRepair } from './hooks/useMetadataRepair';
+import { useAIConfig } from './hooks/useAIConfig';
 import Sidebar from './Sidebar';
 import LibraryView from './LibraryView';
 import { sounds } from './sounds';
 import { TipToast } from './TipToast';
 import CommandPalette from './CommandPalette';
 import BookComparisonModal from './BookComparisonModal';
+import LibraryIntelligenceModal from './LibraryIntelligenceModal';
+import BookRouletteModal from './BookRouletteModal';
+import AnnotationsModal from './AnnotationsModal';
 import { TIPS } from './tips';
 
 const EpubReader = lazy(() => import('./EpubReader'));
@@ -91,6 +108,7 @@ const splitBookTags = (value) => String(value || '')
 
         // ── LIBROS ──
         const [books, setBooks] = useState([]);
+        const [deletedBookTombstones, setDeletedBookTombstones] = useState({});
         const [isDbLoaded, setIsDbLoaded] = useState(false);
         const [isStateHydrated, setIsStateHydrated] = useState(false);
 
@@ -102,6 +120,47 @@ const splitBookTags = (value) => String(value || '')
         // ── BIBLIOTECA ──
         const [searchTerm, setSearchTerm] = useState('');
         const deferredSearchTerm = useDeferredValue(searchTerm);
+        // Estado de sync (carpeta local / WebDAV) — antes solo se sabía entrando
+        // a Ajustes; 'syncing'|'synced'|'error'|null (null = sin configurar).
+        const [syncStatus, setSyncStatus] = useState(null);
+        const onSyncStatusChange = useCallback((status) => setSyncStatus(status), []);
+        // Búsquedas recientes — preferencia liviana, se guarda directo en
+        // localStorage (mismo patrón que accentColor) sin pasar por la
+        // hidratación de IndexedDB.
+        const [recentSearches, setRecentSearches] = useState(() => {
+            const s = safeParse('sharkreader_recent_searches', []);
+            return Array.isArray(s) ? s.filter(t => typeof t === 'string') : [];
+        });
+        const [searchFocused, setSearchFocused] = useState(false);
+        const commitRecentSearch = useCallback((term) => {
+            const trimmed = (term || '').trim();
+            if (!trimmed) return;
+            setRecentSearches(prev => {
+                const next = [trimmed, ...prev.filter(t => t.toLowerCase() !== trimmed.toLowerCase())].slice(0, 6);
+                try { localStorage.setItem('sharkreader_recent_searches', JSON.stringify(next)); } catch (_) {}
+                return next;
+            });
+        }, []);
+        const removeRecentSearch = useCallback((term) => {
+            setRecentSearches(prev => {
+                const next = prev.filter(t => t !== term);
+                try { localStorage.setItem('sharkreader_recent_searches', JSON.stringify(next)); } catch (_) {}
+                return next;
+            });
+        }, []);
+        // Historial de importaciones por carpeta — útil para saber si ya
+        // importaste una carpeta antes sin tener que recordarlo de memoria.
+        const [importHistory, setImportHistory] = useState(() => {
+            const s = safeParse('sharkreader_import_history', []);
+            return Array.isArray(s) ? s : [];
+        });
+        const recordImportEvent = useCallback((entry) => {
+            setImportHistory(prev => {
+                const next = [{ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), ...entry }, ...prev].slice(0, 10);
+                try { localStorage.setItem('sharkreader_import_history', JSON.stringify(next)); } catch (_) {}
+                return next;
+            });
+        }, []);
         const [customCategories, setCustomCategories] = useState(() => {
             const s = safeParse('sharkreader_categories', null);
             return (s && Array.isArray(s)) ? s.filter(c => c.toLowerCase() !== 'favoritos') : ['Pendientes', 'Estudio'];
@@ -120,6 +179,35 @@ const splitBookTags = (value) => String(value || '')
         // ── v2.9: MULTI-SELECT / BULK / COMBINED FILTERS / QUICK EDIT ──
         const [selectedBookIds, setSelectedBookIds] = useState(() => new Set());
         const [showComparison, setShowComparison] = useState(false);
+        const [showLibraryIntel, setShowLibraryIntel] = useState(false);
+        const [showAnnotationsModal, setShowAnnotationsModal] = useState(false);
+        const [libraryRepairScan, setLibraryRepairScan] = useState(null);
+        const [libraryRepairLoading, setLibraryRepairLoading] = useState(false);
+        const [backupHistory, setBackupHistory] = useState([]);
+        // Registra un backup (export o import) en el historial local — no es
+        // crítico para la integridad de los datos, así que se persiste directo
+        // en vez de sumar otro efecto debounced.
+        const recordBackupEvent = useCallback((entry) => {
+            setBackupHistory(prev => {
+                const next = [{ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), ...entry }, ...prev].slice(0, 20);
+                saveAppData('backupHistory', next);
+                return next;
+            });
+        }, []);
+        const [addonHistory, setAddonHistory] = useState({});
+        // Historial corto por addon (activar/desactivar/configurar) — igual que
+        // recordBackupEvent, se persiste directo sin sumar otro efecto debounced.
+        const recordAddonHistory = useCallback((addonId, entry) => {
+            setAddonHistory(prev => {
+                const list = prev[addonId] || [];
+                const next = {
+                    ...prev,
+                    [addonId]: [{ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, timestamp: Date.now(), ...entry }, ...list].slice(0, 10),
+                };
+                saveAppData('addonHistory', next);
+                return next;
+            });
+        }, []);
         const [isSelecting, setIsSelecting] = useState(false);
         const [filterTags, setFilterTags] = useState([]);
         const [filterAuthors, setFilterAuthors] = useState([]);
@@ -160,6 +248,32 @@ const splitBookTags = (value) => String(value || '')
             resetUI,
         } = useUI();
 
+        // Recordatorio suave de backup: si hace 30+ días que no se exporta (o
+        // nunca se exportó) y ya hay libros que valga la pena proteger, un aviso
+        // — no bloqueante, una sola vez por sesión — en vez de descubrir la
+        // pérdida de datos el día que algo sale mal.
+        const backupReminderShownRef = useRef(false);
+        useEffect(() => {
+            if (!isStateHydrated || !isDbLoaded || backupReminderShownRef.current) return;
+            if (books.length === 0) return;
+            backupReminderShownRef.current = true;
+            const lastExportAt = backupHistory
+                .filter(entry => entry.type === 'export')
+                .reduce((max, entry) => Math.max(max, entry.timestamp || 0), 0);
+            const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+            if (!lastExportAt || Date.now() - lastExportAt > THIRTY_DAYS_MS) {
+                const timer = setTimeout(() => {
+                    showNoticeToast(
+                        lastExportAt
+                            ? 'Hace más de 30 días que no exportas un backup. Ajustes → Datos.'
+                            : 'Todavía no has exportado un backup de tu biblioteca. Ajustes → Datos.',
+                        'warning'
+                    );
+                }, 3000);
+                return () => clearTimeout(timer);
+            }
+        }, [isStateHydrated, isDbLoaded, books.length, backupHistory, showNoticeToast]);
+
         const [libraryView, setLibraryView] = useState(() => safeParse('sharkreader_libview', 'grid'));
 
         // ── PREFERENCIAS ──
@@ -178,9 +292,13 @@ const splitBookTags = (value) => String(value || '')
         // ── VOCABULARIO ──
         const [vocabulary, setVocabulary] = useState([]);
 
-        // ── AI ──
-        const [aiProvider, setAiProvider] = useState('groq');
-        const [aiApiKey, setAiApiKey] = useState('');
+        // ── AI ── (estado + prueba de conexión aislados en su propio hook)
+        const {
+            aiProvider, setAiProvider,
+            aiApiKey, setAiApiKey,
+            aiTestStatus, aiTestMessage,
+            testAIConnection, resetAITestStatus,
+        } = useAIConfig();
 
         const {
             tutorialEnabled, setTutorialEnabled,
@@ -195,7 +313,8 @@ const splitBookTags = (value) => String(value || '')
             completeWelcomeTutorial,
             skipWelcomeTutorial,
             resetTutorialCooldown,
-        } = useOnboarding({ view, booksCount: books.length });
+            resetOnboardingState,
+        } = useOnboarding({ view, booksCount: books.length, isResettingRef });
 
         // ── SYNC CARPETA LOCAL ──
         const [syncFolder, setSyncFolder] = useState('');
@@ -203,6 +322,26 @@ const splitBookTags = (value) => String(value || '')
 
         // ── ACCENT COLOR ──
         const [accentColor, setAccentColor] = useState(() => safeParse('sharkreader_accent', null));
+
+        // ── ALTO CONTRASTE ── preferencia manual independiente del tema —
+        // se guarda igual que accentColor (localStorage directo, sin pasar
+        // por la hidratación de IndexedDB) para que esté lista desde el
+        // primer render y no haya parpadeo de bajo contraste al abrir la app.
+        const [highContrast, setHighContrast] = useState(() => safeParse('sharkreader_high_contrast', false));
+        useEffect(() => {
+            try { localStorage.setItem('sharkreader_high_contrast', JSON.stringify(highContrast)); } catch (_) {}
+        }, [highContrast]);
+
+        // ── TAMAÑO DE INTERFAZ ── escala el font-size raíz: como casi todo el
+        // espaciado y tipografía de Tailwind está en rem, esto agranda texto
+        // y controles de forma proporcional en toda la app (no solo el texto
+        // del lector, que ya tenía su propio control de tamaño de fuente).
+        // No afecta iconos/medidas fijas en px puro, pero cubre la mayoría.
+        const [uiScale, setUiScale] = useState(() => safeParse('sharkreader_ui_scale', 1));
+        useEffect(() => {
+            document.documentElement.style.fontSize = `${uiScale * 100}%`;
+            try { localStorage.setItem('sharkreader_ui_scale', JSON.stringify(uiScale)); } catch (_) {}
+        }, [uiScale]);
 
         // ── ANIVERSARIOS ──
         const [anniversaryInfo, setAnniversaryInfo] = useState(null);
@@ -224,15 +363,6 @@ const splitBookTags = (value) => String(value || '')
         const contentIndexRunningRef = useRef(false);
         const contentIndexMapRef = useRef({});
         const contentIndexQueuedRef = useRef(new Set());
-        const persistTimerRef = useRef(null);       // books debounce
-        const persistedBookSignaturesRef = useRef(new Map());
-        const persistSettingsRef = useRef(null);    // display prefs → IndexedDB debounce
-        const persistUserRef = useRef(null);        // user data & goals debounce
-        const persistAddonsRef = useRef(null);      // addons & AI config debounce
-        const syncTimerRef = useRef(null);
-        const syncDirtyRef = useRef(false);
-        const syncSnapshotRef = useRef(null);
-        const webdavSyncTimerRef = useRef(null);
         const activeBookIdRef = useRef(null);
         const metadataRepairingRef = useRef(new Set());
         const bookDedupKeysRef = useRef(new Set());
@@ -240,20 +370,33 @@ const splitBookTags = (value) => String(value || '')
         const activeObjectUrlsRef = useRef(new Set());
         const progressUpdateThrottleRef = useRef(new Map());
         const watchedFolderTimerRef = useRef(null);
-        const watchedFolderLastRunRef = useRef(0);
         const openBookNotifyTimerRef = useRef(null);
 
         // ── LOGROS / WORKSHOP / ANALYTICS ──
         const [achievements, setAchievements] = useState({});
+        // Última vez que cambió la configuración (Workshop/categorías/colecciones)
+        // — permite fusionar por fecha en vez de que gane siempre el lado que
+        // sincroniza último (ver mergeBackupData en backupMerge.js).
+        const [settingsUpdatedAt, setSettingsUpdatedAt] = useState(0);
+        const settingsUpdatedAtSkipRef = useRef(true);
         const [achievementToast, setAchievementToast] = useState(null);
         const [activeTip, setActiveTip] = useState(null);
         const isReaderActiveRef = useRef(false);
         const showingOnboardingRef = useRef(false);
         const [addons, setAddons] = useState({});
         const [addonConfig, setAddonConfig] = useState(() => normalizeAddonConfig({}));
+        useEffect(() => {
+            if (!isDbLoaded || !isStateHydrated) return;
+            // Se salta el primer disparo tras la hidratación (cargar lo guardado
+            // no es un "cambio" del usuario) y no se dispara mientras se está
+            // restaurando un backup (ver isResettingRef) para no pisar el
+            // settingsUpdatedAt que trae el propio backup importado.
+            if (settingsUpdatedAtSkipRef.current) { settingsUpdatedAtSkipRef.current = false; return; }
+            if (isResettingRef.current) return;
+            setSettingsUpdatedAt(Date.now());
+        }, [addons, addonConfig, customCategories, manualCollections, isDbLoaded, isStateHydrated]);
         const [externalSources, setExternalSources] = useState(DEFAULT_EXTERNAL_SOURCES);
         const [externalCatalogState, setExternalCatalogState] = useState({ loading: false, error: '', catalog: null, importingId: null });
-        const [rouletteBook, setRouletteBook] = useState(null);
         const sharkyActionsRef = useRef(null);
         const addonsRef = useRef({});
         const [journalEntries, setJournalEntries] = useState([]);
@@ -353,6 +496,13 @@ const splitBookTags = (value) => String(value || '')
             }
         }, [isStateHydrated, userProfile]); // eslint-disable-line
 
+        // ── Migración: perfiles creados antes de v5.2 no tienen joinedAt (usado
+        // para el aniversario de cuenta de Sharky) — se rellena una sola vez.
+        useEffect(() => {
+            if (!isStateHydrated || !userProfile || userProfile.joinedAt) return;
+            setUserProfile(prev => (prev && !prev.joinedAt) ? { ...prev, joinedAt: Date.now() } : prev);
+        }, [isStateHydrated, userProfile]);
+
         // ── PALETA DE COMANDOS: Ctrl+K / Cmd+K ──
         useEffect(() => {
             const onKeyDown = (e) => {
@@ -408,7 +558,6 @@ const splitBookTags = (value) => String(value || '')
             resetImportState,
         } = useBookImport({
             setBooks,
-            activeObjectUrlsRef,
             bookDedupKeysRef,
             bookTitleDedupKeysRef,
             fileInputRef,
@@ -419,6 +568,30 @@ const splitBookTags = (value) => String(value || '')
             externalCatalogState,
             setExternalCatalogState,
             bookPayloadsToFiles,
+            recordImportEvent,
+        });
+
+        useContentIndexing({
+            books,
+            contentIndexMap,
+            deferredSearchTerm,
+            isDbLoaded,
+            isStateHydrated,
+            setContentIndexMap,
+            booksRef,
+            contentIndexQueueRef,
+            contentIndexRunningRef,
+            contentIndexMapRef,
+            contentIndexQueuedRef,
+        });
+
+        useMetadataRepair({
+            isDbLoaded,
+            isResettingRef,
+            booksRef,
+            metadataRepairingRef,
+            bookPayloadsToFiles,
+            setBooks,
         });
 
         // ─────────────────────────────────────────
@@ -429,98 +602,6 @@ const splitBookTags = (value) => String(value || '')
             bookDedupKeysRef.current = new Set(books.map(getBookDedupKey));
             bookTitleDedupKeysRef.current = new Set(books.map(getBookTitleDedupKey));
         }, [books]);
-
-        useEffect(() => {
-            contentIndexMapRef.current = contentIndexMap;
-        }, [contentIndexMap]);
-
-        useEffect(() => {
-            if (!isDbLoaded || !isStateHydrated) return;
-            const searchNeedle = deferredSearchTerm.trim();
-            if (searchNeedle.length < 3) return;
-            const candidates = books
-                .filter(book => !book.loading && book.type === 'epub' && book.file)
-                .filter(book => !contentIndexMapRef.current[book.id]?.text && !contentIndexQueuedRef.current.has(book.id))
-                .slice(0, 12)
-                .map(book => book.id);
-            if (!candidates.length) return;
-            candidates.forEach(bookId => {
-                contentIndexQueuedRef.current.add(bookId);
-                contentIndexQueueRef.current.push(bookId);
-            });
-            if (contentIndexRunningRef.current) return;
-
-            let cancelled = false;
-            const run = async () => {
-                contentIndexRunningRef.current = true;
-                let pendingIndexUpdates = {};
-                let pendingIndexCount = 0;
-
-                const flushPendingIndexUpdates = () => {
-                    if (cancelled || pendingIndexCount === 0) return;
-                    const updates = pendingIndexUpdates;
-                    pendingIndexUpdates = {};
-                    pendingIndexCount = 0;
-                    setContentIndexMap(prev => {
-                        let changed = false;
-                        const next = { ...prev };
-                        Object.entries(updates).forEach(([indexedBookId, payload]) => {
-                            if (next[indexedBookId]?.text !== payload.text) {
-                                next[indexedBookId] = payload;
-                                changed = true;
-                            }
-                        });
-                        if (!changed) return prev;
-                        contentIndexMapRef.current = next;
-                        return next;
-                    });
-                };
-
-                while (!cancelled && contentIndexQueueRef.current.length > 0) {
-                    const bookId = contentIndexQueueRef.current.shift();
-                    if (!bookId || contentIndexMapRef.current[bookId]?.text) {
-                        contentIndexQueuedRef.current.delete(bookId);
-                        continue;
-                    }
-                    const book = booksRef.current.find(item => item.id === bookId);
-                    if (!book?.file || (book.type !== 'epub' && book.type !== 'pdf')) {
-                        contentIndexQueuedRef.current.delete(bookId);
-                        continue;
-                    }
-                    try {
-                        const startedAt = performance.now();
-                        const text = await buildBookContentIndex(book);
-                        const payload = {
-                            text,
-                            excerpt: buildBookContentExcerpt(text),
-                            indexedAt: Date.now(),
-                        };
-                        await saveCache(`${CONTENT_INDEX_CACHE_PREFIX}${bookId}`, payload);
-                        const elapsed = Math.round(performance.now() - startedAt);
-                        if (elapsed > 1500) {
-                            console.info(`[SharkReader] Indexado lento: ${book.name || bookId} (${elapsed}ms)`);
-                        }
-                        if (!cancelled && contentIndexMapRef.current[bookId]?.text !== payload.text) {
-                            pendingIndexUpdates[bookId] = payload;
-                            pendingIndexCount += 1;
-                            if (pendingIndexCount >= 2) flushPendingIndexUpdates();
-                        }
-                    } catch (error) {
-                        console.warn(`[SharkReader] No se pudo indexar contenido para ${book?.name || bookId}:`, error);
-                    } finally {
-                        contentIndexQueuedRef.current.delete(bookId);
-                    }
-                    await new Promise(resolve => setTimeout(resolve, 180));
-                }
-                flushPendingIndexUpdates();
-                contentIndexRunningRef.current = false;
-            };
-
-            run();
-            return () => {
-                cancelled = true;
-            };
-        }, [books, deferredSearchTerm, isDbLoaded, isStateHydrated]);
 
         useEffect(() => {
             if (view !== 'library') return;
@@ -605,14 +686,14 @@ const splitBookTags = (value) => String(value || '')
         }, [isStateHydrated]);
 
         useEffect(() => {
-            document.body.className = `theme-${appliedTheme}`;
+            document.body.className = `theme-${appliedTheme}${highContrast ? ' high-contrast' : ''}`;
             setStats(prev => {
                 const used = new Set(prev.themesUsed || []);
                 used.add(appliedTheme);
                 if (used.size === (prev.themesUsed || []).length) return prev;
                 return { ...prev, themesUsed: [...used] };
             });
-        }, [appliedTheme]);
+        }, [appliedTheme, highContrast]);
 
         useEffect(() => {
             if (!autoDarkMode) return;
@@ -622,6 +703,7 @@ const splitBookTags = (value) => String(value || '')
 
         // Apply accent color CSS variables
         useEffect(() => {
+            if (isResettingRef.current) return;
             const root = document.documentElement;
             if (accentColor) {
                 root.style.setProperty('--highlight', accentColor.value);
@@ -635,523 +717,6 @@ const splitBookTags = (value) => String(value || '')
                 localStorage.removeItem('sharkreader_accent');
             }
         }, [accentColor]);
-
-        // Cargar libros desde IndexedDB
-        useEffect(() => {
-            let cancelled = false;
-            let didFallback = false;
-            let didResolve = false;
-
-            const hideLoader = () => {
-                if (typeof window !== 'undefined' && typeof window.__hideSharkPreloader === 'function') {
-                    window.__hideSharkPreloader();
-                    return;
-                }
-                const loader = document.getElementById('shark-preloader');
-                if (!loader) return;
-                loader.style.opacity = '0';
-                setTimeout(() => {
-                    loader.style.visibility = 'hidden';
-                    loader.style.pointerEvents = 'none';
-                    loader.style.display = 'none';
-                }, 160);
-            };
-
-            const fallbackTimer = setTimeout(() => {
-                if (cancelled || didResolve) return;
-                didFallback = true;
-                console.warn('[SharkReader] La base de datos tardo demasiado al iniciar; continuando sin bloquear la UI.');
-                setIsDbLoaded(true);
-                hideLoader();
-            }, 9000);
-
-            loadBooksFromDB().then(async storedBooks => {
-                if (cancelled) return;
-                didResolve = true;
-                if (sessionStorage.getItem('sharkreader_pending_reset_verify') === 'true') {
-                    const counts = await getAppDataCounts();
-                    const hasResidualData = Object.values(counts).some(count => Number(count) > 0);
-                    if (hasResidualData) {
-                        console.warn('[SharkReader] Reset incompleto detectado al arrancar; limpiando stores restantes.', counts);
-                        const resetResult = await resetAllAppDataVerified({ retries: 1 });
-                        if (!resetResult.ok) {
-                            console.error('[SharkReader] Reset verificado fallo al arrancar:', resetResult.counts);
-                        }
-                        storedBooks = [];
-                    }
-                    sessionStorage.removeItem('sharkreader_pending_reset_verify');
-                    setIsStateHydrated(true);
-                }
-                const loaded = storedBooks.map(hydrateStoredBook);
-                activeObjectUrlsRef.current = new Set(loaded.map(b => b.url).filter(Boolean));
-                setBooks(loaded);
-                setIsDbLoaded(true);
-                clearTimeout(fallbackTimer);
-                if (!didFallback) {
-                    setTimeout(hideLoader, 180);
-                }
-            }).catch((err) => {
-                console.error('[SharkReader] Error cargando libros desde IndexedDB:', err);
-                if (cancelled) return;
-                didResolve = true;
-                if (sessionStorage.getItem('sharkreader_pending_reset_verify') === 'true') {
-                    resetAllAppDataVerified({ retries: 1 }).finally(() => {
-                        sessionStorage.removeItem('sharkreader_pending_reset_verify');
-                        setIsStateHydrated(true);
-                    });
-                }
-                clearTimeout(fallbackTimer);
-                setIsDbLoaded(true);
-                hideLoader();
-            });
-
-            return () => {
-                cancelled = true;
-                clearTimeout(fallbackTimer);
-            };
-        }, []);
-
-        // Cargar estado crítico desde IndexedDB; localStorage solo se usa como migración legacy.
-        useEffect(() => {
-            if (sessionStorage.getItem('sharkreader_pending_reset_verify') === 'true') return;
-            let cancelled = false;
-            const legacyFallbacks = {
-                stats: () => safeParse('sharkreader_stats', null),
-                journalEntries: () => safeParse('sharkreader_journal', null),
-                vocabulary: () => safeParse('sharkreader_vocab', null),
-                categories: () => safeParse('sharkreader_categories', null),
-                currentFilter: () => safeParse('sharkreader_current_filter', null),
-                sortBy: () => safeParse('sharkreader_sort_by', null),
-                readerSession: () => safeParse('sharkreader_reader_session', null),
-                userProfile: () => safeParse('sharkreader_user', null),
-                aiProvider: () => safeParse('sharkreader_ai_provider', null),
-                aiApiKey: () => safeParse('sharkreader_ai_key', null),
-                syncFolder: () => safeParse('sharkreader_sync_folder', null),
-                dailyGoalMins: () => safeParse('sharkreader_daily_goal', null),
-                yearlyGoal: () => safeParse('sharkreader_yearly_goal', null),
-                weeklyGoalMins: () => safeParse('sharkreader_weekly_goal', null),
-                achievements: () => safeParse('sharkreader_achievements', null),
-                addons: () => safeParse('sharkreader_addons', null),
-                addonConfig: () => safeParse('sharkreader_addon_config', null),
-                externalSources: () => safeParse('sharkreader_external_sources', null),
-                autoDarkMode: () => safeParse('sharkreader_auto_dark_mode', null),
-            };
-            const applyStoredValue = async (key, setter, validator = value => value !== null && value !== undefined) => {
-                let value = await loadAppData(key);
-                if ((value === null || value === undefined) && legacyFallbacks[key]) {
-                    value = legacyFallbacks[key]();
-                    if (value !== null && value !== undefined) saveAppData(key, value);
-                }
-                if (!cancelled && validator(value)) setter(value);
-            };
-
-            const loadStoredState = async () => {
-                await Promise.all([
-                    applyStoredValue('stats', setStats),
-                    applyStoredValue('journalEntries', setJournalEntries, Array.isArray),
-                    applyStoredValue('challenges', setChallenges, Array.isArray),
-                    applyStoredValue('vocabulary', setVocabulary, Array.isArray),
-                    applyStoredValue('categories', value => setCustomCategories(value.filter(cat => String(cat).toLowerCase() !== 'favoritos')), Array.isArray),
-                    applyStoredValue('collections', setManualCollections, Array.isArray),
-                    applyStoredValue('currentFilter', setCurrentFilter),
-                    applyStoredValue('sortBy', setSortBy),
-                    applyStoredValue('readerSession', value => {
-                        setTabs(Array.isArray(value?.tabs) ? value.tabs : []);
-                        setActiveTabId(value?.activeTabId || null);
-                        setTabTargetCfi(value?.tabTargetCfi || {});
-                        setPanelMode(!!value?.panelMode);
-                        setRightTabId(value?.rightTabId || null);
-                    }, value => value && typeof value === 'object'),
-                    applyStoredValue('userProfile', setUserProfile),
-                    applyStoredValue('theme', setTheme),
-                    applyStoredValue('autoDarkMode', value => setAutoDarkMode(!!value), value => typeof value === 'boolean'),
-                    applyStoredValue('lang', value => setLang(translations[value] ? value : 'es')),
-                    applyStoredValue('readFlow', setReadFlow),
-                    applyStoredValue('readLayout', setReadLayout),
-                    applyStoredValue('pageTransition', setPageTransition),
-                    applyStoredValue('warmMode', setWarmMode, value => typeof value === 'boolean'),
-                    applyStoredValue('aiProvider', setAiProvider),
-                    applyStoredValue('aiApiKey', setAiApiKey),
-                    applyStoredValue('syncFolder', setSyncFolder),
-                    applyStoredValue('webdavConfig', setWebdavConfig, value => value && typeof value === 'object'),
-                    applyStoredValue('libraryView', setLibraryView),
-                    applyStoredValue('dailyGoalMins', setDailyGoalMins, value => Number.isFinite(Number(value))),
-                    applyStoredValue('yearlyGoal', setYearlyGoal, value => Number.isFinite(Number(value))),
-                    applyStoredValue('weeklyGoalMins', setWeeklyGoalMins, value => Number.isFinite(Number(value))),
-                    applyStoredValue('achievements', setAchievements),
-                    applyStoredValue('addons', value => setAddons(normalizeAddonState(value))),
-                    applyStoredValue('addonConfig', value => setAddonConfig(normalizeAddonConfig(value))),
-                    applyStoredValue('externalSources', setExternalSources, Array.isArray),
-                    applyStoredValue('accentColor', setAccentColor),
-                ]);
-            };
-
-            loadStoredState().catch((error) => {
-                if (!cancelled) {
-                    console.error('[SharkReader] Error cargando estado desde IndexedDB:', error);
-                }
-            }).finally(() => {
-                if (!cancelled) setIsStateHydrated(true);
-            });
-
-            return () => {
-                cancelled = true;
-            };
-        }, []);
-
-        useEffect(() => {
-            if (!isDbLoaded) return;
-            let cancelled = false;
-            loadCacheByPrefix(CONTENT_INDEX_CACHE_PREFIX).then((entries) => {
-                if (cancelled || !Array.isArray(entries) || !entries.length) return;
-                const next = {};
-                entries.forEach(({ key, value }) => {
-                    const bookId = String(key || '').slice(CONTENT_INDEX_CACHE_PREFIX.length);
-                    if (!bookId || !value?.text) return;
-                    next[bookId] = value;
-                });
-                if (Object.keys(next).length) setContentIndexMap(next);
-            }).catch((error) => {
-                console.warn('[SharkReader] No se pudo cargar el indice de contenido:', error);
-            });
-            return () => {
-                cancelled = true;
-            };
-        }, [isDbLoaded]);
-
-        // Re-extracción de metadata en background para libros sin autor real o portada
-        // NOTE: dependency is [isDbLoaded] only — 'books' is read via ref to avoid infinite loops
-        useEffect(() => {
-            if (!isDbLoaded) return;
-
-            // Delay metadata repair so startup and first library render stay responsive.
-            const timer = setTimeout(async () => {
-                const UNKNOWN = ['Autor desconocido', 'Unknown Author', 'Autor Desconocido', 'unknown author'];
-
-                // En Electron instalado, un File de IDB puede fallar si perdió el permiso.
-                const currentBooks = booksRef.current || [];
-                const needsMeta = currentBooks
-                    .filter(b =>
-                        b.type === 'epub' &&
-                        b.file &&
-                        (!b.coverUrl || UNKNOWN.some(u => u.toLowerCase() === (b.originalAuthor || '').toLowerCase())) &&
-                        !metadataRepairingRef.current.has(b.id)
-                    )
-                    .slice(0, 8);
-
-                if (!needsMeta.length) {
-                    console.log('[SharkReader] No hay libros que necesiten re-extracción');
-                    return;
-                }
-
-                console.log(`[SharkReader] Re-extrayendo metadata para ${needsMeta.length} libro(s)...`);
-                needsMeta.forEach(book => metadataRepairingRef.current.add(book.id));
-
-                const withTimeout = (p, ms, def = null) =>
-                    Promise.race([Promise.resolve(p).catch(e => { console.error('[SharkReader] extractEpubMeta error:', e); return def; }), new Promise(r => setTimeout(() => r(def), ms))]);
-
-                for (const book of needsMeta) {
-                    await new Promise(r => setTimeout(r, 450));
-                    try {
-                        console.log(`[SharkReader] Extrayendo: ${book.originalTitle} (file size: ${book.file?.size})`);
-                        let meta = null;
-                        let repairFile = book.file;
-
-                        if (book.sourcePath && window.electronAPI?.readBookFile) {
-                            const payload = await window.electronAPI.readBookFile(book.sourcePath);
-                            const files = bookPayloadsToFiles(payload ? [payload] : []);
-                            if (files[0]) {
-                                repairFile = files[0];
-                                meta = files[0].nativeMeta || null;
-                            }
-                        }
-
-                        if (!meta) {
-                            meta = await withTimeout(extractEpubMeta(repairFile), 20000, null);
-                        }
-
-                        if (!meta) {
-                            console.warn(`[SharkReader] extractEpubMeta devolvió null para: ${book.originalTitle}`);
-                            metadataRepairingRef.current.delete(book.id);
-                            continue;
-                        }
-
-                        console.log(`[SharkReader] OK: title=${meta.title}, creator=${meta.creator}, hasCover=${!!meta.coverBase64}`);
-
-                        const realTitle  = (meta.title || '').trim() || book.originalTitle;
-                        const realAuthor = (meta.creator || '').trim() || book.originalAuthor;
-                        const coverBase64 = meta.coverBase64 || null;
-                        const finalCover = book.coverUrl || coverBase64;
-                        const now = Date.now();
-
-                        startTransition(() => {
-                            setBooks(prev => updateBookInList(prev, book.id, (b) => ({
-                                ...b,
-                                file:           repairFile,
-                                sourcePath:     repairFile.sourcePath || b.sourcePath || null,
-                                name:           b.name === b.originalTitle ? realTitle : b.name,
-                                author:         UNKNOWN.some(u => u.toLowerCase() === (b.author || '').toLowerCase()) ? realAuthor : b.author,
-                                originalTitle:  realTitle,
-                                originalAuthor: realAuthor,
-                                coverUrl:       finalCover,
-                                description:    b.description || meta.description || '',
-                                publisher:      b.publisher  || meta.publisher || '',
-                                tags:           b.tags       || meta.subject || '',
-                                metadataUpdatedAt: now,
-                                updatedAt: now,
-                            })));
-                        });
-                        await saveBookToDB(toStoredBookRecord({
-                            ...book,
-                            file: repairFile,
-                            sourcePath: repairFile.sourcePath || book.sourcePath || null,
-                            originalTitle: realTitle,
-                            originalAuthor: realAuthor,
-                            coverBase64,
-                            coverUrl: finalCover,
-                            description: book.description || meta.description || '',
-                            publisher: book.publisher || meta.publisher || '',
-                            tags: book.tags || meta.subject || '',
-                            metadataUpdatedAt: now,
-                            updatedAt: now,
-                        }));
-                    } catch (err) {
-                        console.error(`[SharkReader] Error procesando ${book.originalTitle}:`, err);
-                    } finally {
-                        metadataRepairingRef.current.delete(book.id);
-                    }
-                }
-
-                console.log('[SharkReader] Re-extracción completada');
-            }, 12000);
-
-            return () => clearTimeout(timer);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        }, [isDbLoaded]);
-
-        // ── PERSIST: books + categories (debounce 2000ms + idle so it never blocks reading)
-        useEffect(() => {
-            if (!isDbLoaded || !isStateHydrated || isResettingRef.current) return;
-            clearTimeout(persistTimerRef.current);
-            persistTimerRef.current = setTimeout(() => {
-                // Use requestIdleCallback so JSON serialization doesn't block page turns
-                const doSave = async () => {
-                    const changedRecords = [];
-                    const liveIds = new Set();
-                    books.forEach(book => {
-                        if (book.loading) return;
-                        liveIds.add(book.id);
-                        const record = toStoredBookRecord(book, {}, { includeFile: false });
-                        const signature = JSON.stringify({
-                            updatedAt: record.updatedAt || 0,
-                            progressUpdatedAt: record.progressUpdatedAt || 0,
-                            metadataUpdatedAt: record.metadataUpdatedAt || 0,
-                            progress: record.progress || 0,
-                            lastLocation: record.lastLocation || null,
-                            bookmarks: record.bookmarks || [],
-                            notes: record.notes || '',
-                            isFav: !!record.isFav,
-                            rating: record.rating || 0,
-                            category: record.category || null,
-                            customTitle: record.customTitle || '',
-                            customAuthor: record.customAuthor || '',
-                            customCover: record.customCover || null,
-                        });
-                        if (persistedBookSignaturesRef.current.get(book.id) !== signature) {
-                            persistedBookSignaturesRef.current.set(book.id, signature);
-                            changedRecords.push(record);
-                        }
-                    });
-                    persistedBookSignaturesRef.current.forEach((_, bookId) => {
-                        if (!liveIds.has(bookId)) persistedBookSignaturesRef.current.delete(bookId);
-                    });
-                    const results = await Promise.all([
-                        changedRecords.length ? saveBooksToDB(changedRecords) : true,
-                        saveSetting('categories', customCategories),
-                        saveSetting('collections', manualCollections),
-                    ]);
-                    if (results.some(result => result === false)) {
-                        console.warn('[SharkReader] Persistencia parcial fallida: libros/categorias/colecciones');
-                    }
-                };
-                if ('requestIdleCallback' in window) {
-                    requestIdleCallback(doSave, { timeout: 5000 });
-                } else {
-                    doSave();
-                }
-            }, 2000);
-            return () => clearTimeout(persistTimerRef.current);
-        }, [books, customCategories, manualCollections, isDbLoaded, isStateHydrated]);
-
-        useEffect(() => {
-            if (!isDbLoaded || !isStateHydrated || isResettingRef.current || !syncFolder || !window.electronAPI) return;
-            clearTimeout(syncTimerRef.current);
-            syncTimerRef.current = setTimeout(async () => {
-                const bookRecords = books.filter(b => !b.loading).map(b => toStoredBookRecord(b, {}, { includeFile: false }));
-                const localBackup = buildPortableBackup({
-                    books: bookRecords.map(({ file, ...record }) => record),
-                    categories: customCategories,
-                    collections: manualCollections,
-                    stats,
-                    user: userProfile || {},
-                    workshop: migrateWorkshopData({ addons, addonConfig, externalSources }),
-                });
-                let backupToWrite = localBackup;
-                if (window.electronAPI.readSyncFile) {
-                    try {
-                        const existing = await window.electronAPI.readSyncFile(syncFolder);
-                        if (existing) {
-                            backupToWrite = mergeBackupData(localBackup, JSON.parse(existing));
-                        }
-                    } catch (err) {
-                        console.warn('[SharkReader] No se pudo fusionar backup de sync existente:', err);
-                    }
-                }
-                const syncData = JSON.stringify(backupToWrite, null, 2);
-                window.electronAPI.writeSyncFile(syncFolder, syncData).catch(() => {});
-                syncDirtyRef.current = false;
-            }, 5000);
-            // Marcar cambios pendientes para el flush de cierre
-            syncDirtyRef.current = true;
-            syncSnapshotRef.current = { books, customCategories, manualCollections, stats, userProfile, addons, addonConfig, externalSources, syncFolder };
-            return () => clearTimeout(syncTimerRef.current);
-        }, [books, customCategories, manualCollections, stats, userProfile, addons, addonConfig, externalSources, isDbLoaded, isStateHydrated, syncFolder]);
-
-        // Sync WebDAV: mismo patrón que la carpeta local (lee lo remoto, fusiona,
-        // escribe), pero como alternativa independiente — no se cruzan entre sí.
-        useEffect(() => {
-            if (!isDbLoaded || !isStateHydrated || isResettingRef.current || !webdavConfig?.url || !window.electronAPI?.webdavWriteSyncFile) return;
-            clearTimeout(webdavSyncTimerRef.current);
-            webdavSyncTimerRef.current = setTimeout(async () => {
-                const bookRecords = books.filter(b => !b.loading).map(b => toStoredBookRecord(b, {}, { includeFile: false }));
-                const localBackup = buildPortableBackup({
-                    books: bookRecords.map(({ file, ...record }) => record),
-                    categories: customCategories,
-                    collections: manualCollections,
-                    stats,
-                    user: userProfile || {},
-                    workshop: migrateWorkshopData({ addons, addonConfig, externalSources }),
-                });
-                let backupToWrite = localBackup;
-                try {
-                    const existing = await window.electronAPI.webdavReadSyncFile(webdavConfig);
-                    if (existing?.ok && existing.content) {
-                        backupToWrite = mergeBackupData(localBackup, JSON.parse(existing.content));
-                    }
-                } catch (err) {
-                    console.warn('[SharkReader] No se pudo fusionar backup de WebDAV existente:', err);
-                }
-                window.electronAPI.webdavWriteSyncFile(webdavConfig, JSON.stringify(backupToWrite, null, 2)).catch(() => {});
-            }, 5000);
-            return () => clearTimeout(webdavSyncTimerRef.current);
-        }, [books, customCategories, manualCollections, stats, userProfile, addons, addonConfig, externalSources, isDbLoaded, isStateHydrated, webdavConfig]);
-
-        // Flush del sync al cerrar la app: si el debounce de 5s no llegó a disparar,
-        // los últimos cambios se escribirían nunca. beforeunload envía el IPC
-        // fire-and-forget antes del teardown del renderer.
-        useEffect(() => {
-            const flushSyncOnClose = () => {
-                const snapshot = syncSnapshotRef.current;
-                if (!syncDirtyRef.current || !snapshot?.syncFolder || !window.electronAPI?.writeSyncFile) return;
-                try {
-                    const bookRecords = snapshot.books.filter(b => !b.loading).map(b => toStoredBookRecord(b, {}, { includeFile: false }));
-                    const backup = buildPortableBackup({
-                        books: bookRecords.map(({ file, ...record }) => record),
-                        categories: snapshot.customCategories,
-                        collections: snapshot.manualCollections,
-                        stats: snapshot.stats,
-                        user: snapshot.userProfile || {},
-                        workshop: migrateWorkshopData({ addons: snapshot.addons, addonConfig: snapshot.addonConfig, externalSources: snapshot.externalSources }),
-                    });
-                    window.electronAPI.writeSyncFile(snapshot.syncFolder, JSON.stringify(backup, null, 2)).catch(() => {});
-                    syncDirtyRef.current = false;
-                } catch (_) {}
-            };
-            window.addEventListener('beforeunload', flushSyncOnClose);
-            return () => window.removeEventListener('beforeunload', flushSyncOnClose);
-        }, []);
-
-        // ── PERSIST: display prefs → localStorage (fast startup path, fires synchronously)
-        useEffect(() => {
-            if (!isDbLoaded || !isStateHydrated || isResettingRef.current) return;
-            localStorage.setItem('sharkreader_theme', JSON.stringify(theme));
-            localStorage.setItem('sharkreader_auto_dark_mode', JSON.stringify(autoDarkMode));
-            localStorage.setItem('sharkreader_lang', JSON.stringify(lang));
-            localStorage.setItem('sharkreader_flow', JSON.stringify(readFlow));
-            localStorage.setItem('sharkreader_layout', JSON.stringify(readLayout));
-            localStorage.setItem('sharkreader_warm', JSON.stringify(warmMode));
-            localStorage.setItem('sharkreader_libview', JSON.stringify(libraryView));
-        }, [theme, autoDarkMode, lang, readFlow, readLayout, warmMode, libraryView, isDbLoaded, isStateHydrated]);
-
-        // ── PERSIST: display prefs → IndexedDB (debounce 1000ms)
-        useEffect(() => {
-            if (!isDbLoaded || !isStateHydrated || isResettingRef.current) return;
-            clearTimeout(persistSettingsRef.current);
-            persistSettingsRef.current = setTimeout(() => {
-                Promise.all([
-                    saveAppData('theme', theme),
-                    saveAppData('autoDarkMode', autoDarkMode),
-                    saveAppData('tutorialEnabled', tutorialEnabled),
-                    saveAppData('tutorialSeen', !showWelcomeTutorial),
-                    saveAppData('tutorialSeenHints', tutorialSeenHints),
-                    saveAppData('lang', lang),
-                    saveAppData('readFlow', readFlow),
-                    saveAppData('readLayout', readLayout),
-                    saveAppData('pageTransition', pageTransition),
-                    saveAppData('warmMode', warmMode),
-                    saveAppData('libraryView', libraryView),
-                    saveAppData('accentColor', accentColor),
-                ]).then(results => {
-                    if (results.some(result => result === false)) console.warn('[SharkReader] Persistencia parcial fallida: settings');
-                });
-            }, 1000);
-            return () => clearTimeout(persistSettingsRef.current);
-        }, [theme, autoDarkMode, tutorialEnabled, showWelcomeTutorial, tutorialSeenHints, lang, readFlow, readLayout, pageTransition, warmMode, libraryView, accentColor, isDbLoaded, isStateHydrated]);
-
-        // ── PERSIST: user data & goals → IndexedDB (debounce 1500ms)
-        useEffect(() => {
-            if (!isDbLoaded || !isStateHydrated || isResettingRef.current) return;
-            clearTimeout(persistUserRef.current);
-            persistUserRef.current = setTimeout(() => {
-                Promise.all([
-                    saveAppData('userProfile', userProfile),
-                    saveAppData('vocabulary', vocabulary),
-                    saveAppData('dailyGoalMins', dailyGoalMins),
-                    saveAppData('weeklyGoalMins', weeklyGoalMins),
-                    saveAppData('yearlyGoal', yearlyGoal),
-                    saveAppData('achievements', achievements),
-                    saveAppData('journalEntries', journalEntries),
-                    saveAppData('challenges', challenges),
-                    saveAppData('currentFilter', currentFilter),
-                    saveAppData('sortBy', sortBy),
-                    saveAppData('categoryColors', categoryColors),
-                ]).then(results => {
-                    if (results.some(result => result === false)) console.warn('[SharkReader] Persistencia parcial fallida: usuario/stats');
-                });
-            }, 1500);
-            return () => clearTimeout(persistUserRef.current);
-        }, [userProfile, vocabulary, dailyGoalMins, weeklyGoalMins, yearlyGoal, achievements, journalEntries, challenges, currentFilter, sortBy, categoryColors, isDbLoaded, isStateHydrated]);
-
-        // ── PERSIST: addons & AI config → IndexedDB (debounce 1500ms)
-        useEffect(() => {
-            if (!isDbLoaded || !isStateHydrated || isResettingRef.current) return;
-            clearTimeout(persistAddonsRef.current);
-            persistAddonsRef.current = setTimeout(() => {
-                Promise.all([
-                    saveAppData('aiProvider', aiProvider),
-                    saveAppData('aiApiKey', aiApiKey),
-                    saveAppData('syncFolder', syncFolder),
-                    saveAppData('webdavConfig', webdavConfig),
-                    saveAppData('externalSources', externalSources),
-                    saveAppData('addons', addons),
-                    saveAppData('addonConfig', addonConfig),
-                    saveAppData('workshop', migrateWorkshopData({ addons, addonConfig, externalSources })),
-                ]).then(results => {
-                    if (results.some(result => result === false)) console.warn('[SharkReader] Persistencia parcial fallida: addons/IA');
-                });
-            }, 1500);
-            return () => clearTimeout(persistAddonsRef.current);
-        }, [aiProvider, aiApiKey, syncFolder, webdavConfig, externalSources, addons, addonConfig, isDbLoaded, isStateHydrated]);
 
         // Cleanup incremental de ObjectURL para portadas/libros hidratados desde IndexedDB.
         useEffect(() => {
@@ -1217,6 +782,190 @@ const splitBookTags = (value) => String(value || '')
             openBookNotifyTimerRef,
         });
 
+        useAppHydration({
+            setBooks,
+            setIsDbLoaded,
+            setIsStateHydrated,
+            activeObjectUrlsRef,
+            setters: {
+                setStats,
+                setJournalEntries,
+                setChallenges,
+                setVocabulary,
+                setCustomCategories,
+                setManualCollections,
+                setDeletedBookTombstones,
+                setCurrentFilter,
+                setSortBy,
+                setTabs,
+                setActiveTabId,
+                setTabTargetCfi,
+                setPanelMode,
+                setRightTabId,
+                setUserProfile,
+                setTheme,
+                setAutoDarkMode,
+                setLang,
+                setReadFlow,
+                setReadLayout,
+                setPageTransition,
+                setWarmMode,
+                setAiProvider,
+                setAiApiKey,
+                setSyncFolder,
+                setWebdavConfig,
+                setLibraryView,
+                setDailyGoalMins,
+                setYearlyGoal,
+                setWeeklyGoalMins,
+                setAchievements,
+                setAddons,
+                setAddonConfig,
+                setExternalSources,
+                setAccentColor,
+                setSettingsUpdatedAt,
+                setBackupHistory,
+                setAddonHistory,
+            },
+        });
+
+        const { resetPersistenceRuntime } = useAppPersistence({
+            books,
+            deletedBookTombstones,
+            customCategories,
+            manualCollections,
+            stats,
+            userProfile,
+            addons,
+            addonConfig,
+            externalSources,
+            syncFolder,
+            webdavConfig,
+            onSyncStatusChange,
+            theme,
+            autoDarkMode,
+            tutorialEnabled,
+            showWelcomeTutorial,
+            tutorialSeenHints,
+            lang,
+            readFlow,
+            readLayout,
+            pageTransition,
+            warmMode,
+            libraryView,
+            accentColor,
+            vocabulary,
+            dailyGoalMins,
+            weeklyGoalMins,
+            yearlyGoal,
+            achievements,
+            settingsUpdatedAt,
+            journalEntries,
+            challenges,
+            currentFilter,
+            sortBy,
+            categoryColors,
+            aiProvider,
+            aiApiKey,
+            isDbLoaded,
+            isStateHydrated,
+            isResettingRef,
+        });
+
+        // useBookRouletteAddon (más abajo) expone closeBookRoulette, pero
+        // useAccountReset se llama antes en el render — se reenvía por ref
+        // (mismo patrón que stopTtsRef en los lectores) para no depender del
+        // orden real de declaración.
+        const closeBookRouletteRef = useRef(() => {});
+
+        const deleteAccountAndData = useAccountReset({
+            isResettingRef,
+            refs: {
+                persistStatsRef,
+                openBookNotifyTimerRef,
+                challengeToastTimerRef,
+                watchedFolderTimerRef,
+                booksRef,
+                activeObjectUrlsRef,
+                bookDedupKeysRef,
+                bookTitleDedupKeysRef,
+                metadataRepairingRef,
+                contentIndexQueueRef,
+                contentIndexQueuedRef,
+                contentIndexRunningRef,
+                contentIndexMapRef,
+                progressUpdateThrottleRef,
+                activeBookIdRef,
+            },
+            actions: {
+                resetPersistenceRuntime,
+                resetTutorialCooldown,
+                resetImportState,
+                resetUI,
+                resetOnboardingState,
+                setIsDragging,
+                showNoticeToast,
+            },
+            setters: {
+                setAchievementToast,
+                setActiveTip,
+                setAchievements,
+                setStats,
+                setVocabulary,
+                setJournalEntries,
+                setChallenges,
+                setAddons,
+                setAddonConfig,
+                setExternalSources,
+                setExternalCatalogState,
+                setCustomCategories,
+                setManualCollections,
+                setDeletedBookTombstones,
+                setCategoryColors,
+                setContentIndexMap,
+                setTabs,
+                setActiveTabId,
+                setTabTargetCfi,
+                setRightTabId,
+                setPanelMode,
+                setLastReadId,
+                setCurrentFilter,
+                setSortBy,
+                setSearchTerm,
+                setFilterTags,
+                setFilterAuthors,
+                setSelectedBookIds,
+                setIsSelecting,
+                setActiveBookModal,
+                setShowComparison,
+                setShowLibraryIntel,
+                setShowAnnotationsModal,
+                setAnnotationSearch,
+                setAnnotationBookFilter,
+                closeBookRoulette: () => closeBookRouletteRef.current(),
+                setTheme,
+                setAutoDarkMode,
+                setLang,
+                setReadFlow,
+                setReadLayout,
+                setPageTransition,
+                setWarmMode,
+                setLibraryView,
+                setAccentColor,
+                setAiProvider,
+                setAiApiKey,
+                setSyncFolder,
+                setWebdavConfig,
+                setDailyGoalMins,
+                setWeeklyGoalMins,
+                setYearlyGoal,
+                setAnniversaryInfo,
+                setView,
+                setUserProfile,
+                setBooks,
+            },
+        });
+
         const readerTabBooks = useReaderTabSummaries(tabs, booksById);
         useEffect(() => { isReaderActiveRef.current = activeTabId !== null; }, [activeTabId]);
 
@@ -1260,6 +1009,7 @@ const splitBookTags = (value) => String(value || '')
             books,
             booksById,
             setBooks,
+            setDeletedBookTombstones,
             tabs,
             closeTab,
             lastReadId,
@@ -1277,6 +1027,7 @@ const splitBookTags = (value) => String(value || '')
             t,
             addons,
             addonConfig,
+            showNoticeToast,
         });
 
         useReadingSession({
@@ -1309,8 +1060,8 @@ const splitBookTags = (value) => String(value || '')
         // USUARIO
         // ─────────────────────────────────────────
         const handleLogin = () => {
-            if (!tempLoginName.trim()) { alert("Ingresa un nombre."); return; }
-            setUserProfile({ name: tempLoginName.trim(), avatar: tempLoginAvatar });
+            if (!tempLoginName.trim()) { showNoticeToast('Ingresa un nombre para crear tu perfil.', 'warning'); return; }
+            setUserProfile({ name: tempLoginName.trim(), avatar: tempLoginAvatar, joinedAt: Date.now() });
             setShowLoginModal(false);
         };
         const handleAvatarUpload = (e) => {
@@ -1374,115 +1125,6 @@ const splitBookTags = (value) => String(value || '')
             saveBookToDB(toStoredBookRecord(nextBook, {}, { includeFile: false }));
             setActiveBookModal(null);
         }, [activeBookModal]);
-
-        const deleteAccountAndData = useCallback(async () => {
-            isResettingRef.current = true;
-            sessionStorage.setItem('sharkreader_pending_reset_verify', 'true');
-
-            const keysToDelete = [
-                'sharkreader_tutorial_seen',
-                'sharkreader_tutorial_enabled',
-                'sharkreader_tutorial_hints',
-                'sharkreader_tutorial_pos',
-                'sharkreader_cat_colors',
-                'sharkreader_auto_dark_mode',
-                'sharkreader_user',
-                'sharkreader_meta',
-                'sharkreader_stats',
-                'sharkreader_categories',
-                'sharkreader_achievements',
-                'sharkreader_addons',
-                'sharkreader_addon_config',
-                'sharkreader_external_sources',
-                'sharkreader_journal',
-                'sharkreader_vocab',
-                'sharkreader_last_open',
-                'sharkreader_prev_open',
-                'sharkreader_lastReadId',
-                'sharkreader_migrated_v2',
-                'sharkreader_migrated_v5',
-                'sharkreader_lang',
-                'sharkreader_theme',
-                'sharkreader_flow',
-                'sharkreader_layout',
-                'sharkreader_warm',
-                'sharkreader_ai_provider',
-                'sharkreader_ai_key',
-                'sharkreader_sync_folder',
-                'sharkreader_libview',
-                'sharkreader_daily_goal',
-                'sharkreader_yearly_goal',
-                'sharkreader_accent',
-                'sharkreader_readFlow',
-                'sharkreader_readLayout',
-                'sharkreader_pageTransition',
-                'sharkreader_libraryView',
-                'sharkreader_sortBy',
-                'sharkreader_current_filter',
-                'sharkreader_sort_by',
-                'sharkreader_reader_session',
-                'sharkreader_toc_cache',
-                'sharkreader_content_index',
-                'sr_obsidian_exported',
-                'page_transition',
-            ];
-
-            clearTimeout(persistTimerRef.current);
-            clearTimeout(persistStatsRef.current);
-            clearTimeout(persistSettingsRef.current);
-            clearTimeout(persistUserRef.current);
-            clearTimeout(persistAddonsRef.current);
-            clearTimeout(syncTimerRef.current);
-            clearTimeout(openBookNotifyTimerRef.current);
-            openBookNotifyTimerRef.current = null;
-            resetTutorialCooldown();
-
-            try {
-                booksRef.current.forEach((book) => {
-                    if (book?.url) URL.revokeObjectURL(book.url);
-                });
-                activeObjectUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
-                activeObjectUrlsRef.current.clear();
-            } catch (err) {
-                console.warn('[SharkReader] URL cleanup during reset failed:', err);
-            }
-
-            keysToDelete.forEach((key) => localStorage.removeItem(key));
-            bookDedupKeysRef.current.clear();
-            bookTitleDedupKeysRef.current.clear();
-            metadataRepairingRef.current.clear();
-            resetImportState();
-            activeBookIdRef.current = null;
-            resetUI();
-            setAchievementToast(null);
-            setAchievements({});
-            setStats({
-                timeRead: 0, pagesTurned: 0, streak: 0, lastStreakDate: '',
-                currentDailyMins: 0, lastActiveDate: '', streakSavers: 0, history: {}, minutesByDay: {}
-            });
-            setVocabulary([]);
-            setJournalEntries([]);
-            setAddons(normalizeAddonState({}));
-            setAddonConfig(normalizeAddonConfig({}));
-            setExternalSources(DEFAULT_EXTERNAL_SOURCES);
-            setCustomCategories(['Pendientes', 'Estudio']);
-            setTabs([]);
-            setActiveTabId(null);
-            setRightTabId(null);
-            setPanelMode(false);
-            setLastReadId(null);
-            setCurrentFilter('all');
-            setView('library');
-            setUserProfile(null);
-            setBooks([]);
-
-            const resetResult = await resetAllAppDataVerified({ retries: 1 });
-            if (!resetResult.ok) {
-                console.error('[SharkReader] Reset total no pudo limpiar todos los stores:', resetResult.counts);
-                showNoticeToast('No se pudieron borrar todos los datos. Se reintentara al reiniciar.', 'warning');
-            }
-            window.location.replace(window.location.pathname);
-        }, [resetImportState, resetTutorialCooldown, resetUI, showNoticeToast]);
 
         const assignBookCategory = useCallback((bookId, category) => {
             const now = Date.now();
@@ -1599,14 +1241,25 @@ const splitBookTags = (value) => String(value || '')
 
         const bulkMarkFinished = useCallback((isFinished) => {
             const now = Date.now();
-            setBooks(prev => prev.map(b => !selectedBookIds.has(b.id) ? b : { ...b, isFinished, dateFinished: isFinished ? Date.now() : null, updatedAt: now }));
+            setBooks(prev => prev.map(b => !selectedBookIds.has(b.id) ? b : {
+                ...b,
+                isFinished,
+                dateFinished: isFinished ? now : null,
+                progressUpdatedAt: now,
+                updatedAt: now,
+            }));
             clearSelection();
         }, [selectedBookIds, clearSelection]);
 
         const bulkToggleFav = useCallback(() => {
             const now = Date.now();
             const allFav = [...selectedBookIds].every(id => books.find(b => b.id === id)?.isFav);
-            setBooks(prev => prev.map(b => !selectedBookIds.has(b.id) ? b : { ...b, isFav: !allFav, updatedAt: now }));
+            setBooks(prev => prev.map(b => !selectedBookIds.has(b.id) ? b : {
+                ...b,
+                isFav: !allFav,
+                metadataUpdatedAt: now,
+                updatedAt: now,
+            }));
         }, [selectedBookIds, books]);
 
         const bulkAddToCollection = useCallback((collectionId) => {
@@ -1622,9 +1275,83 @@ const splitBookTags = (value) => String(value || '')
             if (!selectedBookIds.size) return;
             if (!window.confirm(`¿Eliminar ${selectedBookIds.size} libro(s) seleccionado(s)? Esta acción no se puede deshacer.`)) return;
             const idsToDelete = new Set(selectedBookIds);
+            const deletedAt = Date.now();
+            setDeletedBookTombstones(prev => {
+                const next = { ...prev };
+                idsToDelete.forEach(id => { next[id] = deletedAt; });
+                return next;
+            });
             setBooks(prev => prev.filter(b => !idsToDelete.has(b.id)));
+            Promise.all([...idsToDelete].map(deleteBookFromDB)).catch(error => {
+                console.error('[SharkReader] No se pudieron eliminar todos los libros seleccionados:', error);
+            });
             clearSelection();
         }, [selectedBookIds, clearSelection]);
+
+        // Elimina libros puntuales por id (usado por el escaneo de duplicados) —
+        // sin depender de la selección múltiple de la biblioteca.
+        const deleteBooksByIds = useCallback((ids) => {
+            if (!ids?.length) return;
+            if (!window.confirm(`¿Eliminar ${ids.length} libro(s)? Esta acción no se puede deshacer.`)) return;
+            const idsToDelete = new Set(ids);
+            const deletedAt = Date.now();
+            setDeletedBookTombstones(prev => {
+                const next = { ...prev };
+                idsToDelete.forEach(id => { next[id] = deletedAt; });
+                return next;
+            });
+            setBooks(prev => prev.filter(b => !idsToDelete.has(b.id)));
+            Promise.all([...idsToDelete].map(deleteBookFromDB)).catch(error => {
+                console.error('[SharkReader] No se pudieron eliminar todos los libros detectados:', error);
+            });
+        }, []);
+
+        // Reparador de biblioteca (Fase 6): escanea portadas faltantes, metadata
+        // dañada, duplicados y archivos huérfanos en IndexedDB. El scan de
+        // huérfanos necesita leer FILES_STORE, así que es async — el resto del
+        // escaneo es síncrono y puro (libraryRepair.js).
+        const runLibraryRepairScan = useCallback(async () => {
+            setLibraryRepairLoading(true);
+            // Un resultado vacío (no null) mantiene el modal abierto mostrando
+            // "Escaneando…" en vez de parpadear cerrado mientras se espera.
+            setLibraryRepairScan(prev => prev || { missingCovers: [], corruptedMetadata: [], duplicateGroups: [], orphanedFiles: [] });
+            try {
+                const fileRecords = await loadFilesFromDB();
+                setLibraryRepairScan(scanLibraryIssues(booksRef.current, fileRecords));
+            } catch (error) {
+                console.warn('[SharkReader] No se pudo escanear la biblioteca:', error);
+                showNoticeToast('No se pudo completar el escaneo de la biblioteca.', 'warning');
+            } finally {
+                setLibraryRepairLoading(false);
+            }
+        }, [showNoticeToast]);
+
+        const closeLibraryRepair = useCallback(() => {
+            setLibraryRepairScan(null);
+        }, []);
+
+        // Un archivo huérfano no tiene libro asociado (por definición), así que
+        // no pasa por deleteBooksByIds (que filtra el array `books`) — solo hay
+        // que borrar su registro en IndexedDB directamente.
+        const deleteOrphanedFile = useCallback((id) => {
+            deleteBookFromDB(id).then(() => {
+                setLibraryRepairScan(prev => prev ? { ...prev, orphanedFiles: prev.orphanedFiles.filter(f => f.id !== id) } : prev);
+            }).catch(error => {
+                console.warn('[SharkReader] No se pudo eliminar el archivo huérfano:', error);
+                showNoticeToast('No se pudo eliminar el archivo huérfano.', 'warning');
+            });
+        }, [showNoticeToast]);
+
+        // Aplica un grupo de series detectado automáticamente: asigna `series`/`seriesIndex`
+        // a los libros del grupo (LibraryIntelligenceModal, v5.1).
+        const applySeriesCandidate = useCallback((candidate) => {
+            if (!candidate?.books?.length) return;
+            const now = Date.now();
+            const indexById = new Map(candidate.books.map(b => [b.id, b.detectedIndex]));
+            setBooks(prev => prev.map(b => indexById.has(b.id)
+                ? { ...b, series: candidate.suggestedName, seriesIndex: indexById.get(b.id), updatedAt: now, metadataUpdatedAt: now }
+                : b));
+        }, []);
 
         const toggleFilterTag = useCallback((tag) => {
             setFilterTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
@@ -1653,6 +1380,22 @@ const splitBookTags = (value) => String(value || '')
             });
         }, []);
 
+        // Reordenar arrastrando una colección hasta la posición de otra —
+        // complementa a moveManualCollection (↑↓), que sigue siendo el único
+        // camino accesible por teclado.
+        const reorderManualCollection = useCallback((draggedId, targetId) => {
+            if (draggedId === targetId) return;
+            setManualCollections(prev => {
+                const fromIdx = prev.findIndex(c => c.id === draggedId);
+                const toIdx = prev.findIndex(c => c.id === targetId);
+                if (fromIdx === -1 || toIdx === -1) return prev;
+                const next = [...prev];
+                const [moved] = next.splice(fromIdx, 1);
+                next.splice(toIdx, 0, moved);
+                return next;
+            });
+        }, []);
+
         const setCollectionEmoji = useCallback((id, emoji) => {
             setManualCollections(prev => prev.map(c => c.id === id ? { ...c, emoji: emoji || '🗂️' } : c));
         }, []);
@@ -1673,6 +1416,7 @@ const splitBookTags = (value) => String(value || '')
                 const updated = { ...normalizeAddonState(prev), [id]: validation.enabled };
                 addonsRef.current = updated;
                 saveAppData('addons', updated);
+                recordAddonHistory(id, { type: validation.enabled ? 'enabled' : 'disabled' });
                 return updated;
             });
         };
@@ -1684,9 +1428,14 @@ const splitBookTags = (value) => String(value || '')
                     [id]: { ...(prev?.[id] || {}), ...patch },
                 });
                 saveAppData('addonConfig', updated);
+                // El auto-backup reescribe lastBackupAt en cada ciclo — no es un
+                // cambio real de configuración hecho por el usuario, así que no
+                // se registra en el historial para no llenarlo de ruido.
+                const isAutoBackupTick = id === 'autoBackup' && Object.keys(patch || {}).every(key => key === 'lastBackupAt');
+                if (!isAutoBackupTick) recordAddonHistory(id, { type: 'config', patch });
                 return updated;
             });
-        }, []);
+        }, [recordAddonHistory]);
 
         // Live config update without DB save — for high-frequency operations like drag
         const setAddonConfigLive = useCallback((id, patch) => {
@@ -1786,70 +1535,52 @@ const splitBookTags = (value) => String(value || '')
         }, [addons.reminders, userProfile, addonConfig.reminders]);
 
 
-        useEffect(() => {
-            clearInterval(watchedFolderTimerRef.current);
-            const folder = addonConfig.watchedFolder?.folder;
-            if (!addons.watchedFolder || !folder || !window.electronAPI?.startFolderImportPath) return;
+        // API interna mínima que exponemos a los addons (reader/library/storage/
+        // audio/notifications/sharky) — evita que su lógica dependa directamente
+        // de window.electronAPI o de los setters internos de App.jsx.
+        const workshopApi = useMemo(
+            () => createWorkshopApi({ openBook, showNoticeToast, setStats }),
+            [openBook, showNoticeToast]
+        );
 
-            const runScan = async () => {
-                if (folderImport || Date.now() - watchedFolderLastRunRef.current < 60000) return;
-                watchedFolderLastRunRef.current = Date.now();
-                try {
-                    const session = await window.electronAPI.startFolderImportPath(folder);
-                    if (session?.sessionId) {
-                        beginFolderImportSession(session, 'Carpeta vigilada');
-                        showNoticeToast('Carpeta vigilada: escaneo iniciado.', 'info');
-                    }
-                } catch (error) {
-                    console.warn('[SharkReader] Error escaneando carpeta vigilada:', error);
-                }
-            };
+        useWatchedFolderAddon({
+            enabled: addons.watchedFolder,
+            config: addonConfig.watchedFolder,
+            api: workshopApi,
+            folderImport,
+            beginFolderImportSession,
+            timerRef: watchedFolderTimerRef,
+        });
 
-            const intervalMs = Math.max(5, addonConfig.watchedFolder?.intervalMinutes || 30) * 60000;
-            watchedFolderTimerRef.current = setInterval(runScan, intervalMs);
-            return () => clearInterval(watchedFolderTimerRef.current);
-        }, [addonConfig.watchedFolder?.folder, addonConfig.watchedFolder?.intervalMinutes, addons.watchedFolder, beginFolderImportSession, folderImport, showNoticeToast]);
+        const buildAutoBackupPayload = useCallback(() => buildPortableBackup({
+            books: books.filter(b => !b.loading).map(stripBookFilesForExport),
+            deletedBooks: deletedBookTombstones,
+            categories: customCategories,
+            collections: manualCollections,
+            stats,
+            user: userProfile || {},
+            workshop: migrateWorkshopData({ addons, addonConfig, externalSources }),
+            achievements,
+            settingsUpdatedAt,
+        }), [addonConfig, addons, achievements, books, customCategories, deletedBookTombstones, manualCollections, externalSources, settingsUpdatedAt, stats, userProfile]);
 
-        useEffect(() => {
-            const folder = addonConfig.autoBackup?.folder;
-            if (!addons.autoBackup || !folder || !window.electronAPI?.writeSyncFile || !isDbLoaded || !isStateHydrated) return;
-            const everyMs = Math.max(1, addonConfig.autoBackup?.everyDays || 7) * 86400000;
-            const lastBackupAt = Number(addonConfig.autoBackup?.lastBackupAt || 0);
-            if (Date.now() - lastBackupAt < everyMs) return;
+        useAutoBackupAddon({
+            enabled: addons.autoBackup,
+            config: addonConfig.autoBackup,
+            api: workshopApi,
+            ready: isDbLoaded && isStateHydrated,
+            buildBackup: buildAutoBackupPayload,
+            updateConfig: useCallback((patch) => updateAddonConfig('autoBackup', patch), [updateAddonConfig]),
+        });
 
-            const backup = buildPortableBackup({
-                books: books.filter(b => !b.loading).map(stripBookFilesForExport),
-                categories: customCategories,
-                collections: manualCollections,
-                stats,
-                user: userProfile || {},
-                workshop: migrateWorkshopData({ addons, addonConfig, externalSources }),
-            });
-            window.electronAPI.writeSyncFile(folder, JSON.stringify(backup, null, 2))
-                .then(() => {
-                    updateAddonConfig('autoBackup', { lastBackupAt: Date.now() });
-                    showNoticeToast('Backup automatico guardado.', 'info');
-                })
-                .catch(() => showNoticeToast('No se pudo guardar el backup automatico.', 'warning'));
-        }, [addonConfig, addons, books, customCategories, manualCollections, externalSources, isDbLoaded, isStateHydrated, stats, updateAddonConfig, userProfile, showNoticeToast]);
-
-        const spinBookRoulette = useCallback(() => {
-            const cfg = addonConfig.bookRoulette || {};
-            let pool = books.filter(book => !book.loading);
-            if (cfg.onlyUnread !== false) pool = pool.filter(b => !b.isFinished);
-            if (cfg.onlyFavorites) pool = pool.filter(b => b.isFavorite);
-            if (cfg.filterTag) {
-                const tag = cfg.filterTag.toLowerCase();
-                pool = pool.filter(b => (b.tags || []).some(t => t.toLowerCase().includes(tag)));
-            }
-            if (!pool.length) {
-                showNoticeToast('No hay libros disponibles para la ruleta.', 'warning');
-                return;
-            }
-            const selected = pool[Math.floor(Math.random() * pool.length)];
-            setRouletteBook(selected);
-            setStats(prev => ({ ...prev, rouletteSpins: (prev.rouletteSpins || 0) + 1 }));
-        }, [addonConfig.bookRoulette, books, showNoticeToast]);
+        const {
+            rouletteBook,
+            roulettePool,
+            spinBookRoulette,
+            handleRouletteResult,
+            closeBookRoulette,
+        } = useBookRouletteAddon({ config: addonConfig.bookRoulette, books, api: workshopApi });
+        useEffect(() => { closeBookRouletteRef.current = closeBookRoulette; }, [closeBookRoulette]);
 
         // ── SYSTEM TRAY: informar último libro y responder a "Continuar leyendo" ──
         const trayActionRef = useRef({ lastReadId: null, openBook: null });
@@ -1862,11 +1593,25 @@ const splitBookTags = (value) => String(value || '')
 
         useEffect(() => {
             if (!window.electronAPI?.onTrayContinueReading) return;
-            window.electronAPI.onTrayContinueReading(() => {
+            const subscription = window.electronAPI.onTrayContinueReading(() => {
                 const { lastReadId: id, openBook: open } = trayActionRef.current;
                 if (id && open) open(id);
             });
-            return () => window.electronAPI.offTrayContinueReading?.();
+            return () => window.electronAPI.offTrayContinueReading?.(subscription);
+        }, []);
+
+        const persistEpubReaderPreferences = useCallback((bookId, readerPreferences) => {
+            setBooks(previous => updateBookInList(previous, bookId, book => {
+                const currentPreferences = book.readerPreferences || null;
+                if (JSON.stringify(currentPreferences) === JSON.stringify(readerPreferences)) return book;
+                const now = Date.now();
+                return {
+                    ...book,
+                    readerPreferences,
+                    metadataUpdatedAt: now,
+                    updatedAt: now,
+                };
+            }));
         }, []);
 
         // ── v3.5: OpenLibrary metadata fetch ───────────────────────────────────
@@ -1890,18 +1635,63 @@ const splitBookTags = (value) => String(value || '')
         }, [setBooks, showNoticeToast]);
 
         const exportAllData = () => {
-            if (!userProfile) { alert("Inicia sesión para exportar."); return; }
+            if (!userProfile) { showNoticeToast('Crea tu perfil antes de exportar.', 'warning'); return; }
             const data = buildPortableBackup({
                 books: books.filter(b => !b.loading).map(stripBookFilesForExport),
+                deletedBooks: deletedBookTombstones,
                 categories: customCategories,
                 collections: manualCollections,
                 stats,
                 user: userProfile || {},
                 workshop: migrateWorkshopData({ addons, addonConfig, externalSources }),
+                achievements,
+                settingsUpdatedAt,
             });
+            const fileName = `SharkReader_Backup_${new Date().toISOString().split('T')[0]}.json`;
             const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-            const a = document.createElement('a'); a.href = url; a.download = `SharkReader_Backup_${new Date().toISOString().split('T')[0]}.json`; a.click(); URL.revokeObjectURL(url);
+            const a = document.createElement('a'); a.href = url; a.download = fileName; a.click(); URL.revokeObjectURL(url);
+            recordBackupEvent({ type: 'export-json', fileName, bookCount: (data.books || []).length });
         };
+
+        // Export selectivo — comparten pipeline de importación con exportAllData
+        // (mismo validateBackupData/BackupPreviewModal/applyBackupObject, que ya
+        // tratan cada sección como opcional), así que no hace falta tocar nada
+        // del lado de importación para que estos dos funcionen al restaurar.
+        //
+        // "Solo anotaciones" NO es uno de estos: el esquema de backup normaliza
+        // TODO libro a un registro completo (progress, rating, etc. se rellenan
+        // con valores por defecto aunque no vengan en el JSON de entrada), así
+        // que un book record parcial se restauraría pisando progreso/valoración
+        // con ceros — inseguro. Para solo-anotaciones ya existe un export de
+        // solo-lectura correcto en el panel de Anotaciones (.MD/.HTML/.JSON),
+        // pensado para leer/archivar, no para reimportar como backup.
+        const downloadJsonBackup = (data, fileNamePrefix) => {
+            const fileName = `${fileNamePrefix}_${new Date().toISOString().split('T')[0]}.json`;
+            const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+            const a = document.createElement('a'); a.href = url; a.download = fileName; a.click(); URL.revokeObjectURL(url);
+            return fileName;
+        };
+
+        const exportLibraryOnly = useCallback(() => {
+            const data = buildPortableBackup({
+                books: booksRef.current.filter(b => !b.loading).map(stripBookFilesForExport),
+                deletedBooks: deletedBookTombstones,
+            });
+            const fileName = downloadJsonBackup(data, 'SharkReader_Biblioteca');
+            recordBackupEvent({ type: 'export-library', fileName, bookCount: (data.books || []).length });
+        }, [deletedBookTombstones, recordBackupEvent]);
+
+        const exportSettingsOnly = useCallback(() => {
+            const data = buildPortableBackup({
+                books: undefined,
+                categories: customCategories,
+                collections: manualCollections,
+                workshop: migrateWorkshopData({ addons, addonConfig, externalSources }),
+                settingsUpdatedAt,
+            });
+            const fileName = downloadJsonBackup(data, 'SharkReader_Ajustes');
+            recordBackupEvent({ type: 'export-settings', fileName });
+        }, [addonConfig, addons, customCategories, externalSources, manualCollections, recordBackupEvent, settingsUpdatedAt]);
 
         const downloadBlob = useCallback((blob, filename) => {
             const url = URL.createObjectURL(blob);
@@ -1935,21 +1725,25 @@ const splitBookTags = (value) => String(value || '')
 
         const clearDiagnostics = useCallback(() => {
             clearDiagnosticEntries();
-            showNoticeToast('Diagnostico limpiado.', 'info');
+            showNoticeToast('Diagnóstico limpiado.', 'info');
         }, [showNoticeToast]);
 
         const exportZipBackup = useCallback(async (includeFiles = false) => {
             const backup = buildPortableBackup({
                 books: booksRef.current.filter(b => !b.loading).map(stripBookFilesForExport),
+                deletedBooks: deletedBookTombstones,
                 categories: customCategories,
                 collections: manualCollections,
                 stats,
                 user: userProfile || {},
                 workshop: migrateWorkshopData({ addons, addonConfig, externalSources }),
+                achievements,
+                settingsUpdatedAt,
             });
 
             const zip = new JSZip();
-            zip.file('sharkreader-backup.json', JSON.stringify(backup, null, 2));
+            const manifestJson = JSON.stringify(backup, null, 2);
+            zip.file('sharkreader-backup.json', manifestJson);
             zip.file('books-metadata.json', JSON.stringify(backup.books || [], null, 2));
             zip.file('progress-and-stats.json', JSON.stringify({ stats, books: (backup.books || []).map(book => ({
                 id: book.id,
@@ -1965,7 +1759,16 @@ const splitBookTags = (value) => String(value || '')
                 workshop: backup.workshop,
                 externalSources,
             }, null, 2));
+            zip.file('achievements.json', JSON.stringify(backup.achievements || {}, null, 2));
             zip.file('diagnostics.json', JSON.stringify(getDiagnosticEntries(), null, 2));
+            // "Backup verificable": hash del manifiesto para poder detectar en la
+            // importación si el ZIP se corrompió en el camino (descarga
+            // interrumpida, USB defectuoso, etc.) — no es una firma de seguridad,
+            // solo una comprobación de integridad.
+            zip.file('checksums.json', JSON.stringify({
+                algorithm: 'sha256',
+                'sharkreader-backup.json': await sha256Hex(manifestJson),
+            }, null, 2));
             let includedFileCount = 0;
             if (includeFiles) {
                 try {
@@ -1987,112 +1790,243 @@ const splitBookTags = (value) => String(value || '')
                 'SharkReader backup ZIP',
                 `Exportado: ${new Date().toISOString()}`,
                 '',
-                'Este ZIP contiene datos de biblioteca, metadata, progreso, configuracion y diagnostico.',
+                'Este ZIP contiene datos de biblioteca, metadata, progreso, configuración y diagnóstico.',
                 includeFiles
-                    ? `Incluye ${includedFileCount} archivo(s) EPUB/PDF en la carpeta books/ para restauracion completa.`
+                    ? `Incluye ${includedFileCount} archivo(s) EPUB/PDF en la carpeta books/ para restauración completa.`
                     : 'No incluye archivos EPUB/PDF completos para evitar duplicar contenido protegido.',
                 '',
                 'Para restaurar: Ajustes -> Datos -> Importar backup y selecciona este ZIP.',
             ].join('\n'));
 
             const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
-            downloadBlob(blob, `SharkReader_Backup${includeFiles ? '_Completo' : ''}_${new Date().toISOString().slice(0, 10)}.zip`);
-        }, [addonConfig, addons, customCategories, downloadBlob, externalSources, manualCollections, stats, userProfile]);
+            const fileName = `SharkReader_Backup${includeFiles ? '_Completo' : ''}_${new Date().toISOString().slice(0, 10)}.zip`;
+            downloadBlob(blob, fileName);
+            recordBackupEvent({ type: 'export-zip', fileName, bookCount: (backup.books || []).length, includeFiles });
+        }, [addonConfig, addons, achievements, customCategories, deletedBookTombstones, downloadBlob, externalSources, manualCollections, recordBackupEvent, settingsUpdatedAt, stats, userProfile]);
 
-        const applyBackupObject = (d) => {
-                    // Actualización funcional: tras una importación de ZIP los libros
-                    // recién añadidos no están en el closure `books`, y usarlo los perdería.
-                    if (Array.isArray(d.books) || d.meta) {
-                        setBooks(prev => {
-                            let nextBooks = prev;
-                            if (Array.isArray(d.books)) {
-                                const byId = new Map(d.books.filter(book => book?.id).map(book => [book.id, book]));
-                                const bySourcePath = new Map(d.books.filter(book => book?.sourcePath).map(book => [book.sourcePath, book]));
-                                const byLegacyKey = new Map(d.books.map(book => [`${book.originalTitle || ''}|${book.originalAuthor || ''}`, book]));
-                                nextBooks = prev.map(book => {
-                                    const imported = byId.get(book.id)
-                                        || (book.sourcePath ? bySourcePath.get(book.sourcePath) : null)
-                                        || byLegacyKey.get(`${book.originalTitle || ''}|${book.originalAuthor || ''}`);
-                                    return applyImportedBookData(book, imported);
-                                });
-                            } else if (d.meta) {
-                                nextBooks = prev.map(book => applyImportedBookData(book, d.meta[`${book.originalTitle || ''}|${book.originalAuthor || ''}`]));
-                            }
-                            queueMicrotask(() => {
-                                saveBooksToDB(nextBooks.filter(book => !book.loading).map(book => toStoredBookRecord(book, {}, { includeFile: false })));
+        const applyBackupObject = async (rawBackup, validationResult = null) => {
+            const { backup: d, warnings } = validationResult || validateBackupData(rawBackup);
+            const writes = [];
+            const effectiveDeletedBooks = await new Promise(resolve => {
+                setDeletedBookTombstones(prev => {
+                    if (!d.deletedBooks) {
+                        resolve(prev);
+                        return prev;
+                    }
+                    const next = { ...prev };
+                    Object.entries(d.deletedBooks).forEach(([bookId, timestamp]) => {
+                        next[bookId] = Math.max(Number(next[bookId] || 0), Number(timestamp || 0));
+                    });
+                    resolve(next);
+                    return next;
+                });
+            });
+            if (d.deletedBooks) {
+                writes.push(saveAppData('deletedBookTombstones', effectiveDeletedBooks));
+            }
+
+            if (Array.isArray(d.books) || d.meta || d.deletedBooks) {
+                const nextBooks = await new Promise(resolve => {
+                    setBooks(prev => {
+                        let mergedBooks = prev;
+                        if (Array.isArray(d.books)) {
+                            const byId = new Map(d.books.filter(book => book?.id).map(book => [book.id, book]));
+                            const bySourcePath = new Map(d.books.filter(book => book?.sourcePath).map(book => [book.sourcePath, book]));
+                            const byLegacyKey = new Map(d.books.map(book => [`${book.originalTitle || ''}|${book.originalAuthor || ''}`, book]));
+                            mergedBooks = prev.map(book => {
+                                const imported = byId.get(book.id)
+                                    || (book.sourcePath ? bySourcePath.get(book.sourcePath) : null)
+                                    || byLegacyKey.get(`${book.originalTitle || ''}|${book.originalAuthor || ''}`);
+                                return applyImportedBookData(book, imported);
                             });
-                            return nextBooks;
-                        });
-                    }
+                        } else if (d.meta) {
+                            mergedBooks = prev.map(book => applyImportedBookData(book, d.meta[`${book.originalTitle || ''}|${book.originalAuthor || ''}`]));
+                        }
+                        mergedBooks = mergedBooks.filter(book => !isBookDeletedByTombstone(book, effectiveDeletedBooks));
+                        resolve(mergedBooks);
+                        return mergedBooks;
+                    });
+                });
+                const liveIds = new Set(nextBooks.map(book => book.id));
+                const deletedIds = booksRef.current
+                    .filter(book => !liveIds.has(book.id))
+                    .map(book => book.id);
+                if (deletedIds.length) {
+                    writes.push(Promise.all(deletedIds.map(deleteBookFromDB)).then(() => true));
+                }
+                writes.push(saveBooksToDB(nextBooks.filter(book => !book.loading).map(book =>
+                    toStoredBookRecord(book, {}, { includeFile: false })
+                )));
+            }
 
-                    if (d.categories) {
-                        const nextCategories = Array.isArray(d.categories) ? d.categories.filter(cat => String(cat).toLowerCase() !== 'favoritos') : customCategories;
-                        setCustomCategories(nextCategories);
-                        saveSetting('categories', nextCategories);
-                    }
-                    if (Array.isArray(d.collections)) {
-                        setManualCollections(d.collections);
-                        saveSetting('collections', d.collections);
-                    }
-                    if (d.stats) {
-                        setStats(d.stats);
-                        saveAppData('stats', d.stats);
-                    }
-                    if (d.user) {
-                        setUserProfile(d.user);
-                        saveAppData('userProfile', d.user);
-                    }
-                    if (d.workshop) {
-                        const migratedWorkshop = migrateWorkshopData(d.workshop);
-                        setAddons(migratedWorkshop.addons);
-                        setAddonConfig(migratedWorkshop.addonConfig);
-                        setExternalSources(migratedWorkshop.externalSources);
-                        saveAppData('workshop', migratedWorkshop);
-                    }
+            const nextCategories = Array.isArray(d.categories)
+                ? d.categories.filter(cat => String(cat).toLowerCase() !== 'favoritos')
+                : customCategories;
+            setCustomCategories(nextCategories);
+            writes.push(saveSetting('categories', nextCategories));
 
+            if (Array.isArray(d.collections)) {
+                setManualCollections(d.collections);
+                writes.push(saveSetting('collections', d.collections));
+            }
+            if (d.stats) {
+                setStats(d.stats);
+                writes.push(saveAppData('stats', d.stats));
+            }
+            if (d.user) {
+                setUserProfile(d.user);
+                writes.push(saveAppData('userProfile', d.user));
+            }
+            if (d.workshop) {
+                const migratedWorkshop = migrateWorkshopData(d.workshop);
+                setAddons(migratedWorkshop.addons);
+                setAddonConfig(migratedWorkshop.addonConfig);
+                setExternalSources(migratedWorkshop.externalSources);
+                writes.push(saveAppData('workshop', migratedWorkshop));
+                const nextSettingsTs = Math.max(Number(d.settingsUpdatedAt || 0), Date.now());
+                setSettingsUpdatedAt(nextSettingsTs);
+                writes.push(saveAppData('settingsUpdatedAt', nextSettingsTs));
+            }
+            if (d.achievements) {
+                // Restaurar (no reemplazar): un logro ya desbloqueado en este
+                // dispositivo no debe "perderse" porque el backup importado no lo
+                // tenía — se une conservando la fecha de desbloqueo más antigua.
+                const mergedAchievements = mergeAchievements(achievements, d.achievements);
+                setAchievements(mergedAchievements);
+                writes.push(saveAppData('achievements', mergedAchievements));
+            }
+
+            const results = await Promise.all(writes);
+            if (results.some(result => result === false)) {
+                throw new Error('No se pudieron persistir todos los datos restaurados.');
+            }
+            if (warnings.length) {
+                showNoticeToast(warnings.join(' '), 'warning');
+            }
+            return { warnings };
         };
 
-        // Restaura un ZIP completo: primero importa los EPUB/PDF de books/,
-        // después aplica metadata/progreso/config del manifiesto.
-        const importZipBackup = async (f) => {
+        // Importar backup ahora es un flujo de dos pasos: "preparar" (leer,
+        // validar, verificar checksum si lo trae, calcular el diff contra la
+        // biblioteca actual) deja todo listo en `pendingImport` para que el
+        // usuario vea una previsualización antes de que se toque ningún dato —
+        // "confirmar" es lo único que realmente escribe algo.
+        const [pendingImport, setPendingImport] = useState(null);
+        const [importBusy, setImportBusy] = useState(false);
+
+        const prepareZipImport = async (f) => {
             const zip = await JSZip.loadAsync(f);
-            const bookEntries = Object.values(zip.files).filter(entry => !entry.dir && entry.name.startsWith('books/'));
-            if (bookEntries.length) {
-                showNoticeToast(`Restaurando ${bookEntries.length} libro(s) del backup…`, 'info');
-                const files = [];
-                for (const entry of bookEntries) {
-                    const blob = await entry.async('blob');
-                    const rawName = entry.name.slice('books/'.length).replace(/^[^_]+__/, '') || 'libro.epub';
-                    const type = /\.pdf$/i.test(rawName) ? 'application/pdf' : 'application/epub+zip';
-                    files.push(new File([blob], rawName, { type }));
-                }
-                await processFiles(files);
-            }
             const manifest = zip.file('sharkreader-backup.json');
-            if (manifest) {
-                const d = JSON.parse(await manifest.async('string'));
-                applyBackupObject(d);
+            if (!manifest) throw new Error('El ZIP no contiene sharkreader-backup.json');
+            if (Number(manifest?._data?.uncompressedSize || 0) > 25 * 1024 * 1024) {
+                throw new Error('El manifiesto del backup es demasiado grande.');
             }
-            showNoticeToast('Backup restaurado.', 'success');
+            const manifestText = await manifest.async('string');
+            const rawBackup = JSON.parse(manifestText);
+            const validationResult = validateBackupData(rawBackup);
+
+            // Verificación de integridad, best-effort: si el ZIP no trae
+            // checksums.json (backups viejos) simplemente no se muestra nada.
+            let checksumStatus = 'unavailable';
+            const checksumsFile = zip.file('checksums.json');
+            if (checksumsFile) {
+                try {
+                    const checksums = JSON.parse(await checksumsFile.async('string'));
+                    const expected = checksums?.['sharkreader-backup.json'];
+                    if (expected) {
+                        const actual = await sha256Hex(manifestText);
+                        checksumStatus = actual === expected ? 'ok' : 'mismatch';
+                    }
+                } catch (_) { checksumStatus = 'unavailable'; }
+            }
+
+            const bookEntries = Object.values(zip.files).filter(entry =>
+                !entry.dir
+                && entry.name.startsWith('books/')
+                && /\.(epub|pdf)$/i.test(entry.name)
+            );
+
+            setPendingImport({
+                kind: 'zip',
+                zip,
+                validationResult,
+                diff: computeBackupDiff(booksRef.current, validationResult.backup),
+                checksumStatus,
+                bookEntries,
+                bookEntryCount: bookEntries.length,
+                warnings: validationResult.warnings,
+                fileName: f.name,
+            });
+        };
+
+        const prepareJsonImport = async (f) => {
+            const text = await f.text();
+            const rawBackup = JSON.parse(text);
+            const validationResult = validateBackupData(rawBackup);
+            setPendingImport({
+                kind: 'json',
+                zip: null,
+                validationResult,
+                diff: computeBackupDiff(booksRef.current, validationResult.backup),
+                checksumStatus: 'unavailable',
+                bookEntries: [],
+                bookEntryCount: 0,
+                warnings: validationResult.warnings,
+                fileName: f.name,
+            });
         };
 
         const importData = (e) => {
             const f = e.target.files[0]; if (!f) return;
-            if (/\.zip$/i.test(f.name)) {
-                importZipBackup(f).catch(() => alert('El ZIP no es un backup válido de SharkReader.'));
-                e.target.value = '';
-                return;
-            }
-            const r = new FileReader();
-            r.onload = ev => {
-                try {
-                    const d = JSON.parse(ev.target.result);
-                    applyBackupObject(d);
-                    alert("Datos restaurados.");
-                } catch (_) { alert("Archivo inválido."); }
-            };
-            r.readAsText(f); e.target.value = '';
+            const prepare = /\.zip$/i.test(f.name) ? prepareZipImport(f) : prepareJsonImport(f);
+            prepare.catch(error => {
+                console.warn('[SharkReader] Backup rechazado:', error);
+                showNoticeToast(error?.message || 'El archivo no es un backup válido de SharkReader.', 'error');
+            });
+            e.target.value = '';
         };
+
+        const cancelPendingImport = useCallback(() => setPendingImport(null), []);
+
+        const confirmPendingImport = useCallback(async () => {
+            if (!pendingImport || importBusy) return;
+            setImportBusy(true);
+            try {
+                const { bookEntries, validationResult, diff } = pendingImport;
+                if (bookEntries.length) {
+                    showNoticeToast(`Restaurando ${bookEntries.length} libro(s) del backup…`, 'info');
+                    const restoreBatchSize = 8;
+                    for (let index = 0; index < bookEntries.length; index += restoreBatchSize) {
+                        const batchEntries = bookEntries.slice(index, index + restoreBatchSize);
+                        const files = [];
+                        for (const entry of batchEntries) {
+                            const blob = await entry.async('blob');
+                            const rawName = entry.name.slice('books/'.length).replace(/^[^_]+__/, '') || 'libro.epub';
+                            const type = /\.pdf$/i.test(rawName) ? 'application/pdf' : 'application/epub+zip';
+                            files.push(new File([blob], rawName, { type }));
+                        }
+                        await processFiles(files, { awaitMetadata: true });
+                    }
+                }
+                const countBefore = booksRef.current.length;
+                await applyBackupObject(validationResult.backup, validationResult);
+                // Validación de integridad post-restauración: si el backup no traía
+                // tombstones de borrado, la biblioteca nunca debería tener MENOS
+                // libros después de importar — si pasa, algo falló a medias.
+                if (diff.deletedBooks === 0 && booksRef.current.length < countBefore) {
+                    showNoticeToast('El backup se restauró, pero la biblioteca tiene menos libros que antes — revisa que no falte nada.', 'warning');
+                } else {
+                    showNoticeToast('Backup restaurado.', 'success');
+                }
+                recordBackupEvent({ type: 'import', fileName: pendingImport.fileName, bookCount: diff.totalIncomingBooks });
+                setPendingImport(null);
+            } catch (error) {
+                console.warn('[SharkReader] Error restaurando backup:', error);
+                showNoticeToast(error?.message || 'No se pudo restaurar el backup.', 'error');
+            } finally {
+                setImportBusy(false);
+            }
+        }, [pendingImport, importBusy, processFiles, recordBackupEvent, showNoticeToast]);
 
 
         const {
@@ -2121,7 +2055,7 @@ const splitBookTags = (value) => String(value || '')
             libraryView,
             libraryViewport,
             getAnnotationEntries,
-            shouldComputeAnnotations: sidebarOpen,
+            shouldComputeAnnotations: sidebarOpen || showAnnotationsModal,
             annotationSearch,
             annotationBookFilter,
             tabs,
@@ -2131,6 +2065,12 @@ const splitBookTags = (value) => String(value || '')
         const selectAll = useCallback(() => {
             setSelectedBookIds(new Set(displayedBooks.map(b => b.id)));
         }, [displayedBooks]);
+
+        const compareSelectedBooks = useCallback(() => {
+            if (selectedBookIds.size >= 2 && selectedBookIds.size <= 4) {
+                setShowComparison(true);
+            }
+        }, [selectedBookIds.size]);
 
 
         const exportQuotesAsImage = () => {
@@ -2142,7 +2082,7 @@ const splitBookTags = (value) => String(value || '')
                         book: b.name, author: b.author || '', date: bm.date || ''
                     }))
             );
-            if (!allQuotes.length) { alert('No tienes subrayados guardados. Selecciona texto mientras lees y activa el modo Subrayar.'); return; }
+            if (!allQuotes.length) { showNoticeToast('No tienes subrayados guardados. Selecciona texto mientras lees y activa el modo Subrayar.', 'warning'); return; }
 
             const W = 820, PAD = 32, GAP = 14;
             const ctx2 = document.createElement('canvas').getContext('2d');
@@ -2380,6 +2320,29 @@ const splitBookTags = (value) => String(value || '')
                 {folderImportOverlay && (
                     <div className="fixed inset-x-0 bottom-0 z-[640] flex justify-end p-4 md:p-6 pointer-events-none">
                         <div className="folder-import-overlay pointer-events-auto w-full max-w-md rounded-[28px] border shadow-2xl backdrop-blur-xl fade-in" style={{ backgroundColor: 'color-mix(in srgb, var(--surface-bg) 95%, transparent)', borderColor: 'var(--border-color)', color: 'var(--text-color)' }}>
+                            {folderImportOverlay.phase === 'done' && !(folderImportOverlay.failedCount > 0) ? (
+                                // Importación limpia (sin fallidos): estado compacto de "listo"
+                                // en vez de repetir la barra + grilla de stats que ya no aportan nada.
+                                <div className="p-5 md:p-6 flex items-center gap-4">
+                                    <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-2xl" style={{ backgroundColor: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>
+                                        <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                        <p className="text-[11px] font-black uppercase tracking-[0.24em] opacity-60" style={{ color: '#22c55e' }}>
+                                            {folderImportOverlay.folderName || 'Importación'}
+                                        </p>
+                                        <h3 className="mt-1 text-lg font-black leading-tight">{folderImportOverlay.title}</h3>
+                                        <p className="mt-1 text-sm opacity-70">{folderImportOverlay.detail}</p>
+                                    </div>
+                                    <button
+                                        onClick={() => { setFolderImport(null); setFailedImportRetryQueue([]); }}
+                                        aria-label="Cerrar"
+                                        className="rounded-full p-1.5 opacity-50 transition hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/5 flex-shrink-0"
+                                    >
+                                        <Icons.Close />
+                                    </button>
+                                </div>
+                            ) : (
                             <div className="p-5 md:p-6">
                                 <div className="flex items-start gap-4">
                                     <div className="folder-import-icon flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-2xl" style={{ backgroundColor: 'color-mix(in srgb, var(--highlight) 15%, transparent)', color: 'var(--highlight)' }}>
@@ -2387,7 +2350,7 @@ const splitBookTags = (value) => String(value || '')
                                     </div>
                                     <div className="min-w-0 flex-1">
                                         <p className="text-[11px] font-black uppercase tracking-[0.24em] opacity-60" style={{ color: 'var(--highlight)' }}>
-                                            {folderImportOverlay.folderName || 'Importacion'}
+                                            {folderImportOverlay.folderName || 'Importación'}
                                         </p>
                                         <h3 className="mt-1 text-lg font-black leading-tight">
                                             {folderImportOverlay.title}
@@ -2406,11 +2369,20 @@ const splitBookTags = (value) => String(value || '')
                                             {folderImportOverlay.isCancelling ? 'Cancelando...' : 'Cancelar'}
                                         </button>
                                     )}
+                                    {!folderImportOverlay.canCancel && !(folderImportOverlay.failedCount > 0) && (
+                                        <button
+                                            onClick={() => { setFolderImport(null); setFailedImportRetryQueue([]); }}
+                                            aria-label="Cerrar"
+                                            className="rounded-full p-1.5 opacity-50 transition hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/5 flex-shrink-0"
+                                        >
+                                            <Icons.Close />
+                                        </button>
+                                    )}
                                 </div>
 
                                 <div className="mt-5">
                                     <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-[0.16em] opacity-45">
-                                        <span>{folderImportOverlay.phase === 'metadata' ? 'Metadatos' : folderImportOverlay.phase === 'importing' ? 'Importacion' : 'Estado'}</span>
+                                        <span>{folderImportOverlay.phase === 'metadata' ? 'Metadatos' : folderImportOverlay.phase === 'importing' ? 'Importación' : 'Estado'}</span>
                                         <span>{folderImportOverlay.progress}%</span>
                                     </div>
                                     <div className="folder-import-progress">
@@ -2438,9 +2410,12 @@ const splitBookTags = (value) => String(value || '')
                                 {(folderImportOverlay.failedCount || 0) > 0 && (
                                     <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-3">
                                         <p className="text-[11px] font-black uppercase tracking-[0.18em] text-amber-600 dark:text-amber-200">Fallidos</p>
-                                        <div className="mt-2 max-h-20 overflow-y-auto text-xs opacity-70">
+                                        <div className="mt-2 max-h-24 overflow-y-auto space-y-1 text-xs opacity-80">
                                             {(folderImportOverlay.failedFiles || []).slice(0, 6).map((item, index) => (
-                                                <div key={`${item.name}-${index}`} className="truncate">{item.name} — {item.reason}</div>
+                                                <div key={`${item.name}-${index}`} className="flex items-center gap-2">
+                                                    <span className="truncate flex-1 min-w-0">{item.name}</span>
+                                                    <span className="flex-shrink-0 rounded-full bg-amber-500/20 px-2 py-0.5 text-[9px] font-black uppercase tracking-wide text-amber-700 dark:text-amber-300">{item.reason}</span>
+                                                </div>
                                             ))}
                                         </div>
                                         <div className="mt-3 flex gap-2">
@@ -2451,6 +2426,7 @@ const splitBookTags = (value) => String(value || '')
                                 )}
 
                                     </div>
+                            )}
                                 </div>
                             </div>
                 )}
@@ -2458,7 +2434,9 @@ const splitBookTags = (value) => String(value || '')
                 {view === 'library' && (
                     <div className="flex-shrink-0 flex items-center justify-between px-6 text-white shadow-lg topbar-glow z-20 h-16" style={{ backgroundColor: 'var(--topbar-bg)' }}>
                         <div className="flex items-center gap-5">
-                            <button onClick={() => setSidebarOpen(true)} aria-label="Abrir menú lateral" className="p-2 hover:bg-black/20 rounded-full transition"><Icons.Menu /></button>
+                            <Tooltip label="Menú">
+                                <button onClick={() => setSidebarOpen(true)} aria-label="Abrir menú lateral" className="p-2 hover:bg-black/20 rounded-full transition"><Icons.Menu /></button>
+                            </Tooltip>
                             <div className="flex items-center gap-2 cursor-pointer group" onClick={() => setCurrentFilter('all')}>
                                 <span className="text-2xl transition-transform group-hover:scale-110 duration-300 inline-block drop-shadow-md">🦈</span>
                                 <div className="flex flex-col leading-none">
@@ -2470,10 +2448,30 @@ const splitBookTags = (value) => String(value || '')
                         <div className="flex items-center gap-3 justify-end flex-1">
                             <div className="flex items-center bg-black/20 rounded-xl border border-white/10 focus-within:bg-black/30 focus-within:border-white/30 transition-all w-52 md:w-64 lg:w-80 overflow-hidden relative">
                                 <div className="absolute left-3 opacity-50 pointer-events-none"><Icons.Search /></div>
-                                <input type="text" placeholder="Título, autor, serie, tags..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
+                                <input type="text" placeholder="Título, autor, serie, tags..." value={searchTerm}
+                                    onChange={e => setSearchTerm(e.target.value)}
+                                    onFocus={() => setSearchFocused(true)}
+                                    onBlur={() => { setSearchFocused(false); commitRecentSearch(searchTerm); }}
+                                    onKeyDown={e => { if (e.key === 'Enter') commitRecentSearch(searchTerm); }}
                                     className="w-full bg-transparent text-white placeholder-white/40 pl-10 pr-8 py-2 outline-none text-sm" />
                                 {searchTerm && (
-                                    <button onClick={() => setSearchTerm('')} className="absolute right-2 opacity-50 hover:opacity-100 transition text-white text-xl leading-none">×</button>
+                                    <button onClick={() => setSearchTerm('')} aria-label="Limpiar búsqueda" className="absolute right-2 opacity-50 hover:opacity-100 transition text-white text-xl leading-none">×</button>
+                                )}
+                                {searchFocused && !searchTerm && recentSearches.length > 0 && (
+                                    <div className="absolute left-0 right-0 top-full mt-2 rounded-xl border shadow-2xl overflow-hidden z-30"
+                                        style={{ backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)' }}>
+                                        <p className="px-3 pt-2.5 pb-1 text-[9px] font-black uppercase tracking-widest opacity-40" style={{ color: 'var(--text-color)' }}>Búsquedas recientes</p>
+                                        {recentSearches.map(term => (
+                                            <div key={term}
+                                                className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-black/5 dark:hover:bg-white/5 transition"
+                                                style={{ color: 'var(--text-color)' }}
+                                                onMouseDown={e => e.preventDefault()}>
+                                                <span className="opacity-40 flex-shrink-0 [&>svg]:h-3.5 [&>svg]:w-3.5"><Icons.Search /></span>
+                                                <button className="flex-1 min-w-0 text-left truncate" onClick={() => { setSearchTerm(term); setSearchFocused(false); }}>{term}</button>
+                                                <button aria-label={`Quitar "${term}" de recientes`} className="opacity-40 hover:opacity-100 transition text-xs leading-none flex-shrink-0" onClick={() => removeRecentSearch(term)}>×</button>
+                                            </div>
+                                        ))}
+                                    </div>
                                 )}
                             </div>
                             <div className="hidden md:flex gap-3 mr-2 items-center">
@@ -2488,18 +2486,31 @@ const splitBookTags = (value) => String(value || '')
                                     </select>
                                 )}
                                 <div className="flex bg-black/20 rounded-xl p-0.5 border border-white/10">
-                                    <button onClick={() => setLibraryView('grid')} title="Vista cuadrícula"
-                                        className={`px-2 py-1 rounded-lg text-xs font-bold transition ${libraryView === 'grid' ? 'bg-white/20' : 'opacity-50 hover:opacity-80'}`}>⊞</button>
-                                    <button onClick={() => setLibraryView('list')} title="Vista lista"
-                                        className={`px-2 py-1 rounded-lg text-xs font-bold transition ${libraryView === 'list' ? 'bg-white/20' : 'opacity-50 hover:opacity-80'}`}>☰</button>
-                                    <button onClick={() => setLibraryView('series')} title="Vista series"
-                                        className={`px-2 py-1 rounded-lg text-xs font-bold transition ${libraryView === 'series' ? 'bg-white/20' : 'opacity-50 hover:opacity-80'}`}>📚</button>
-                                    <button onClick={() => { setIsSelecting(p => { if (p) clearSelection(); return !p; }); }} title="Selección múltiple"
-                                        className={`px-2 py-1 rounded-lg text-xs font-bold transition ${isSelecting ? 'bg-white/25' : 'opacity-50 hover:opacity-80'}`}>☑</button>
+                                    <Tooltip label="Vista cuadrícula">
+                                        <button onClick={() => setLibraryView('grid')} aria-pressed={libraryView === 'grid'}
+                                            className={`px-2 py-1 rounded-lg text-xs font-bold transition ${libraryView === 'grid' ? 'bg-white/20' : 'opacity-50 hover:opacity-80'}`}>⊞</button>
+                                    </Tooltip>
+                                    <Tooltip label="Vista lista">
+                                        <button onClick={() => setLibraryView('list')} aria-pressed={libraryView === 'list'}
+                                            className={`px-2 py-1 rounded-lg text-xs font-bold transition ${libraryView === 'list' ? 'bg-white/20' : 'opacity-50 hover:opacity-80'}`}>☰</button>
+                                    </Tooltip>
+                                    <Tooltip label="Vista series">
+                                        <button onClick={() => setLibraryView('series')} aria-pressed={libraryView === 'series'}
+                                            className={`px-2 py-1 rounded-lg text-xs font-bold transition ${libraryView === 'series' ? 'bg-white/20' : 'opacity-50 hover:opacity-80'}`}>📚</button>
+                                    </Tooltip>
+                                    <Tooltip label="Selección múltiple">
+                                        <button onClick={() => { setIsSelecting(p => { if (p) clearSelection(); return !p; }); }} aria-pressed={isSelecting}
+                                            className={`px-2 py-1 rounded-lg text-xs font-bold transition ${isSelecting ? 'bg-white/25' : 'opacity-50 hover:opacity-80'}`}>☑</button>
+                                    </Tooltip>
                                 </div>
-                                <div className="w-px h-6 bg-white/20 mx-1"></div>
-                                <button onClick={openFilePicker} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap"><Icons.Plus /> <span className="hidden xl:inline">{t.addBook}</span></button>
-                                <button onClick={openFolderPicker} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap"><Icons.FolderPlus /> <span className="hidden xl:inline">{t.addFolder}</span></button>
+                            </div>
+                            <div className="flex gap-2 items-center mr-2">
+                                <Tooltip label={t.addBook}>
+                                    <button onClick={openFilePicker} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-3 md:px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap"><Icons.Plus /> <span className="hidden xl:inline">{t.addBook}</span></button>
+                                </Tooltip>
+                                <Tooltip label={t.addFolder}>
+                                    <button onClick={openFolderPicker} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-3 md:px-4 py-2 rounded-xl transition font-semibold text-sm whitespace-nowrap"><Icons.FolderPlus /> <span className="hidden xl:inline">{t.addFolder}</span></button>
+                                </Tooltip>
                             </div>
                             {lastReadId && (
                                 <button onClick={() => openBook(lastReadId)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold bg-green-500 hover:bg-green-400 text-white shadow-md mr-2 whitespace-nowrap">
@@ -2507,18 +2518,39 @@ const splitBookTags = (value) => String(value || '')
                                 </button>
                             )}
                             {addons.bookRoulette && books.length > 0 && (
-                                <button onClick={spinBookRoulette} className="hidden sm:flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold bg-cyan-500 hover:bg-cyan-400 text-white shadow-md mr-2 whitespace-nowrap">
-                                    🎲 <span className="hidden lg:inline">{lang === 'en' ? 'Roulette' : 'Ruleta'}</span>
-                                </button>
+                                <Tooltip label={lang === 'en' ? 'Spin the roulette to pick a random book' : 'Gira la ruleta para elegir un libro al azar'} className="hidden sm:inline-flex mr-2">
+                                    <button onClick={spinBookRoulette} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold bg-cyan-500 hover:bg-cyan-400 text-white shadow-md whitespace-nowrap">
+                                        <Icons.Roulette className="h-4 w-4" /> <span className="hidden lg:inline">{lang === 'en' ? 'Roulette' : 'Ruleta'}</span>
+                                    </button>
+                                </Tooltip>
                             )}
+                            <Tooltip label="Anotaciones" className="mr-1">
+                                <button onClick={() => setShowAnnotationsModal(true)} aria-label="Anotaciones"
+                                    className="p-2 hover:bg-black/20 rounded-full transition">
+                                    <Icons.Bookmark />
+                                </button>
+                            </Tooltip>
                             <div className="relative z-50">
                                 {!userProfile ? (
                                     <button onClick={() => setShowLoginModal(true)} className="bg-orange-500 hover:bg-orange-400 text-white font-bold py-2 px-4 rounded-full shadow-lg transition text-sm whitespace-nowrap">{t.loginBtn}</button>
                                 ) : (
                                     <>
-                                        <button onClick={e => { e.stopPropagation(); setShowUserMenu(p => !p); }} className="p-1 hover:bg-black/20 rounded-full transition flex items-center justify-center">
-                                            <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-lg shadow-md border-2 border-white/20 overflow-hidden">{renderAvatar(userProfile.avatar)}</div>
-                                        </button>
+                                        <Tooltip label={
+                                            syncStatus === 'syncing' ? 'Sincronizando…'
+                                                : syncStatus === 'error' ? 'Error al sincronizar'
+                                                : syncStatus === 'synced' ? 'Sincronizado'
+                                                : null
+                                        }>
+                                            <button onClick={e => { e.stopPropagation(); setShowUserMenu(p => !p); }} className="relative p-1 hover:bg-black/20 rounded-full transition flex items-center justify-center">
+                                                <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-lg shadow-md border-2 border-white/20 overflow-hidden">{renderAvatar(userProfile.avatar)}</div>
+                                                {(syncFolder || webdavConfig?.url) && (
+                                                    <span
+                                                        className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--topbar-bg)] ${syncStatus === 'syncing' ? 'animate-pulse' : ''}`}
+                                                        style={{ backgroundColor: syncStatus === 'error' ? '#ef4444' : syncStatus === 'syncing' ? '#f59e0b' : '#22c55e' }}
+                                                    />
+                                                )}
+                                            </button>
+                                        </Tooltip>
                                         {showUserMenu && (
                                             <UserMenu
                                                 userProfile={userProfile}
@@ -2614,6 +2646,7 @@ const splitBookTags = (value) => String(value || '')
                     stats={stats}
                     lastReadId={lastReadId}
                     openBook={openBook}
+                    onOpenLibraryIntel={() => setShowLibraryIntel(true)}
                     currentFilter={currentFilter}
                     setCurrentFilter={setCurrentFilter}
                     setView={setView}
@@ -2634,6 +2667,7 @@ const splitBookTags = (value) => String(value || '')
                     removeManualCollection={removeManualCollection}
                     renameManualCollection={renameManualCollection}
                     moveManualCollection={moveManualCollection}
+                    reorderManualCollection={reorderManualCollection}
                     renamingCollectionId={renamingCollectionId}
                     setRenamingCollectionId={setRenamingCollectionId}
                     renamingCollectionValue={renamingCollectionValue}
@@ -2649,19 +2683,7 @@ const splitBookTags = (value) => String(value || '')
                     setShowVocabPanel={setShowVocabPanel}
                     vocabSearch={vocabSearch}
                     setVocabSearch={setVocabSearch}
-                    annotationSearch={annotationSearch}
-                    setAnnotationSearch={setAnnotationSearch}
-                    annotationBookFilter={annotationBookFilter}
-                    setAnnotationBookFilter={setAnnotationBookFilter}
-                    annotationBookOptions={annotationBookOptions}
-                    annotationSummary={annotationSummary}
-                    annotationGroups={annotationGroups}
-                    exportAnnotations={exportAnnotations}
-                    exportSingleQuote={exportSingleQuote}
-                    exportQuotesAsImage={exportQuotesAsImage}
                     addons={addons}
-                    toggleBookmarkInApp={toggleBookmarkInApp}
-                    appliedTheme={appliedTheme}
                     journalEntries={journalEntries}
                     userProfile={userProfile}
                     t={t}
@@ -2689,7 +2711,7 @@ const splitBookTags = (value) => String(value || '')
                         searchResultsWithMatches={searchResultsWithMatches}
                         virtualSearchResults={virtualSearchResults}
                         displayedBooks={displayedBooks}
-                        books={books}
+                        libraryBookCount={libraryDerived.counts.all}
                         currentFilter={currentFilter}
                         setCurrentFilter={setCurrentFilter}
                         setSearchTerm={setSearchTerm}
@@ -2709,16 +2731,14 @@ const splitBookTags = (value) => String(value || '')
                         quickEditBookId={quickEditBookId}
                         setQuickEditBookId={setQuickEditBookId}
                         saveQuickEdit={saveQuickEdit}
-                        draggedBookId={draggedBookId}
                         setDraggedBookId={setDraggedBookId}
-                        dropTargetCat={dropTargetCat}
                         setDropTargetCat={setDropTargetCat}
                         bulkToggleFav={bulkToggleFav}
                         bulkMarkFinished={bulkMarkFinished}
                         bulkAssignCategory={bulkAssignCategory}
                         bulkAssignAuthor={bulkAssignAuthor}
                         bulkAssignSeries={bulkAssignSeries}
-                        onCompareBooks={() => { if (selectedBookIds.size >= 2 && selectedBookIds.size <= 4) setShowComparison(true); }}
+                        onCompareBooks={compareSelectedBooks}
                         bulkDeleteBooks={bulkDeleteBooks}
                         bulkAddToCollection={bulkAddToCollection}
                         customCategories={customCategories}
@@ -2727,9 +2747,11 @@ const splitBookTags = (value) => String(value || '')
                 )}
                 {/* ── CONTEXT MENU ── */}
                 {contextMenu && (
-                    <div className="absolute shadow-2xl rounded-2xl py-2 z-50 text-sm border backdrop-blur-xl fade-in" style={{ top: contextMenu.y, left: contextMenu.x, backgroundColor: 'var(--surface-bg)', color: 'var(--text-color)', borderColor: 'var(--border-color)', minWidth: '220px' }}>
+                    <div className="absolute shadow-2xl rounded-2xl py-2 z-50 text-sm border backdrop-blur-xl fade-in" style={{ top: contextMenu.y, left: contextMenu.x, backgroundColor: 'var(--surface-bg)', color: 'var(--text-color)', borderColor: 'var(--border-color)', minWidth: '240px' }}>
+                        <p className="truncate px-5 pb-2 pt-1 text-[10px] font-black uppercase tracking-widest opacity-40">{contextMenu.book.name}</p>
+                        <div className="border-t mb-1" style={{ borderColor: 'var(--border-color)' }}></div>
                         <button onClick={() => { setActiveBookModal(contextMenu.book); setContextMenu(null); }} className="w-full text-left px-5 py-3 flex items-center gap-3 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition"><Icons.Info /> {t.bookInfo}</button>
-                        <button onClick={() => { fetchOpenLibraryMeta(contextMenu.book); setContextMenu(null); }} className="w-full text-left px-5 py-3 flex items-center gap-3 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition">🔍 Buscar info (OpenLibrary)</button>
+                        <button onClick={() => { fetchOpenLibraryMeta(contextMenu.book); setContextMenu(null); }} className="w-full text-left px-5 py-3 flex items-center gap-3 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition [&>svg]:h-5 [&>svg]:w-5 [&>svg]:flex-shrink-0"><Icons.Search /> Buscar info (OpenLibrary)</button>
                         <button onClick={() => { toggleFavorite(contextMenu.book.id); setContextMenu(null); }} className="w-full text-left px-5 py-3 flex items-center gap-3 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition"><Icons.Heart fill={contextMenu.book.isFav ? '#ef4444' : 'none'} className={contextMenu.book.isFav ? 'text-red-500' : ''} /> {contextMenu.book.isFav ? t.remFav : t.addFav}</button>
                         <button onClick={() => { markFinished(contextMenu.book.id); setContextMenu(null); }} className="w-full text-left px-5 py-3 flex items-center gap-3 hover:bg-black/5 dark:hover:bg-white/5 font-semibold transition">
                             {contextMenu.book.isFinished ? '↩️' : '✅'} {contextMenu.book.isFinished ? 'Marcar como leyendo' : 'Marcar como terminado'}
@@ -2755,6 +2777,59 @@ const splitBookTags = (value) => String(value || '')
                     />
                 )}
 
+                {showLibraryIntel && (
+                    <LibraryIntelligenceModal
+                        books={books}
+                        onClose={() => setShowLibraryIntel(false)}
+                        onOpenBook={openBook}
+                        onApplySeries={applySeriesCandidate}
+                        onDeleteBooks={deleteBooksByIds}
+                    />
+                )}
+
+                {showAnnotationsModal && (
+                    <AnnotationsModal
+                        onClose={() => setShowAnnotationsModal(false)}
+                        openBook={openBook}
+                        annotationSearch={annotationSearch}
+                        setAnnotationSearch={setAnnotationSearch}
+                        annotationBookFilter={annotationBookFilter}
+                        setAnnotationBookFilter={setAnnotationBookFilter}
+                        annotationBookOptions={annotationBookOptions}
+                        annotationSummary={annotationSummary}
+                        annotationGroups={annotationGroups}
+                        exportAnnotations={exportAnnotations}
+                        exportSingleQuote={exportSingleQuote}
+                        exportQuotesAsImage={exportQuotesAsImage}
+                        addons={addons}
+                        toggleBookmarkInApp={toggleBookmarkInApp}
+                        appliedTheme={appliedTheme}
+                        t={t}
+                    />
+                )}
+
+                {pendingImport && (
+                    <BackupPreviewModal
+                        pendingImport={pendingImport}
+                        busy={importBusy}
+                        onConfirm={confirmPendingImport}
+                        onCancel={cancelPendingImport}
+                    />
+                )}
+
+                {libraryRepairScan && (
+                    <LibraryRepairModal
+                        scan={libraryRepairScan}
+                        loading={libraryRepairLoading}
+                        onClose={closeLibraryRepair}
+                        onOpenBook={(id) => { openBook(id); closeLibraryRepair(); }}
+                        onFetchCover={(id) => { const book = booksById.get(id); if (book) fetchOpenLibraryMeta(book); }}
+                        onDeleteBooks={deleteBooksByIds}
+                        onDeleteOrphan={deleteOrphanedFile}
+                        onRescan={runLibraryRepairScan}
+                    />
+                )}
+
                 {/* ── MODAL SETTINGS (extracted) ── */}
                 {settingsOpen && (
                     <SettingsPanel
@@ -2768,15 +2843,29 @@ const splitBookTags = (value) => String(value || '')
                         lang={lang} setLang={setLang}
                         aiProvider={aiProvider} setAiProvider={setAiProvider}
                         aiApiKey={aiApiKey} setAiApiKey={setAiApiKey}
+                        aiTestStatus={aiTestStatus} aiTestMessage={aiTestMessage}
+                        onTestAIConnection={testAIConnection} onResetAITestStatus={resetAITestStatus}
                         syncFolder={syncFolder} setSyncFolder={setSyncFolder}
                         webdavConfig={webdavConfig} setWebdavConfig={setWebdavConfig}
                         accentColor={accentColor} setAccentColor={setAccentColor}
+                        highContrast={highContrast} setHighContrast={setHighContrast}
+                        uiScale={uiScale} setUiScale={setUiScale}
                         tutorialEnabled={tutorialEnabled} setTutorialEnabled={setTutorialEnabled}
                         onRestartTutorial={restartTutorial}
                         onExportDiagnostics={exportDiagnostics}
                         onClearDiagnostics={clearDiagnostics}
                         onExportZipBackup={exportZipBackup}
+                        onExportLibraryOnly={exportLibraryOnly}
+                        onExportSettingsOnly={exportSettingsOnly}
+                        onOpenLibraryRepair={runLibraryRepairScan}
+                        backupHistory={backupHistory}
+                        importHistory={importHistory}
                         onDeleteAccount={deleteAccountAndData}
+                        addons={addons}
+                        addonConfig={addonConfig}
+                        onToggleAddon={toggleAddon}
+                        onUpdateAddonConfig={updateAddonConfig}
+                        onOpenWorkshop={() => { setSettingsOpen(false); setShowWorkshop(true); }}
                         t={t}
                     />
                 )}
@@ -2818,6 +2907,7 @@ const splitBookTags = (value) => String(value || '')
                                 <EpubReaderBoundary onClose={closeBook} resetKey={currentBookData.id}>
                                     <Suspense fallback={readerLoader(`Abriendo ${currentBookData.name || 'libro'}...`)}>
                                         <EpubReader
+                                            key={currentBookData.id}
                                             bookData={stableCurrentBookData}
                                             targetCfi={currentTargetCfi}
                                             theme={appliedTheme} t={t} lang={lang}
@@ -2836,8 +2926,6 @@ const splitBookTags = (value) => String(value || '')
                                             onStatsUpdate={handleReaderPageTurn}
                                             onOpenBookInfo={() => setActiveBookModal(booksById.get(currentBookData.id) || currentBookData)}
                                             onSaveWord={saveWordToVocab}
-                                            aiProvider={aiProvider}
-                                            aiApiKey={aiApiKey}
                                             tabs={tabs}
                                             activeTabId={activeTabId}
                                             allBooks={readerTabBooks}
@@ -2845,6 +2933,7 @@ const splitBookTags = (value) => String(value || '')
                                             onCloseTab={closeTab}
                                             onGoToLibrary={() => setView('library')}
                                             onToggleSpread={toggleSpreadLayout}
+                                            onPersistReaderPreferences={persistEpubReaderPreferences}
                                         />
                                     </Suspense>
                                 </EpubReaderBoundary>
@@ -2852,7 +2941,9 @@ const splitBookTags = (value) => String(value || '')
                                 <EpubReaderBoundary onClose={closeBook} resetKey={currentBookData.id}>
                                     <Suspense fallback={readerLoader(`Abriendo ${currentBookData.name || 'documento'}...`)}>
                                         <PdfReader
+                                        key={currentBookData.id}
                                         bookData={stableCurrentBookData}
+                                        targetPage={currentTargetCfi}
                                         theme={appliedTheme} t={t} lang={lang}
                                         isFullscreen={isFullscreen}
                                         focusMode={addons.focusMode}
@@ -2887,12 +2978,13 @@ const splitBookTags = (value) => String(value || '')
                                             </button>
                                         );
                                     })}
-                                    <button onClick={() => { setPanelMode(false); setRightTabId(null); }} className="ml-auto px-2 text-white/40 hover:text-white transition text-lg">×</button>
+                                    <button onClick={() => { setPanelMode(false); setRightTabId(null); }} aria-label="Cerrar panel dividido" className="ml-auto px-2 text-white/40 hover:text-white transition text-lg">×</button>
                                 </div>
                                 {rightBookData.type === 'epub' ? (
                                     <EpubReaderBoundary onClose={() => { setPanelMode(false); setRightTabId(null); }} resetKey={rightBookData.id}>
                                         <Suspense fallback={readerLoader(`Abriendo ${rightBookData.name || 'libro'}...`)}>
                                             <EpubReader
+                                            key={rightBookData.id}
                                             bookData={stableRightBookData}
                                             targetCfi={tabTargetCfi[rightTabId] || null}
                                             theme={appliedTheme} t={t} lang={lang}
@@ -2911,9 +3003,8 @@ const splitBookTags = (value) => String(value || '')
                                             onStatsUpdate={handleReaderPageTurn}
                                             onOpenBookInfo={() => setActiveBookModal(booksById.get(rightBookData.id) || rightBookData)}
                                             onSaveWord={saveWordToVocab}
-                                            aiProvider={aiProvider}
-                                            aiApiKey={aiApiKey}
                                             onToggleSpread={toggleSpreadLayout}
+                                            onPersistReaderPreferences={persistEpubReaderPreferences}
                                             />
                                         </Suspense>
                                     </EpubReaderBoundary>
@@ -2921,7 +3012,9 @@ const splitBookTags = (value) => String(value || '')
                                     <EpubReaderBoundary onClose={() => { setPanelMode(false); setRightTabId(null); }} resetKey={rightBookData.id}>
                                         <Suspense fallback={readerLoader(`Abriendo ${rightBookData.name || 'documento'}...`)}>
                                             <PdfReader
+                                            key={rightBookData.id}
                                             bookData={stableRightBookData}
+                                            targetPage={tabTargetCfi[rightTabId] || null}
                                             theme={appliedTheme} t={t} lang={lang}
                                             isFullscreen={false}
                                             onClose={() => { setPanelMode(false); setRightTabId(null); }}
@@ -2958,33 +3051,22 @@ const splitBookTags = (value) => String(value || '')
                             onImportCatalogEntry={importExternalCatalogEntry}
                             onPickAddonFolder={pickAddonFolder}
                             onClose={() => setShowWorkshop(false)}
+                            addonHistory={addonHistory}
                             lang={lang}
                         />
                     </PanelErrorBoundary>
                 )}
 
-                {rouletteBook && (
-                    <div className="fixed inset-0 z-[650] flex items-center justify-center bg-black/60 p-6 backdrop-blur-sm fade-in" onClick={() => setRouletteBook(null)}>
-                        <div className="book-roulette-modal" onClick={e => e.stopPropagation()}>
-                            <p className="text-[11px] font-black uppercase tracking-[0.28em] text-sky-300">{lang === 'en' ? 'Book Roulette' : 'Ruleta de Libros'}</p>
-                            <h2 className="mt-2 text-2xl font-black">{lang === 'en' ? 'Your next read' : 'Tu próxima lectura'}</h2>
-                            <div className="mt-6 flex items-center gap-5">
-                                <div className="h-40 w-28 overflow-hidden rounded-2xl bg-slate-800 shadow-xl">
-                                    {rouletteBook.coverUrl ? <img src={rouletteBook.coverUrl} alt="" className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center p-3 text-center text-xs font-black">{rouletteBook.name}</div>}
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                    <h3 className="text-xl font-black leading-tight">{rouletteBook.name}</h3>
-                                    <p className="mt-1 text-sm opacity-60">{rouletteBook.author}</p>
-                                    <p className="mt-4 text-xs font-bold opacity-50">{rouletteBook.progress || 0}% {lang === 'en' ? 'read' : 'leído'}</p>
-                                </div>
-                            </div>
-                            <div className="mt-6 flex gap-3">
-                                <button onClick={() => openBook(rouletteBook.id)} className="flex-1 rounded-xl bg-[var(--highlight)] px-4 py-3 text-sm font-black text-white">{lang === 'en' ? 'Read now' : 'Leer ahora'}</button>
-                                <button onClick={spinBookRoulette} className="rounded-xl bg-white/10 px-4 py-3 text-sm font-bold text-white hover:bg-white/15">{lang === 'en' ? 'Again' : 'Otra vez'}</button>
-                                <button onClick={() => setRouletteBook(null)} className="rounded-xl bg-white/10 px-4 py-3 text-sm font-bold text-white hover:bg-white/15">{lang === 'en' ? 'Close' : 'Cerrar'}</button>
-                            </div>
-                        </div>
-                    </div>
+                {roulettePool && (
+                    <BookRouletteModal
+                        pool={roulettePool}
+                        winner={rouletteBook}
+                        onResult={handleRouletteResult}
+                        onRespin={() => setRouletteBook(null)}
+                        onClose={closeBookRoulette}
+                        onOpenBook={(id) => { openBook(id); closeBookRoulette(); }}
+                        lang={lang}
+                    />
                 )}
 
 
@@ -3011,7 +3093,7 @@ const splitBookTags = (value) => String(value || '')
                         {customCategories.length === 0 && (
                             <span className="text-xs opacity-40 italic">No tienes categorías. Créalas en el menú lateral.</span>
                         )}
-                        <button onClick={() => setDraggedBookId(null)} className="ml-2 opacity-40 hover:opacity-100 transition text-lg leading-none">×</button>
+                        <button onClick={() => setDraggedBookId(null)} aria-label="Cancelar arrastre" className="ml-2 opacity-40 hover:opacity-100 transition text-lg leading-none">×</button>
                     </div>
                 )}
 
@@ -3020,7 +3102,7 @@ const splitBookTags = (value) => String(value || '')
                     const r = RARITY[achievementToast.rarity];
                     return (
                         <div className="fixed top-6 right-6 z-[9999]" style={{ animation: 'fadeInUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)' }}>
-                            <div className="achievement-toast-card flex items-center gap-3 px-5 py-4 rounded-2xl shadow-2xl border"
+                            <div role="status" aria-live="polite" className="achievement-toast-card flex items-center gap-3 px-5 py-4 rounded-2xl shadow-2xl border"
                                 style={{ backgroundColor: 'var(--surface-bg)', borderColor: r.border, minWidth: 260, maxWidth: 320, '--achievement-color': r.color }}>
                                 <div className="text-3xl flex-shrink-0" style={{ animation: 'sharkyBounce 0.6s ease' }}>{achievementToast.emoji}</div>
                                 <div className="min-w-0">
@@ -3045,10 +3127,13 @@ const splitBookTags = (value) => String(value || '')
                     setView={setView}
                     setSettingsOpen={setSettingsOpen}
                     setShowWorkshop={setShowWorkshop}
-                    setSidebarOpen={setSidebarOpen}
+                    setShowAnnotationsModal={setShowAnnotationsModal}
                     setTheme={setTheme}
                     exportZipBackup={exportZipBackup}
                     spinBookRoulette={spinBookRoulette}
+                    openFilePicker={openFilePicker}
+                    openFolderPicker={openFolderPicker}
+                    onOpenLibraryRepair={runLibraryRepairScan}
                     lang={lang}
                 />
 
@@ -3062,6 +3147,7 @@ const splitBookTags = (value) => String(value || '')
                 {noticeToast && (
                     <div className="fixed bottom-6 left-6 z-[9998]" style={{ animation: 'fadeInUp 0.35s cubic-bezier(0.34, 1.56, 0.64, 1)' }}>
                         <div
+                            role="status" aria-live="polite"
                             className="notice-toast-card relative overflow-hidden flex items-start gap-3 px-4 py-3 rounded-2xl shadow-2xl border max-w-sm"
                             style={{
                                 backgroundColor: 'var(--surface-bg)',
@@ -3072,7 +3158,7 @@ const splitBookTags = (value) => String(value || '')
                             <div className="text-xl leading-none">{noticeToast.tone === 'warning' ? '⚠️' : 'ℹ️'}</div>
                             <div className="min-w-0">
                                 <p className="text-[10px] font-black uppercase tracking-[0.18em] opacity-55">
-                                    {noticeToast.tone === 'warning' ? 'Importacion' : 'Aviso'}
+                                    {noticeToast.tone === 'warning' ? 'Importación' : 'Aviso'}
                                 </p>
                                 <p className="mt-1 text-sm font-semibold opacity-85">{noticeToast.message}</p>
                             </div>
@@ -3083,10 +3169,10 @@ const splitBookTags = (value) => String(value || '')
                 {/* ── READING JOURNAL MODAL ── */}
                 {showJournalModal && (
                     <div className="fixed inset-0 z-[300] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 fade-in" onClick={() => setShowJournalModal(false)}>
-                        <div className="bg-[var(--surface-bg)] w-full max-w-md rounded-3xl shadow-2xl border border-[var(--border-color)] flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
+                        <div role="dialog" aria-modal="true" aria-label="Reading Journal" className="bg-[var(--surface-bg)] w-full max-w-md rounded-3xl shadow-2xl border border-[var(--border-color)] flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
                             <div className="flex items-center justify-between p-6 border-b flex-shrink-0" style={{ borderColor: 'var(--border-color)' }}>
                                 <h2 className="font-black text-xl flex items-center gap-2">📓 Reading Journal</h2>
-                                <button onClick={() => setShowJournalModal(false)} className="p-2 opacity-60 hover:opacity-100 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition">✕</button>
+                                <button onClick={() => setShowJournalModal(false)} aria-label="Cerrar diario de lectura" className="p-2 opacity-60 hover:opacity-100 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition">✕</button>
                             </div>
                             <div className="flex-1 overflow-y-auto p-5 space-y-3">
                                 {journalEntries.length === 0 ? (

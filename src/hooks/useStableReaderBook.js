@@ -7,7 +7,6 @@ const isSameReaderBookSnapshot = (previous, next) => {
         && previous.author === next.author
         && previous.type === next.type
         && previous.file === next.file
-        && previous.url === next.url
         && previous.pdfScale === next.pdfScale
         && previous.coverUrl === next.coverUrl
         && previous.tags === next.tags

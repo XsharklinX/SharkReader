@@ -61,6 +61,36 @@ export const getBookDedupKey = (bookLike) => {
     return `file:${type}|${normalizeBookStem(fileName)}|${size}`;
 };
 
+// Duplicados ya presentes en la biblioteca (a diferencia de getBookDedupKey,
+// que solo actúa en el momento de importar): agrupa por archivo idéntico y
+// por título+autor+tipo equivalentes, reusando las mismas claves de dedup.
+export const findDuplicateBookGroups = (books = []) => {
+    const byFileKey = new Map();
+    const byTitleKey = new Map();
+    books.forEach(book => {
+        const fileKey = getBookDedupKey(book);
+        if (!byFileKey.has(fileKey)) byFileKey.set(fileKey, []);
+        byFileKey.get(fileKey).push(book);
+
+        const titleKey = getBookTitleDedupKey(book);
+        if (!byTitleKey.has(titleKey)) byTitleKey.set(titleKey, []);
+        byTitleKey.get(titleKey).push(book);
+    });
+
+    const groups = [];
+    const seenIdSets = new Set();
+    const pushGroup = (list, reason) => {
+        if (list.length < 2) return;
+        const idsKey = list.map(b => b.id).sort().join(',');
+        if (seenIdSets.has(idsKey)) return;
+        seenIdSets.add(idsKey);
+        groups.push({ reason, books: list });
+    };
+    byFileKey.forEach(list => pushGroup(list, 'file'));
+    byTitleKey.forEach(list => pushGroup(list, 'title'));
+    return groups;
+};
+
 export const getBookType = (file, fallbackType = 'epub') => {
     const fileName = file?.name || '';
     if (/\.pdf$/i.test(fileName)) return 'pdf';
@@ -93,6 +123,9 @@ export const toStoredBookRecord = (book, overrides = {}, options = {}) => {
         isFav: !!snapshot.isFav,
         rating: snapshot.rating || 0,
         pdfScale: snapshot.pdfScale || 1.2,
+        readerPreferences: snapshot.readerPreferences && typeof snapshot.readerPreferences === 'object'
+            ? { ...snapshot.readerPreferences }
+            : null,
         lastLocation: snapshot.lastLocation || null,
         dateAdded: snapshot.dateAdded || now,
         lastReadDate: snapshot.lastReadDate || 0,
@@ -105,6 +138,7 @@ export const toStoredBookRecord = (book, overrides = {}, options = {}) => {
         updatedAt,
         progressUpdatedAt: snapshot.progressUpdatedAt || snapshot.lastReadDate || updatedAt,
         metadataUpdatedAt: snapshot.metadataUpdatedAt || updatedAt,
+        annotationsUpdatedAt: snapshot.annotationsUpdatedAt || snapshot.metadataUpdatedAt || updatedAt,
     };
     if (includeFile) record.file = snapshot.file || null;
     return record;
@@ -132,12 +166,15 @@ export const hydrateStoredBook = (stored) => {
         file,
         sourcePath: stored.sourcePath || file?.sourcePath || null,
         type: stored.type || getBookType(file, 'epub'),
-        url: file ? URL.createObjectURL(file) : null,
+        url: null,
         coverUrl: stored.customCover || stored.coverBase64 || null,
         color: stored.color || buildBookColor(stored.id),
         isFav: !!stored.isFav,
         rating: stored.rating || 0,
         pdfScale: stored.pdfScale || 1.2,
+        readerPreferences: stored.readerPreferences && typeof stored.readerPreferences === 'object'
+            ? { ...stored.readerPreferences }
+            : null,
         progress: stored.progress || 0,
         lastLocation: stored.lastLocation || null,
         dateAdded: stored.dateAdded || Date.now(),
@@ -154,11 +191,22 @@ export const hydrateStoredBook = (stored) => {
         updatedAt: stored.updatedAt || stored.lastReadDate || stored.dateAdded || Date.now(),
         progressUpdatedAt: stored.progressUpdatedAt || stored.lastReadDate || stored.updatedAt || stored.dateAdded || Date.now(),
         metadataUpdatedAt: stored.metadataUpdatedAt || stored.updatedAt || stored.dateAdded || Date.now(),
+        annotationsUpdatedAt: stored.annotationsUpdatedAt || stored.metadataUpdatedAt || stored.updatedAt || stored.dateAdded || Date.now(),
     };
 };
 
 export const stripBookFilesForExport = (book) => {
     const { file, ...record } = toStoredBookRecord(book, {}, { includeFile: false });
+    return record;
+};
+
+// Para el sync de progreso (carpeta local / WebDAV): a diferencia del export
+// manual, este backup NUNCA incluye el `file` (solo progreso/metadatos para
+// fusionar con la biblioteca ya existente en cada dispositivo), así que las
+// portadas en base64 no sirven de nada ahí — solo inflan un JSON que se
+// stringify/parsea en cada ciclo de autoguardado mientras el usuario lee.
+export const stripBookAssetsForSync = (book) => {
+    const { file, coverBase64, customCover, ...record } = toStoredBookRecord(book, {}, { includeFile: false });
     return record;
 };
 
@@ -191,6 +239,9 @@ export const applyImportedBookData = (book, imported) => {
         isFav: imported.isFav ?? book.isFav ?? false,
         rating: imported.rating ?? book.rating ?? 0,
         pdfScale: imported.pdfScale ?? book.pdfScale ?? 1.2,
+        readerPreferences: imported.readerPreferences && typeof imported.readerPreferences === 'object'
+            ? { ...imported.readerPreferences }
+            : (book.readerPreferences || null),
         lastLocation: imported.lastLocation ?? book.lastLocation ?? null,
         dateAdded: imported.dateAdded ?? book.dateAdded ?? Date.now(),
         lastReadDate: imported.lastReadDate ?? book.lastReadDate ?? 0,
@@ -206,5 +257,6 @@ export const applyImportedBookData = (book, imported) => {
         updatedAt: imported.updatedAt || book.updatedAt || Date.now(),
         progressUpdatedAt: imported.progressUpdatedAt || book.progressUpdatedAt || imported.lastReadDate || book.lastReadDate || Date.now(),
         metadataUpdatedAt: imported.metadataUpdatedAt || book.metadataUpdatedAt || imported.updatedAt || book.updatedAt || Date.now(),
+        annotationsUpdatedAt: imported.annotationsUpdatedAt || book.annotationsUpdatedAt || imported.metadataUpdatedAt || book.metadataUpdatedAt || Date.now(),
     };
 };

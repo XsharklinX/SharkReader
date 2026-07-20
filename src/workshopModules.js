@@ -45,6 +45,58 @@ const ADDON_API = {
     sharkyMascot: ['profile.read', 'stats.read', 'ui.overlay'],
 };
 
+// Traducción legible de cada capacidad declarada en ADDON_API — hasta ahora
+// esa lista se calculaba pero no se mostraba en ningún sitio (Fase 7:
+// permisos/capacidades visibles por addon).
+const API_CAPABILITY_LABELS = {
+    'reader.toolbar': addonText('Mostrar/ocultar la barra del lector', 'Show/hide the reader toolbar'),
+    'reader.location': addonText('Leer tu posición actual en el libro', 'Read your current position in the book'),
+    'reader.session': addonText('Leer el inicio/fin de tus sesiones de lectura', 'Read the start/end of your reading sessions'),
+    'journal.write': addonText('Añadir entradas a tu diario de lectura', 'Add entries to your reading journal'),
+    'reader.toc': addonText('Leer el índice del libro', "Read the book's table of contents"),
+    'reader.typography': addonText('Ajustar tipografía y espaciado del lector', 'Adjust reader typography and spacing'),
+    'bookmarks.write': addonText('Crear marcadores en tu nombre', 'Create bookmarks on your behalf'),
+    'library.view': addonText('Cambiar cómo se ve la biblioteca', 'Change how the library looks'),
+    'library.query': addonText('Leer la lista de libros de tu biblioteca', 'Read your library book list'),
+    'library.coverEffects': addonText('Aplicar efectos visuales a las portadas', 'Apply visual effects to covers'),
+    'notifications.local': addonText('Mostrar notificaciones del sistema', 'Show system notifications'),
+    'sources.external': addonText('Conectar servidores externos (OPDS/Calibre)', 'Connect external servers (OPDS/Calibre)'),
+    'imports.request': addonText('Solicitar la importación de libros', 'Request book imports'),
+    'imports.folder': addonText('Importar libros automáticamente desde una carpeta', 'Automatically import books from a folder'),
+    'ui.accessibility': addonText('Cambiar ajustes de accesibilidad de la interfaz', 'Change interface accessibility settings'),
+    'annotations.export': addonText('Leer tus subrayados para exportarlos', 'Read your highlights to export them'),
+    'canvas.render': addonText('Generar imágenes (canvas) en tu equipo', 'Generate images (canvas) on your device'),
+    'filesystem.read': addonText('Leer archivos de una carpeta que tú elijas', 'Read files from a folder you choose'),
+    'filesystem.write': addonText('Escribir archivos en una carpeta que tú elijas', 'Write files to a folder you choose'),
+    'backup.export': addonText('Generar un backup de tus datos', 'Generate a backup of your data'),
+    'stats.read': addonText('Leer tus estadísticas de lectura', 'Read your reading statistics'),
+    'profile.read': addonText('Leer tu perfil (nombre, avatar)', 'Read your profile (name, avatar)'),
+    'profile.display': addonText('Mostrar información de tu perfil', 'Display your profile information'),
+    'audio.play': addonText('Reproducir sonidos cortos', 'Play short sounds'),
+    'ui.overlay': addonText('Mostrar un elemento flotante sobre la app', 'Show a floating element over the app'),
+};
+
+// Explicación corta y práctica de cómo usar cada addon (distinto de `desc`,
+// que describe QUÉ hace — esto es "cómo lo activas / dónde lo ves").
+const ADDON_DOCS = {
+    focusMode: addonText('Actívalo y simplemente lee — la barra vuelve sola al mover el ratón arriba.', 'Turn it on and just read — the toolbar comes back on its own when you move the mouse up.'),
+    autoBookmark: addonText('No requiere nada de ti: se guarda solo al cerrar cualquier libro.', 'Requires nothing from you: it saves automatically whenever you close a book.'),
+    netflixView: addonText('Cámbialo desde el selector de vista en la biblioteca (⊞ / ☰ / 📚).', 'Switch it from the view selector in the library (⊞ / ☰ / 📚).'),
+    readingJournal: addonText('Se abre desde el menú lateral → Diario de Lectura, una vez que tengas alguna sesión registrada.', 'Open it from the side menu → Reading Journal, once you have at least one logged session.'),
+    reminders: addonText('Necesita permiso de notificaciones del sistema operativo la primera vez.', 'Needs OS notification permission the first time.'),
+    smartToc: addonText('Aparece como un panel flotante mientras lees un EPUB con índice.', 'Shows up as a floating panel while reading an EPUB that has a table of contents.'),
+    externalSources: addonText('Configura tus servidores en Workshop → esta tarjeta → Configurar.', 'Set up your servers in Workshop → this card → Configure.'),
+    dyslexiaMode: addonText('El interruptor real está en la barra del lector (Aa) — aquí solo se ajustan sus opciones.', 'The real switch lives in the reader toolbar (Aa) — this only tunes its options.'),
+    bookRoulette: addonText('Botón 🎡 en la biblioteca. Filtra por no-leídos/favoritos/etiqueta desde Configurar.', '🎡 button in the library. Filter by unread/favorites/tag from Configure.'),
+    dynamicCovers: addonText('Se aplica solo — no necesita configuración.', 'Applies automatically — no configuration needed.'),
+    quotePosters: addonText('Botón 🖼️ al subrayar texto o en el panel de Anotaciones.', '🖼️ button when highlighting text or in the Annotations panel.'),
+    watchedFolder: addonText('Elige la carpeta desde Configurar; el primer escaneo tarda hasta el intervalo elegido.', 'Choose the folder from Configure; the first scan takes up to the chosen interval.'),
+    autoBackup: addonText('Elige carpeta y frecuencia desde Configurar — corre en segundo plano, sin avisos salvo error.', 'Choose folder and frequency from Configure — runs in the background, silent unless it fails.'),
+    levelSystem: addonText('Tu nivel se ve en el menú de usuario y en Logros.', 'Your level shows in the user menu and in Achievements.'),
+    soundFeedback: addonText('Ajusta el volumen y qué eventos suenan desde Configurar.', 'Adjust volume and which events play sound from Configure.'),
+    sharkyMascot: addonText('Aparece flotando en pantalla — clic para el menú, clic derecho para acariciarlo.', 'Appears floating on screen — click for its menu, right-click to pet it.'),
+};
+
 const ADDON_CONFIG_SCHEMA = {
     focusMode: {
         idleMs: { type: 'number', min: 1000, max: 15000, fallback: 2500 },
@@ -59,7 +111,9 @@ const ADDON_CONFIG_SCHEMA = {
     autoBackup: {
         folder: { type: 'string', fallback: '' },
         everyDays: { type: 'number', min: 1, max: 90, fallback: 7 },
-        lastBackupAt: { type: 'number', min: 0, fallback: 0 },
+        // Marca de tiempo interna del último backup (App.jsx) — no es una
+        // preferencia editable, se oculta del modal de configuración.
+        lastBackupAt: { type: 'number', min: 0, fallback: 0, hidden: true },
     },
     levelSystem: {
         xpPerLevel: { type: 'number', min: 50, max: 1000, fallback: 100 },
@@ -74,7 +128,9 @@ const ADDON_CONFIG_SCHEMA = {
     },
     dyslexiaMode: {
         strongerContrast: { type: 'boolean', fallback: true },
-        readerEnabled: { type: 'boolean', fallback: false },
+        // Se activa/desactiva desde el botón dedicado dentro del lector, no
+        // como una preferencia del modal de configuración.
+        readerEnabled: { type: 'boolean', fallback: false, hidden: true },
         fontScale: { type: 'enum', values: ['1.0', '1.1', '1.2'], fallback: '1.1' },
     },
     bookRoulette: {
@@ -302,12 +358,22 @@ export const WORKSHOP_ADDONS = ADDONS.map(addon => ({
     ...addon,
     maturity: ADDON_MATURITY[addon.id] || 'experimental',
     api: ADDON_API[addon.id] || [],
+    docs: ADDON_DOCS[addon.id] || null,
     configSchema: ADDON_CONFIG_SCHEMA[addon.id] || {},
     lifecycle: {
         configurable: Boolean(ADDON_CONFIG_SCHEMA[addon.id]),
         migratable: true,
     },
 }));
+
+// Traduce las capacidades declaradas de un addon (`addon.api`, strings tipo
+// "reader.toolbar") a descripciones legibles — antes se calculaban pero no
+// se mostraban en ningún sitio (Fase 7: permisos/capacidades visibles).
+export const getAddonCapabilityLabels = (addon, lang = 'es') =>
+    (addon?.api || []).map(capability => ({
+        id: capability,
+        label: getLocalizedText(API_CAPABILITY_LABELS[capability], lang) || capability,
+    }));
 
 export const WORKSHOP_CATEGORIES = [
     { id: 'all', label: addonText('Todos', 'All') },
@@ -335,20 +401,6 @@ export const WORKSHOP_I18N = {
             reader: 'En el lector',
             library: 'En biblioteca',
             global: 'Global',
-        },
-        fields: {
-            hours: 'Horas:',
-            volume: 'Volumen:',
-            minutes: 'Min:',
-            days: 'Días:',
-        },
-        folder: {
-            choose: 'Elegir carpeta',
-            change: 'Cambiar carpeta',
-            none: 'Sin carpeta configurada',
-            chooseDestination: 'Elegir destino',
-            changeDestination: 'Cambiar destino',
-            noDestination: 'Sin destino configurado',
         },
         external: {
             title: 'Fuentes externas seguras',
@@ -384,20 +436,6 @@ export const WORKSHOP_I18N = {
             reader: 'In reader',
             library: 'In library',
             global: 'Global',
-        },
-        fields: {
-            hours: 'Hours:',
-            volume: 'Volume:',
-            minutes: 'Min:',
-            days: 'Days:',
-        },
-        folder: {
-            choose: 'Choose folder',
-            change: 'Change folder',
-            none: 'No folder configured',
-            chooseDestination: 'Choose destination',
-            changeDestination: 'Change destination',
-            noDestination: 'No destination configured',
         },
         external: {
             title: 'Safe external sources',

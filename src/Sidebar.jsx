@@ -1,14 +1,6 @@
 import React, { useState } from 'react';
 import { Icons } from './icons';
-import { useHighlightLabels, setHighlightLabel, HIGHLIGHT_SWATCHES, HIGHLIGHT_LABEL_DEFAULTS } from './highlightLabels';
 import { SMART_RULE_TYPES, describeSmartRule } from './smartCollections';
-
-const ANNOTATION_COLOR_META = {
-    yellow: { label: 'Importante', swatch: '#facc15' },
-    green: { label: 'Idea', swatch: '#22c55e' },
-    blue: { label: 'Duda', swatch: '#3b82f6' },
-    pink: { label: 'Cita', swatch: '#f472b6' },
-};
 
 const Sidebar = ({
     open,
@@ -16,6 +8,7 @@ const Sidebar = ({
     stats,
     lastReadId,
     openBook,
+    onOpenLibraryIntel,
     currentFilter,
     setCurrentFilter,
     setView,
@@ -36,6 +29,7 @@ const Sidebar = ({
     removeManualCollection,
     renameManualCollection,
     moveManualCollection,
+    reorderManualCollection,
     renamingCollectionId,
     setRenamingCollectionId,
     renamingCollectionValue,
@@ -51,19 +45,7 @@ const Sidebar = ({
     setShowVocabPanel,
     vocabSearch,
     setVocabSearch,
-    annotationSearch,
-    setAnnotationSearch,
-    annotationBookFilter,
-    setAnnotationBookFilter,
-    annotationBookOptions,
-    annotationSummary,
-    annotationGroups,
-    exportAnnotations,
-    exportSingleQuote,
-    exportQuotesAsImage,
     addons,
-    toggleBookmarkInApp,
-    appliedTheme,
     journalEntries,
     userProfile,
     t,
@@ -72,12 +54,12 @@ const Sidebar = ({
     setShowJournalModal,
     setSettingsOpen,
 }) => {
-    const highlightLabels = useHighlightLabels();
-    const [showLabelEditor, setShowLabelEditor] = useState(false);
     const [showSmartForm, setShowSmartForm] = useState(false);
     const [smartName, setSmartName] = useState('');
     const [smartRuleType, setSmartRuleType] = useState(SMART_RULE_TYPES[0].id);
     const [smartRuleValue, setSmartRuleValue] = useState('');
+    const [draggedCollectionId, setDraggedCollectionId] = useState(null);
+    const [dragOverCollectionId, setDragOverCollectionId] = useState(null);
 
     const submitSmartCollection = () => {
         const created = createSmartCollection?.(smartName, { type: smartRuleType, value: smartRuleValue });
@@ -104,7 +86,10 @@ const Sidebar = ({
                     <button onClick={onClose} aria-label="Cerrar menú" className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-full transition"><Icons.Close /></button>
                 </div>
                 <div className="flex-1 overflow-y-auto py-4 px-3">
-                    <div className="px-3 mb-5 fade-in cursor-pointer" onClick={() => { setShowStreakModal(true); onClose(); }}>
+                    <div className="px-3 mb-5 fade-in cursor-pointer" role="button" tabIndex={0}
+                        aria-label={`${t.streak}: ${stats.streak || 0} ${t.streakDays}`}
+                        onClick={() => { setShowStreakModal(true); onClose(); }}
+                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setShowStreakModal(true); onClose(); } }}>
                         <div className="bg-gradient-to-r from-orange-500/10 to-red-500/10 border border-orange-500/30 hover:border-orange-500/60 transition p-4 rounded-2xl flex items-center justify-between">
                             <div className="flex items-center gap-3">
                                 <div className={`p-2 rounded-full ${stats.streak > 0 ? 'bg-orange-500 text-white shadow-lg streak-glow' : 'bg-gray-500/20 text-gray-500'}`}><Icons.Fire /></div>
@@ -119,6 +104,15 @@ const Sidebar = ({
                         <div className="px-3 mb-5 fade-in">
                             <button onClick={() => { openBook(lastReadId); onClose(); }} className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-bold text-white shadow-md hover:shadow-lg transition" style={{ backgroundColor: 'var(--topbar-bg)' }}>
                                 <Icons.Play /> {t.continueReading}
+                            </button>
+                        </div>
+                    )}
+                    {onOpenLibraryIntel && (
+                        <div className="px-3 mb-5 fade-in">
+                            <button onClick={() => { onOpenLibraryIntel(); onClose(); }}
+                                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-sm border transition hover:bg-black/5 dark:hover:bg-white/5"
+                                style={{ borderColor: 'var(--highlight)', color: 'var(--highlight)' }}>
+                                ✨ Biblioteca inteligente
                             </button>
                         </div>
                     )}
@@ -272,7 +266,17 @@ const Sidebar = ({
                             </div>
                         )}
                         {manualCollections.map((collection, colIdx) => (
-                            <div key={collection.id} className={`flex items-center rounded-xl transition group ${currentFilter === `collection:${collection.id}` ? 'bg-fuchsia-500/10 text-fuchsia-600 dark:text-fuchsia-300' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}>
+                            <div key={collection.id}
+                                draggable={!renamingCollectionId}
+                                onDragStart={e => { setDraggedCollectionId(collection.id); e.dataTransfer.effectAllowed = 'move'; }}
+                                onDragEnd={() => { setDraggedCollectionId(null); setDragOverCollectionId(null); }}
+                                onDragOver={e => { if (draggedCollectionId && draggedCollectionId !== collection.id) { e.preventDefault(); setDragOverCollectionId(collection.id); } }}
+                                onDragLeave={() => setDragOverCollectionId(prev => (prev === collection.id ? null : prev))}
+                                onDrop={e => { e.preventDefault(); if (draggedCollectionId) reorderManualCollection?.(draggedCollectionId, collection.id); setDraggedCollectionId(null); setDragOverCollectionId(null); }}
+                                className={`flex items-center rounded-xl transition group ${currentFilter === `collection:${collection.id}` ? 'bg-fuchsia-500/10 text-fuchsia-600 dark:text-fuchsia-300' : 'hover:bg-black/5 dark:hover:bg-white/5'} ${dragOverCollectionId === collection.id ? 'ring-2 ring-[var(--highlight)]' : ''} ${draggedCollectionId === collection.id ? 'opacity-40' : ''}`}>
+                                {!renamingCollectionId && (
+                                    <span className="pl-1.5 opacity-0 group-hover:opacity-40 transition flex-shrink-0 text-xs leading-none" style={{ cursor: 'grab' }} title="Arrastra para reordenar">⠿</span>
+                                )}
                                 {renamingCollectionId === collection.id ? (
                                     <input
                                         value={renamingCollectionValue}
@@ -409,174 +413,6 @@ const Sidebar = ({
                         )}
                     </div>
 
-                    <div className="px-3">
-                        <div className="flex items-center justify-between mb-3 pl-1">
-                            <span className="font-black uppercase text-xs tracking-widest flex items-center gap-2 opacity-50">
-                                <Icons.Bookmark /> Anotaciones
-                            </span>
-                            <div className="flex gap-1">
-                                <button onClick={() => exportAnnotations('txt', annotationBookFilter === 'all' ? {} : { bookId: annotationBookFilter })} className="text-[10px] font-black px-2 py-1 rounded-lg opacity-40 hover:opacity-100 hover:text-[var(--highlight)] transition">.TXT</button>
-                                <button onClick={() => exportAnnotations('md', annotationBookFilter === 'all' ? {} : { bookId: annotationBookFilter })} className="text-[10px] font-black px-2 py-1 rounded-lg opacity-40 hover:opacity-100 hover:text-[var(--highlight)] transition">.MD</button>
-                                <button onClick={() => exportAnnotations('html', annotationBookFilter === 'all' ? {} : { bookId: annotationBookFilter })} className="text-[10px] font-black px-2 py-1 rounded-lg opacity-40 hover:opacity-100 hover:text-[var(--highlight)] transition">.HTML</button>
-                                <button onClick={() => exportAnnotations('json', annotationBookFilter === 'all' ? {} : { bookId: annotationBookFilter })} className="text-[10px] font-black px-2 py-1 rounded-lg opacity-40 hover:opacity-100 hover:text-[var(--highlight)] transition">.JSON</button>
-                                {addons.quotePosters && <button onClick={exportQuotesAsImage} title="Exportar subrayados como imagen" className="text-[10px] font-black px-2 py-1 rounded-lg opacity-40 hover:opacity-100 hover:text-[var(--highlight)] transition">🖼️</button>}
-                                <button onClick={() => setShowLabelEditor(p => !p)} title="Personalizar etiquetas de colores"
-                                    className={`text-[10px] font-black px-2 py-1 rounded-lg transition ${showLabelEditor ? 'opacity-100 text-[var(--highlight)]' : 'opacity-40 hover:opacity-100 hover:text-[var(--highlight)]'}`}>
-                                    ✏️
-                                </button>
-                            </div>
-                        </div>
-
-                        {showLabelEditor && (
-                            <div className="mb-3 rounded-2xl border p-3 space-y-2" style={{ borderColor: 'var(--border-color)' }}>
-                                <p className="text-[9px] font-black uppercase tracking-widest opacity-45">Etiquetas de subrayado</p>
-                                {Object.keys(HIGHLIGHT_LABEL_DEFAULTS).map(color => (
-                                    <div key={color} className="flex items-center gap-2">
-                                        <span className="w-4 h-4 rounded-full flex-shrink-0" style={{ backgroundColor: HIGHLIGHT_SWATCHES[color] }} />
-                                        <input
-                                            type="text"
-                                            defaultValue={highlightLabels[color]}
-                                            maxLength={24}
-                                            placeholder={HIGHLIGHT_LABEL_DEFAULTS[color]}
-                                            onBlur={e => setHighlightLabel(color, e.target.value)}
-                                            onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
-                                            className="flex-1 min-w-0 bg-black/5 dark:bg-white/5 rounded-lg px-2 py-1.5 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
-                                            style={{ color: 'var(--text-color)' }}
-                                        />
-                                    </div>
-                                ))}
-                                <p className="text-[9px] opacity-40 leading-relaxed">Dale tu propio significado a cada color (p. ej. "A investigar", "Definición"). Se aplica en el lector, aquí y en los exports.</p>
-                            </div>
-                        )}
-
-                        <div className="mb-3 space-y-2">
-                            <input
-                                type="text"
-                                value={annotationSearch}
-                                onChange={e => setAnnotationSearch(e.target.value)}
-                                placeholder="Buscar en notas y subrayados..."
-                                className="w-full bg-black/5 dark:bg-white/5 rounded-xl px-3 py-2 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
-                                style={{ color: 'var(--text-color)' }}
-                            />
-                            <select
-                                value={annotationBookFilter}
-                                onChange={e => setAnnotationBookFilter(e.target.value)}
-                                className="w-full bg-black/5 dark:bg-white/5 rounded-xl px-3 py-2 text-xs font-medium outline-none border border-transparent focus:border-[var(--highlight)] transition"
-                                style={{ color: 'var(--text-color)' }}
-                            >
-                                <option value="all">Toda la biblioteca</option>
-                                {annotationBookOptions.map(option => (
-                                    <option key={option.bookId} value={option.bookId}>
-                                        {option.bookName} ({option.total})
-                                    </option>
-                                ))}
-                            </select>
-                            <div className="grid grid-cols-4 gap-2 text-center">
-                                <div className="rounded-xl bg-black/5 dark:bg-white/5 px-2 py-2">
-                                    <p className="text-[9px] font-black uppercase tracking-widest opacity-35">Total</p>
-                                    <p className="mt-1 text-sm font-black">{annotationSummary.total}</p>
-                                </div>
-                                <div className="rounded-xl bg-black/5 dark:bg-white/5 px-2 py-2">
-                                    <p className="text-[9px] font-black uppercase tracking-widest opacity-35">Subr.</p>
-                                    <p className="mt-1 text-sm font-black">{annotationSummary.highlights}</p>
-                                </div>
-                                <div className="rounded-xl bg-black/5 dark:bg-white/5 px-2 py-2">
-                                    <p className="text-[9px] font-black uppercase tracking-widest opacity-35">Notas</p>
-                                    <p className="mt-1 text-sm font-black">{annotationSummary.notes}</p>
-                                </div>
-                                <div className="rounded-xl bg-black/5 dark:bg-white/5 px-2 py-2">
-                                    <p className="text-[9px] font-black uppercase tracking-widest opacity-35">Marc.</p>
-                                    <p className="mt-1 text-sm font-black">{annotationSummary.bookmarks}</p>
-                                </div>
-                            </div>
-                        </div>
-
-                        {annotationGroups.length === 0 ? (
-                            <div className="text-center py-8 opacity-40">
-                                <p className="text-2xl mb-2">🔖</p>
-                                <p className="text-xs font-medium">{annotationSearch || annotationBookFilter !== 'all' ? 'No hay resultados para ese filtro.' : t.noBookmarks}</p>
-                            </div>
-                        ) : annotationGroups.map(group => (
-                            <div key={`annotation-${group.bookId}`} className="mb-4 fade-in">
-                                <div className="flex items-center gap-2 mb-2 px-1">
-                                    <div className="w-1 h-4 rounded-full flex-shrink-0" style={{ backgroundColor: 'var(--highlight)' }}></div>
-                                    <button
-                                        onClick={() => setAnnotationBookFilter(prev => prev === group.bookId ? 'all' : group.bookId)}
-                                        className="text-[11px] font-black truncate flex-1 opacity-70 text-left hover:opacity-100 transition"
-                                    >
-                                        {group.bookName}
-                                    </button>
-                                    <div className="flex items-center gap-1">
-                                        <span className="text-[9px] font-bold opacity-30">{group.total}</span>
-                                        <button
-                                            onClick={() => exportAnnotations('md', { bookId: group.bookId })}
-                                            className="text-[9px] font-black px-1.5 py-0.5 rounded-lg opacity-30 hover:opacity-100 hover:text-[var(--highlight)] transition"
-                                            title="Exportar este libro"
-                                        >
-                                            .MD
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <div className="flex flex-wrap gap-1.5 px-1 mb-2">
-                                    {group.highlights > 0 && <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-black/5 dark:bg-white/5">Subrayados {group.highlights}</span>}
-                                    {group.notes > 0 && <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-black/5 dark:bg-white/5">Notas {group.notes}</span>}
-                                    {group.bookmarks > 0 && <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-black/5 dark:bg-white/5">Marcadores {group.bookmarks}</span>}
-                                </div>
-
-                                <div className="flex flex-col gap-1">
-                                    {group.entries.map(entry => {
-                                        const colorMeta = ANNOTATION_COLOR_META[entry.color] || ANNOTATION_COLOR_META.yellow;
-                                        const deleteNote = entry.kind === 'highlight'
-                                            ? `[Subrayado] "${entry.text}${entry.rawNote.endsWith('...') ? '...' : ''}"`
-                                            : entry.rawNote || entry.text;
-                                        return (
-                                            <div key={entry.id} className="group flex items-start gap-2 px-2 py-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition">
-                                                <div
-                                                    className="w-0.5 rounded-full flex-shrink-0 mt-1 self-stretch"
-                                                    style={{ backgroundColor: entry.kind === 'highlight' ? colorMeta.swatch : 'var(--highlight)', minHeight: 14 }}
-                                                />
-                                                <button
-                                                    onClick={() => { openBook(group.bookId, entry.cfi); onClose(); }}
-                                                    className="flex-1 text-left min-w-0"
-                                                >
-                                                    <div className="flex items-center gap-1.5 mb-1">
-                                                        <span className="text-[9px] font-black uppercase tracking-widest opacity-35">
-                                                            {entry.kind === 'highlight' ? 'Subrayado' : entry.kind === 'note' ? 'Nota' : 'Marcador'}
-                                                        </span>
-                                                        {entry.kind === 'highlight' && (
-                                                            <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-full" style={{ backgroundColor: `${colorMeta.swatch}22`, color: colorMeta.swatch }}>
-                                                                {highlightLabels[entry.color] || colorMeta.label}
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                    <span className={`block leading-snug ${entry.kind === 'highlight' ? 'text-[11px] font-medium line-clamp-3 italic opacity-80' : 'text-[12px] font-semibold'} break-words`} style={{ color: 'var(--text-color)' }}>
-                                                        {entry.text || 'Sin texto'}
-                                                    </span>
-                                                    <span className="text-[9px] opacity-40 font-bold">{entry.date}</span>
-                                                </button>
-                                                {addons.quotePosters && entry.kind === 'highlight' && (
-                                                    <button
-                                                        onClick={() => exportSingleQuote(entry.text, group.bookName, group.bookAuthor, appliedTheme)}
-                                                        title="Exportar como imagen"
-                                                        className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition text-[11px] flex-shrink-0 mt-0.5"
-                                                    >
-                                                        🖼️
-                                                    </button>
-                                                )}
-                                                <button
-                                                    onClick={() => toggleBookmarkInApp(group.bookId, entry.cfi, deleteNote, true)}
-                                                    className="opacity-0 group-hover:opacity-40 hover:!opacity-100 transition text-red-400 text-base leading-none flex-shrink-0 mt-0.5"
-                                                >
-                                                    ×
-                                                </button>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        ))}
-                    </div>
                 </div>
                 <div className="p-4 border-t space-y-1.5" style={{ borderColor: 'var(--border-color)' }}>
                     <button onClick={() => { setView('analytics'); onClose(); }}

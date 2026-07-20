@@ -8,9 +8,11 @@ const BookCard = React.memo(({
     isDynamic = false,
 }) => {
     const [imageFailed, setImageFailed] = useState(false);
+    const [imgLoaded, setImgLoaded] = useState(false);
 
     useEffect(() => {
         setImageFailed(false);
+        setImgLoaded(false);
     }, [book.coverUrl]);
 
     const showCover = Boolean(book.coverUrl && !imageFailed);
@@ -26,10 +28,21 @@ const BookCard = React.memo(({
         book.isFinished ? 'book-dynamic-done' : '',
     ].filter(Boolean).join(' ') : '';
 
+    const cardLabel = [
+        book.name || 'Libro',
+        book.author,
+        isSelecting ? (isSelected ? '(seleccionado)' : '(sin seleccionar)') : (book.progress > 0 ? `${book.progress}% leído` : null),
+    ].filter(Boolean).join(', ');
+
     return (
         <div
+            role="button"
+            tabIndex={0}
+            aria-label={cardLabel}
+            aria-pressed={isSelecting ? isSelected : undefined}
             className={`book-container ${isOpen && !isSelecting ? 'ring-2 ring-[var(--highlight)] ring-offset-2 ring-offset-[var(--bg-color)] rounded-lg' : ''} ${isSelected ? 'book-select-ring' : ''} ${dynamicClass}`}
             onClick={handleClick}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(e); } }}
             onContextMenu={(e) => !isSelecting && onContextMenu(e, book)}>
 
             {/* Selection checkbox */}
@@ -44,15 +57,17 @@ const BookCard = React.memo(({
                 <div className="favorite-badge"><Icons.Heart fill="white" className="w-3 h-3" /></div>
             )}
 
-            <div className={`book-cover ${showCover ? 'has-image' : ''} ${book.loading ? 'skeleton-loader' : ''}`}
+            <div className={`book-cover ${showCover ? 'has-image' : ''} ${book.loading || (showCover && !imgLoaded) ? 'skeleton-loader' : ''}`}
                 style={{ backgroundColor: showCover ? 'transparent' : book.color }}>
                 {showCover && (
                     <img
                         src={book.coverUrl}
                         alt={book.name || 'Portada'}
-                        className="absolute inset-0 h-full w-full object-cover"
+                        className="absolute inset-0 h-full w-full object-cover transition-opacity duration-300"
+                        style={{ opacity: imgLoaded ? 1 : 0 }}
                         loading="lazy"
                         decoding="async"
+                        onLoad={() => setImgLoaded(true)}
                         onError={() => setImageFailed(true)}
                     />
                 )}

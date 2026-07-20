@@ -178,6 +178,7 @@ const buildBookRecordFromLegacy = (fileRecord, metaRecord = {}) => ({
     updatedAt: metaRecord.updatedAt || metaRecord.lastReadDate || fileRecord.dateAdded || Date.now(),
     progressUpdatedAt: metaRecord.progressUpdatedAt || metaRecord.lastReadDate || metaRecord.updatedAt || fileRecord.dateAdded || Date.now(),
     metadataUpdatedAt: metaRecord.metadataUpdatedAt || metaRecord.updatedAt || fileRecord.dateAdded || Date.now(),
+    annotationsUpdatedAt: metaRecord.annotationsUpdatedAt || metaRecord.metadataUpdatedAt || metaRecord.updatedAt || fileRecord.dateAdded || Date.now(),
 });
 
 const migrateLegacyExternalDB = async (db) => {
@@ -202,9 +203,13 @@ const migrateLegacyExternalDB = async (db) => {
                 return;
             }
 
-            await putManyIntoStore(db, FILES_STORE, legacyFiles).catch(() => {});
-            localStorage.setItem('sharkreader_migrated_v2', 'true');
-            console.log(`[SharkReader] Migrados ${legacyFiles.length} libros desde DB legacy`);
+            try {
+                await putManyIntoStore(db, FILES_STORE, legacyFiles);
+                localStorage.setItem('sharkreader_migrated_v2', 'true');
+                console.log(`[SharkReader] Migrados ${legacyFiles.length} libros desde DB legacy`);
+            } catch (error) {
+                console.error('[SharkReader] No se pudo migrar la DB legacy:', error);
+            }
             resolve();
         };
     });
@@ -230,11 +235,14 @@ const migrateBooksStore = async (db) => {
         return buildBookRecordFromLegacy(fileRecord, legacyMeta[legacyKey] || {});
     });
 
-    await putManyIntoStore(db, BOOKS_STORE, migratedBooks).catch((err) => {
+    try {
+        await putManyIntoStore(db, BOOKS_STORE, migratedBooks);
+        localStorage.removeItem('sharkreader_meta');
+        localStorage.setItem(LEGACY_MIGRATION_KEY, 'true');
+        console.log(`[SharkReader] Migrados ${migratedBooks.length} libros al store books`);
+    } catch (err) {
         console.error('[SharkReader] Error migrando books store:', err);
-    });
-    localStorage.setItem(LEGACY_MIGRATION_KEY, 'true');
-    console.log(`[SharkReader] Migrados ${migratedBooks.length} libros al store books`);
+    }
 };
 
 export const initDB = () => {

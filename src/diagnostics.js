@@ -2,6 +2,7 @@ const MAX_ENTRIES = 300;
 
 let installed = false;
 let entries = [];
+let longTaskObserver = null;
 
 const toText = (value) => {
     if (value instanceof Error) return `${value.name}: ${value.message}\n${value.stack || ''}`.trim();
@@ -56,6 +57,24 @@ export const installDiagnostics = () => {
         addDiagnosticEntry('warning', args.map(toText).join(' '), { source: 'console.warn' });
         originalWarn.apply(console, args);
     };
+
+    if (typeof PerformanceObserver !== 'undefined') {
+        try {
+            longTaskObserver = new PerformanceObserver((list) => {
+                list.getEntries().forEach((entry) => {
+                    if (entry.duration < 180) return;
+                    addDiagnosticEntry('performance', 'Bloqueo prolongado del hilo de interfaz', {
+                        source: 'performance.longtask',
+                        durationMs: Math.round(entry.duration),
+                        startedAtMs: Math.round(entry.startTime),
+                    });
+                });
+            });
+            longTaskObserver.observe({ type: 'longtask', buffered: true });
+        } catch {
+            longTaskObserver = null;
+        }
+    }
 };
 
 export const getDiagnosticEntries = () => [...entries];

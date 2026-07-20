@@ -1,12 +1,14 @@
 import React from 'react';
 import { Icons, renderAvatar } from './icons';
 import { RANDOM_EMOJIS } from './translations';
+import { useModalA11y } from './hooks/useModalA11y';
 
 export default function EditProfileModal({ show, onClose, userProfile, tempEditAvatar, setTempEditAvatar, tempEditName, setTempEditName, handleEditAvatarUpload, saveEditProfile }) {
+    const dialogRef = useModalA11y(!!(show && userProfile), onClose);
     if (!show || !userProfile) return null;
     return (
         <div className="fixed inset-0 z-[400] flex items-center justify-center bg-black/80 backdrop-blur-md fade-in" onClick={onClose}>
-            <div role="dialog" aria-modal="true" aria-label="Editar Perfil" className="bg-[var(--surface-bg)] w-full max-w-sm rounded-3xl p-8 shadow-2xl relative border border-[var(--highlight)]" onClick={e => e.stopPropagation()}>
+            <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Editar Perfil" tabIndex={-1} className="bg-[var(--surface-bg)] w-full max-w-sm rounded-3xl p-8 shadow-2xl relative border border-[var(--highlight)] outline-none" onClick={e => e.stopPropagation()}>
                 <button onClick={onClose} aria-label="Cerrar" className="absolute top-4 right-4 p-2 opacity-50 hover:opacity-100 transition"><Icons.Close /></button>
                 <h2 className="text-2xl font-black mb-2 text-center" style={{ color: 'var(--highlight)' }}>Editar Perfil</h2>
                 <p className="text-xs text-center opacity-60 mb-6">Cambia tu nombre o avatar</p>

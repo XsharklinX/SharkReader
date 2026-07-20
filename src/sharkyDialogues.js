@@ -26,6 +26,10 @@ export const DIALOGUE = {
                 'Un libro abierto es un mundo nuevo.',
                 '¿Qué vas a leer hoy?',
                 'Incluso una página cuenta.',
+                '¿Le damos unos minutos a tu libro?',
+                'Tu marcapáginas te está esperando con paciencia.',
+                'Cualquier momento es buen momento para leer.',
+                'Vamos, solo un capítulo. Prometo que no duele.',
             ],
             focus: [
                 'Estoy en silencio. Tú lee.',
@@ -33,6 +37,9 @@ export const DIALOGUE = {
                 'Concentrado. Aquí estoy si me necesitas.',
                 'Leyendo... sigue, sigue.',
                 'Silencio total. Disfruta el libro.',
+                'No digo nada más. Disfruta tu historia.',
+                'Aquí quietecito, mientras tú avanzas página a página.',
+                'Todo tuyo. Yo solo observo con cariño.',
             ],
             celebrate: [
                 'Meta diaria completada. ¡Bien hecho!',
@@ -40,6 +47,9 @@ export const DIALOGUE = {
                 'Hoy has leído lo suficiente. ¡Excelente!',
                 'Meta cumplida. Merecido descanso.',
                 '¡Eso es! Objetivo diario alcanzado.',
+                'Otro día ganado para la lectura. ¡Orgulloso de ti!',
+                '¡Meta lograda! Mereces un buen estiramiento.',
+                'Cerraste el día como se debe: leyendo.',
             ],
             sleepy: [
                 'Hace rato no mordemos páginas.',
@@ -47,6 +57,9 @@ export const DIALOGUE = {
                 'Llevas unos días sin leer. ¿Todo bien?',
                 'Los libros se están poniendo ansiosos.',
                 'Un capítulo pequeño para volver al ritmo.',
+                'No pasa nada, retomamos cuando quieras.',
+                'Tu libro sigue exactamente donde lo dejaste.',
+                'Cuando estés listo, aquí seguimos los dos.',
             ],
             curious: [
                 'Tienes varias lecturas activas. ¡Qué bárbaro!',
@@ -54,6 +67,9 @@ export const DIALOGUE = {
                 'Libros activos por doquier. ¡Eso es dedicación!',
                 'Varios libros a la vez. Eres un lector de élite.',
                 'Tanta lectura activa me pone nervioso de la emoción.',
+                'Malabares de lectura. Te veo con varios libros a la vez.',
+                'Tienes un pequeño ejército de libros esperando turno.',
+                'Cada libro activo es una historia que no quieres soltar.',
             ],
             ambient: [
                 'Un capítulo pequeño también cuenta.',
@@ -68,6 +84,12 @@ export const DIALOGUE = {
                 'Hoy puede ser un gran día lector.',
                 'No hay prisa, pero sí hay páginas.',
                 '¿Abrimos un libro juntos?',
+                'Estoy aquí, cuidando tu progreso.',
+                'Un ratito de lectura y ya verás cómo se pasa el día.',
+                'Tu biblioteca crece más rápido que tu tiempo libre. Lo entiendo.',
+                'Puedo esperar. Los buenos libros también saben esperar.',
+                'De vez en cuando, deja que un libro te sorprenda.',
+                'Hoy podría ser el día en que empieces algo nuevo.',
             ],
         },
         en: {
@@ -82,6 +104,10 @@ export const DIALOGUE = {
                 'An open book is a new world.',
                 'What will you read today?',
                 'Even one page counts.',
+                'Give your book a few minutes?',
+                'Your bookmark is patiently waiting.',
+                'Any time is a good time to read.',
+                'Come on, just one chapter. I promise it will not hurt.',
             ],
             focus: [
                 'Quiet mode. Keep reading.',
@@ -89,6 +115,9 @@ export const DIALOGUE = {
                 'Focused. Here if you need me.',
                 'Reading... keep going.',
                 'Total silence. Enjoy the book.',
+                'Not saying another word. Enjoy your story.',
+                'Staying quiet while you turn the pages.',
+                'All yours. I am just watching, fondly.',
             ],
             celebrate: [
                 'Daily goal complete. Well done!',
@@ -96,6 +125,9 @@ export const DIALOGUE = {
                 'You have read enough today. Excellent!',
                 'Goal met. You deserve a rest.',
                 'That is it! Daily target reached.',
+                'Another day won for reading. Proud of you!',
+                'Goal achieved! You earned a good stretch.',
+                'You closed the day the right way: reading.',
             ],
             sleepy: [
                 'We have not bitten pages lately.',
@@ -103,6 +135,9 @@ export const DIALOGUE = {
                 'A few days without reading. All good?',
                 'The books are getting anxious.',
                 'A small chapter to get back on track.',
+                'No worries, we pick it back up whenever you want.',
+                'Your book is exactly where you left it.',
+                'When you are ready, we will both be here.',
             ],
             curious: [
                 'Several active reads. Look at you go!',
@@ -110,6 +145,9 @@ export const DIALOGUE = {
                 'Books active everywhere. That is dedication!',
                 'Several books at once. Elite reader.',
                 'So much active reading. I am excited for you.',
+                'Reading juggling. I see several books at once.',
+                'You have a small army of books waiting their turn.',
+                'Every active book is a story you do not want to let go of.',
             ],
             ambient: [
                 'A small chapter counts too.',
@@ -124,6 +162,12 @@ export const DIALOGUE = {
                 'Today could be a great reading day.',
                 'No rush, but there are pages.',
                 'Shall we open a book together?',
+                'I am here, watching over your progress.',
+                'A little reading and the day flies by.',
+                'Your library grows faster than your free time. I get it.',
+                'I can wait. Good books know how to wait too.',
+                'Every now and then, let a book surprise you.',
+                'Today could be the day you start something new.',
             ],
         },
     },
@@ -140,6 +184,10 @@ export const DIALOGUE = {
                 'El libro abierto no avanza solo, te lo juro.',
                 'Hoy podría ser el día. O no. Pero podría.',
                 '¿Abrimos uno o solo miramos las portadas?',
+                'Tengo aletas, no manos. No puedo leerlo por ti.',
+                'Tu biblioteca digital pesa más que tu compromiso. Es broma. O no.',
+                'Cinco minutos de lectura o cinco minutos mirando la pantalla en negro. Tú decides.',
+                'El libro ya tiene ganas. Tú todavía no. Empatemos.',
             ],
             focus: [
                 'Ese capítulo no se va a leer solo.',
@@ -147,6 +195,9 @@ export const DIALOGUE = {
                 'Shhhh. Estoy observando.',
                 'Si me distraes ahora te muerdo.',
                 'Concentrado como nunca. Tú también.',
+                'Ni una palabra más. Estás en zona de lectura.',
+                'Yo aquí, respirando bajito, para no romper la magia.',
+                'Este es tu momento. Yo solo cuento las páginas en silencio.',
             ],
             celebrate: [
                 '¡Hoy mordimos suficientes páginas!',
@@ -154,6 +205,9 @@ export const DIALOGUE = {
                 'Lo hiciste. No esperaba menos de ti... bueno, sí.',
                 '¡Eso es leer! Me emociono yo solo.',
                 'Meta completada. ¿Quién necesita motivación?',
+                'Objetivo del día: aplastado. Como se debe.',
+                'Meta cumplida. Voy a nadar en círculos de la emoción.',
+                'Lo lograste. Hasta yo me sorprendí un poco.',
             ],
             sleepy: [
                 'Tu biblioteca me está mirando raro.',
@@ -161,6 +215,9 @@ export const DIALOGUE = {
                 'Creo que tu marcapáginas olvidó cómo funciona.',
                 'El polvo en los libros no es estético, es una queja.',
                 'Llevas días sin leer. Los libros ya tienen terapeuta.',
+                'Tu racha lectora está en cuidados intensivos, pero se salva.',
+                'El libro empezó a preguntar por ti. Educadamente, pero preguntó.',
+                'Nada grave, solo un poco de polvo emocional acumulado.',
             ],
             curious: [
                 '¡Multiverso de lectura detectado!',
@@ -168,6 +225,9 @@ export const DIALOGUE = {
                 'Tantos libros activos. El caos me encanta.',
                 'Modo multitarea lectora activado.',
                 'El tiburón no juzga. Pero sí cuenta los libros.',
+                'A este paso vas a necesitar una segunda biblioteca.',
+                'Tantos libros abiertos que hasta yo perdí la cuenta. Casi.',
+                'Coleccionas historias a medias como quien colecciona estampillas.',
             ],
             ambient: [
                 'Yo aquí, vigilando. Sin prisa.',
@@ -182,6 +242,12 @@ export const DIALOGUE = {
                 'El tiburón aprueba la lectura. Por si acaso.',
                 'Nada como un capítulo antes de dormir.',
                 'Tu biblioteca tiene fe en ti.',
+                'Nado en círculos esperando que abras un libro.',
+                'Hoy tampoco te voy a dejar en paz con esto.',
+                'Los libros llevan la cuenta de tus excusas. Van muchas.',
+                'Cinco minutos. Ni te vas a dar cuenta cuando pasen dos horas.',
+                'Estadísticamente hablando, leer es mejor que scrollear. Estadísticamente.',
+                'Sigo aquí, siendo la voz de tu conciencia lectora.',
             ],
         },
         en: {
@@ -196,6 +262,10 @@ export const DIALOGUE = {
                 'The open book is not moving by itself. I promise.',
                 'Today could be the day. Or not. But it could.',
                 'Shall we open one or just look at covers?',
+                'I have fins, not hands. I cannot read it for you.',
+                'Your digital library weighs more than your commitment. Kidding. Maybe.',
+                'Five minutes of reading or five minutes staring at a black screen. Your call.',
+                'The book is already excited. You are not yet. Let us meet halfway.',
             ],
             focus: [
                 'That chapter will not read itself.',
@@ -203,6 +273,9 @@ export const DIALOGUE = {
                 'Shhhh. I am watching.',
                 'If you distract me now I will bite.',
                 'Focused like never. You too.',
+                'Not another word. You are in reading zone.',
+                'Breathing quietly here so I do not break the magic.',
+                'This is your moment. I am just counting pages in silence.',
             ],
             celebrate: [
                 'We bit enough pages today!',
@@ -210,6 +283,9 @@ export const DIALOGUE = {
                 'You did it. I expected no less... well, maybe less.',
                 'That is reading! I am moved.',
                 'Goal complete. Who needs motivation?',
+                'Daily target: crushed. As it should be.',
+                'Goal met. Swimming in circles from the excitement.',
+                'You did it. Even I am a little surprised.',
             ],
             sleepy: [
                 'Your library is staring at me weirdly.',
@@ -217,6 +293,9 @@ export const DIALOGUE = {
                 'I think your bookmark forgot how it works.',
                 'The dust on the books is not aesthetic. It is a complaint.',
                 'Days without reading. The books have a therapist now.',
+                'Your streak is in intensive care, but it will make it.',
+                'The book has started asking about you. Politely, but asking.',
+                'Nothing serious, just some emotional dust built up.',
             ],
             curious: [
                 'Reading multiverse detected!',
@@ -224,6 +303,9 @@ export const DIALOGUE = {
                 'So many active books. I love the chaos.',
                 'Reader multitask mode activated.',
                 'The shark does not judge. But does count.',
+                'At this rate you will need a second library.',
+                'So many open books even I almost lost count.',
+                'You collect half-finished stories like someone collects stamps.',
             ],
             ambient: [
                 'Here I am, watching. No rush.',
@@ -238,43 +320,49 @@ export const DIALOGUE = {
                 'The shark approves of reading. Just in case.',
                 'Nothing like a chapter before bed.',
                 'Your library has faith in you.',
+                'Swimming in circles waiting for you to open a book.',
+                'Not letting this go today either.',
+                'The books are keeping track of your excuses. There are many.',
+                'Five minutes. You will not even notice two hours pass.',
+                'Statistically speaking, reading beats scrolling. Statistically.',
+                'Still here, being the voice of your reading conscience.',
             ],
         },
     },
     serious: {
         es: {
-            idle: ['Meta pendiente.', 'Lectura sin comenzar.', 'Objetivo diario sin cumplir.', 'Tiempo disponible. Libros esperando.', 'Pendiente de avance.'],
-            focus: ['Modo lectura activo.', 'Concentración máxima.', 'Leyendo. Sin distracciones.', 'Progreso en curso.', 'Modo enfoque.'],
-            celebrate: ['Meta diaria completada.', 'Objetivo cumplido.', 'Progreso diario: completado.', 'Meta alcanzada.', 'Rendimiento: óptimo.'],
-            sleepy: ['Lectura pendiente hace varios días.', 'Racha interrumpida.', 'Sin actividad lectora reciente.', 'Días sin registro de lectura.', 'Actividad pendiente.'],
-            curious: ['Lecturas activas múltiples.', 'Varios libros en progreso.', 'Lecturas paralelas activas.', 'Múltiples avances registrados.', 'Frentes de lectura abiertos.'],
-            ambient: ['Sin actividad reciente.', 'Lectura disponible.', 'Meta diaria pendiente.', 'Objetivo sin alcanzar.', 'Registro de lectura esperado.', 'Estado: inactivo.', 'Próximo capítulo pendiente.', 'Progreso: pausado.'],
+            idle: ['Meta pendiente.', 'Lectura sin comenzar.', 'Objetivo diario sin cumplir.', 'Tiempo disponible. Libros esperando.', 'Pendiente de avance.', 'Sesión de lectura no iniciada.', 'Ventana de lectura disponible.', 'Acción requerida: abrir libro.'],
+            focus: ['Modo lectura activo.', 'Concentración máxima.', 'Leyendo. Sin distracciones.', 'Progreso en curso.', 'Modo enfoque.', 'Sesión en curso. No interrumpir.', 'Estado: lectura activa.'],
+            celebrate: ['Meta diaria completada.', 'Objetivo cumplido.', 'Progreso diario: completado.', 'Meta alcanzada.', 'Rendimiento: óptimo.', 'Resultado del día: satisfactorio.', 'Objetivo diario: superado.'],
+            sleepy: ['Lectura pendiente hace varios días.', 'Racha interrumpida.', 'Sin actividad lectora reciente.', 'Días sin registro de lectura.', 'Actividad pendiente.', 'Inactividad prolongada detectada.', 'Reanudación recomendada.'],
+            curious: ['Lecturas activas múltiples.', 'Varios libros en progreso.', 'Lecturas paralelas activas.', 'Múltiples avances registrados.', 'Frentes de lectura abiertos.', 'Carga de lectura: alta.', 'Gestión de múltiples títulos en curso.'],
+            ambient: ['Sin actividad reciente.', 'Lectura disponible.', 'Meta diaria pendiente.', 'Objetivo sin alcanzar.', 'Registro de lectura esperado.', 'Estado: inactivo.', 'Próximo capítulo pendiente.', 'Progreso: pausado.', 'Recordatorio: hábito de lectura pendiente.', 'Ventana de oportunidad disponible.', 'Sistema en espera de actividad.'],
         },
         en: {
-            idle: ['Goal pending.', 'Reading not started.', 'Daily objective unmet.', 'Time available. Books waiting.', 'Awaiting progress.'],
-            focus: ['Reading mode active.', 'Maximum concentration.', 'Reading. No distractions.', 'Progress in progress.', 'Focus mode.'],
-            celebrate: ['Daily goal complete.', 'Objective met.', 'Daily progress: complete.', 'Goal reached.', 'Performance: optimal.'],
-            sleepy: ['Reading pending for several days.', 'Streak interrupted.', 'No recent reading activity.', 'Days without reading log.', 'Activity pending.'],
-            curious: ['Multiple active reads.', 'Several books in progress.', 'Active parallel reads.', 'Multiple progresses logged.', 'Open reading fronts.'],
-            ambient: ['No recent activity.', 'Reading available.', 'Daily goal pending.', 'Objective unmet.', 'Reading log expected.', 'Status: inactive.', 'Next chapter pending.', 'Progress: paused.'],
+            idle: ['Goal pending.', 'Reading not started.', 'Daily objective unmet.', 'Time available. Books waiting.', 'Awaiting progress.', 'Reading session not initiated.', 'Reading window available.', 'Action required: open book.'],
+            focus: ['Reading mode active.', 'Maximum concentration.', 'Reading. No distractions.', 'Progress in progress.', 'Focus mode.', 'Session in progress. Do not interrupt.', 'Status: active reading.'],
+            celebrate: ['Daily goal complete.', 'Objective met.', 'Daily progress: complete.', 'Goal reached.', 'Performance: optimal.', 'Daily result: satisfactory.', 'Daily objective: exceeded.'],
+            sleepy: ['Reading pending for several days.', 'Streak interrupted.', 'No recent reading activity.', 'Days without reading log.', 'Activity pending.', 'Prolonged inactivity detected.', 'Resumption recommended.'],
+            curious: ['Multiple active reads.', 'Several books in progress.', 'Active parallel reads.', 'Multiple progresses logged.', 'Open reading fronts.', 'Reading load: high.', 'Multiple titles under management.'],
+            ambient: ['No recent activity.', 'Reading available.', 'Daily goal pending.', 'Objective unmet.', 'Reading log expected.', 'Status: inactive.', 'Next chapter pending.', 'Progress: paused.', 'Reminder: reading habit pending.', 'Opportunity window available.', 'System awaiting activity.'],
         },
     },
     minimal: {
         es: {
-            idle: ['Leer.', 'Pendiente.', '¿Hoy?', 'Un capítulo.', 'Ve.'],
-            focus: ['Leyendo.', 'Enfocado.', 'Silencio.', 'Continúa.', 'Lee.'],
-            celebrate: ['Meta lista.', '¡Listo!', 'Hecho.', 'Completado.', 'Bien.'],
-            sleepy: ['Pendiente.', 'Hace días.', 'Sin leer.', 'Pausa larga.', 'Reabre.'],
-            curious: ['Varios.', 'Activos.', 'Multitarea.', 'Muchos.', 'Avanza.'],
-            ambient: ['...', 'Aquí.', 'Listo.', '¿Hoy?', 'Un rato.', 'Sigo aquí.'],
+            idle: ['Leer.', 'Pendiente.', '¿Hoy?', 'Un capítulo.', 'Ve.', 'Ahora.', 'Vamos.'],
+            focus: ['Leyendo.', 'Enfocado.', 'Silencio.', 'Continúa.', 'Lee.', 'Sigue.'],
+            celebrate: ['Meta lista.', '¡Listo!', 'Hecho.', 'Completado.', 'Bien.', 'Logrado.'],
+            sleepy: ['Pendiente.', 'Hace días.', 'Sin leer.', 'Pausa larga.', 'Reabre.', 'Vuelve.'],
+            curious: ['Varios.', 'Activos.', 'Multitarea.', 'Muchos.', 'Avanza.', 'En curso.'],
+            ambient: ['...', 'Aquí.', 'Listo.', '¿Hoy?', 'Un rato.', 'Sigo aquí.', 'Lee algo.', 'Página.'],
         },
         en: {
-            idle: ['Read.', 'Pending.', 'Today?', 'One chapter.', 'Go.'],
-            focus: ['Reading.', 'Focused.', 'Silence.', 'Continue.', 'Read.'],
-            celebrate: ['Goal done.', 'Done!', 'Complete.', 'Achieved.', 'Nice.'],
-            sleepy: ['Pending.', 'Days ago.', 'Not read.', 'Long pause.', 'Reopen.'],
-            curious: ['Several.', 'Active.', 'Multitask.', 'Many.', 'Progress.'],
-            ambient: ['...', 'Here.', 'Ready.', 'Today?', 'A while.', 'Still here.'],
+            idle: ['Read.', 'Pending.', 'Today?', 'One chapter.', 'Go.', 'Now.', 'Come on.'],
+            focus: ['Reading.', 'Focused.', 'Silence.', 'Continue.', 'Read.', 'Keep going.'],
+            celebrate: ['Goal done.', 'Done!', 'Complete.', 'Achieved.', 'Nice.', 'Nailed it.'],
+            sleepy: ['Pending.', 'Days ago.', 'Not read.', 'Long pause.', 'Reopen.', 'Return.'],
+            curious: ['Several.', 'Active.', 'Multitask.', 'Many.', 'Progress.', 'Ongoing.'],
+            ambient: ['...', 'Here.', 'Ready.', 'Today?', 'A while.', 'Still here.', 'Read something.', 'Page.'],
         },
     },
 };
@@ -292,6 +380,9 @@ export const JOKE_POOL = {
         'Un libro sin final es como una pizza sin orillas. Inaceptable.',
         '¿Qué tiene un libro que no tiene la tele? Que cuando lo apagas, el argumento no sigue solo.',
         'El problema de leer muchos libros es que uno empieza a hablar en citas.',
+        '¿Por qué el ebook no se resfría? Porque no tiene páginas que pasar.',
+        'Mi relación con la pila de pendientes es complicada. Muy complicada.',
+        '¿Cómo sabe un libro que ya terminaste? Porque dejas de mentirle sobre "el capítulo final".',
     ],
     en: [
         'Why did the book go to therapy? Too many issues.',
@@ -304,6 +395,9 @@ export const JOKE_POOL = {
         'Why did the reader bring a ladder? For high reading.',
         'A book without an ending is like a pizza with no crust. Unacceptable.',
         'Reading too many books makes you start speaking in quotes.',
+        'Why does an ebook never catch a cold? No pages to turn.',
+        'My relationship with the unread pile is complicated. Very complicated.',
+        'How does a book know you finished it? You stop lying about "the last chapter".',
     ],
 };
 
@@ -638,6 +732,12 @@ export function getScriptedResponse(intent, ctx) {
 }
 
 // ── AI prompt builders ─────────────────────────────────────────────────────
+// Versión del set de prompts — súbela cuando cambies el texto de forma
+// material (no por typos). Se adjunta a los registros de diagnóstico de
+// fallos de IA para poder correlacionar "empezó a fallar/responder raro
+// después de la versión X" sin tener que adivinar qué prompt exacto se envió.
+export const PROMPT_VERSION = 'v1';
+
 export function buildSystemPrompt({ lang, personality, books, stats, readerLevel, dailyGoalMins }) {
     const l = lang === 'en' ? 'English' : 'Spanish';
     const finished = books.filter(b => b.isFinished);

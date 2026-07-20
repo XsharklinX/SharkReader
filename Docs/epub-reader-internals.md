@@ -244,3 +244,12 @@ El fullscreen usa la Web API estándar (`document.documentElement.requestFullscr
 - Si `getContents()` devuelve vacío siempre: verificar que `isReady` es `true` y que `renditionRef.current` tiene el visor montado.
 - Si el libro no carga: verificar que `fileData` es `ArrayBuffer` antes de `book.open()`.
 - Si el progreso salta hacia atrás: es el clamping en `relocated` — solo va hacia atrás si la diferencia es >8% o si la navegación es explícitamente `'prev'`.
+# Fase 3 - Endurecimiento del lector
+
+Desde 2026-07-16 cada instancia de lector se monta con `key={book.id}`. Esto evita que estados internos como búsqueda, tipografía, TTS o paneles se hereden al cambiar entre dos tabs del mismo formato.
+
+La búsqueda EPUB/PDF usa `hooks/useReaderSearchTask.js` como guardia de ciclo de vida. Una búsqueda tardía no puede sobrescribir otra más reciente ni actualizar un lector desmontado.
+
+Las preferencias tipográficas EPUB se almacenan en `book.readerPreferences` y forman parte de IndexedDB, backups y merge de sync. La clave legacy `sr_font_<bookId>` solo se usa como migración al abrir el libro.
+
+Los extractos de búsqueda se renderizan mediante `ReaderSearchExcerpt.jsx`; no se usa HTML inyectado procedente del contenido del libro.

@@ -590,6 +590,21 @@ export default function SharkyWidget() {
                                             {aiProvider === 'openrouter' && t('Llama 3.1 8B · Modelos gratis + cientos de pago en openrouter.ai', 'Llama 3.1 8B · Free models + hundreds of paid ones at openrouter.ai')}
                                             {aiProvider === 'mistral'    && t('Mistral Small · Tier gratuito disponible en console.mistral.ai', 'Mistral Small · Free tier available at console.mistral.ai')}
                                         </p>
+                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 }}>
+                                            <label style={{ marginBottom: 0, fontSize: 11 }}>💭 {t('Comentarios sobre tu lectura', 'Comments on your reading')}</label>
+                                            <button
+                                                className={`sharky-ai-toggle ${sharkyConfig.aiBookComments ? 'active' : ''}`}
+                                                onClick={() => updateSharkyBehavior({ aiBookComments: !sharkyConfig.aiBookComments })}
+                                            >
+                                                {sharkyConfig.aiBookComments ? t('Activo', 'On') : t('Inactivo', 'Off')}
+                                            </button>
+                                        </div>
+                                        <p style={{ fontSize: 10, opacity: 0.4, marginTop: 4, lineHeight: 1.4 }}>
+                                            {t(
+                                                'Mientras lees, Sharky comenta de vez en cuando sobre el libro que tienes abierto (usa la IA de arriba).',
+                                                'While you read, Sharky occasionally comments on the book you have open (uses the AI above).',
+                                            )}
+                                        </p>
                                     </div>
                                 )}
                             </div>

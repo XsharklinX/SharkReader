@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { WORKSHOP_ADDONS, WORKSHOP_CATEGORIES, WORKSHOP_MATURITY, getLocalizedText, getWorkshopLocale } from './workshopModules';
+import React, { useCallback, useState } from 'react';
+import { WORKSHOP_ADDONS, WORKSHOP_CATEGORIES, WORKSHOP_MATURITY, getLocalizedText, getWorkshopLocale, getAddonCapabilityLabels } from './workshopModules';
+import { useModalA11y } from './hooks/useModalA11y';
 
 const CONTEXT_COLORS = {
     reader: '#3b82f6',
@@ -71,12 +72,20 @@ const WorkshopPanel = ({
     onImportCatalogEntry = () => {},
     onPickAddonFolder = () => {},
     onClose,
+    addonHistory = {},
     lang = 'es',
 }) => {
     const [activeCategory, setActiveCategory] = useState('all');
     const [addonScope, setAddonScope] = useState('all');
     const [lastToggled, setLastToggled] = useState(null);
     const [configAddonId, setConfigAddonId] = useState(null);
+    const [detailAddonId, setDetailAddonId] = useState(null);
+    // Escape solo cierra el Workshop cuando no hay un modal anidado (config o
+    // detalle) encima — si no, se limitaría a no hacer nada en vez de cerrar
+    // de golpe todo lo que había debajo.
+    const dialogRef = useModalA11y(true, useCallback(() => {
+        if (!configAddonId && !detailAddonId) onClose();
+    }, [configAddonId, detailAddonId, onClose]));
     const [sourceDraft, setSourceDraft] = useState({ name: '', url: '', type: 'opds', allowPrivateNetwork: false });
     const copy = getWorkshopLocale(lang);
 
@@ -143,9 +152,17 @@ const WorkshopPanel = ({
         },
     ];
 
+    const isPresetApplied = (preset) => preset.addons.every(id => !!addons?.[id]);
+
     const applyPreset = (preset) => {
+        const applied = isPresetApplied(preset);
         preset.addons.forEach(id => {
-            if (!addons?.[id]) onToggle(id, { allowExperimental: true });
+            const isEnabled = !!addons?.[id];
+            if (applied) {
+                if (isEnabled) onToggle(id);
+            } else if (!isEnabled) {
+                onToggle(id, { allowExperimental: true });
+            }
         });
         setLastToggled('__preset__');
         setTimeout(() => setLastToggled(null), 1200);
@@ -163,7 +180,26 @@ const WorkshopPanel = ({
     const stableCount = WORKSHOP_ADDONS.filter(addon => addon.maturity === 'stable').length;
     const experimentalCount = WORKSHOP_ADDONS.filter(addon => addon.maturity === 'experimental').length;
     const configAddon = WORKSHOP_ADDONS.find(addon => addon.id === configAddonId);
-    const configSchemaEntries = configAddon ? Object.entries(configAddon.configSchema || {}) : [];
+    const configSchemaEntries = configAddon
+        ? Object.entries(configAddon.configSchema || {}).filter(([, rule]) => !rule.hidden)
+        : [];
+    const detailAddon = WORKSHOP_ADDONS.find(addon => addon.id === detailAddonId);
+    const detailCapabilities = detailAddon ? getAddonCapabilityLabels(detailAddon, lang) : [];
+    const detailHistory = detailAddon ? (addonHistory?.[detailAddon.id] || []) : [];
+    const HISTORY_LABELS = {
+        enabled: lang === 'es' ? 'Activado' : 'Enabled',
+        disabled: lang === 'es' ? 'Desactivado' : 'Disabled',
+        config: lang === 'es' ? 'Configuración actualizada' : 'Configuration updated',
+    };
+    const formatHistoryDate = (ts) => new Date(ts).toLocaleString(lang === 'es' ? 'es-ES' : 'en-US', {
+        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+    });
+
+    const SECTIONS = [
+        { id: 'stable', label: lang === 'es' ? 'Estables' : 'Stable', match: addon => addon.status !== 'soon' && addon.maturity === 'stable' },
+        { id: 'experimental', label: lang === 'es' ? 'Experimentales' : 'Experimental', match: addon => addon.status !== 'soon' && addon.maturity === 'experimental' },
+        { id: 'soon', label: lang === 'es' ? 'Próximamente' : 'Coming soon', match: addon => addon.status === 'soon' },
+    ];
 
     const renderConfigField = (addon, key, rule) => {
         const config = addonConfig?.[addon.id] || {};
@@ -231,8 +267,9 @@ const WorkshopPanel = ({
     return (
         <div className="fixed inset-0 z-[300] flex items-end justify-center bg-black/60 backdrop-blur-sm fade-in sm:items-center" onClick={onClose} onWheel={e => e.stopPropagation()}>
             <div
-                role="dialog" aria-modal="true" aria-label={copy.title}
-                className="flex w-full flex-col rounded-t-3xl border border-[var(--border-color)] bg-[var(--surface-bg)] shadow-2xl sm:max-w-3xl sm:rounded-3xl"
+                ref={dialogRef}
+                role="dialog" aria-modal="true" aria-label={copy.title} tabIndex={-1}
+                className="flex w-full flex-col rounded-t-3xl border border-[var(--border-color)] bg-[var(--surface-bg)] shadow-2xl outline-none sm:max-w-3xl sm:rounded-3xl"
                 style={{ maxHeight: '90vh' }}
                 onClick={e => e.stopPropagation()} onWheel={e => e.stopPropagation()}>
                 <div className="flex flex-shrink-0 items-center justify-between border-b px-6 py-4" style={{ borderColor: 'var(--border-color)' }}>
@@ -248,85 +285,118 @@ const WorkshopPanel = ({
                     <button onClick={onClose} aria-label="Cerrar Workshop" className="rounded-full p-2 text-xl leading-none opacity-60 transition hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/5">x</button>
                 </div>
 
-                {false && activeAddonsList.length > 0 && (
-                    <div className="flex flex-shrink-0 flex-wrap gap-2 border-b px-5 py-2.5" style={{ borderColor: 'var(--border-color)', backgroundColor: 'color-mix(in srgb, var(--highlight) 5%, var(--surface-bg))' }}>
-                        <span className="self-center text-[9px] font-black uppercase tracking-widest opacity-40">{copy.active}</span>
-                        {activeAddonsList.map(addon => (
-                            <button
-                                key={addon.id}
-                                onClick={() => handleToggle(addon.id)}
-                                title={copy.clickToDisable}
-                                className="flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold text-white transition hover:opacity-80"
-                                style={{ background: 'linear-gradient(135deg, var(--topbar-bg), var(--highlight))' }}>
-                                <span className="h-4 w-4"><AddonIcon id={addon.id} /></span>
-                                {getLocalizedText(addon.name, lang)} x
-                            </button>
-                        ))}
+                {activeAddonsList.length > 0 && (
+                    <div className="flex flex-shrink-0 flex-wrap items-center gap-2 border-b px-5 py-3" style={{ borderColor: 'var(--border-color)', backgroundColor: 'color-mix(in srgb, var(--highlight) 4%, var(--surface-bg))' }}>
+                        <span className="text-[9px] font-black uppercase tracking-widest opacity-35">{copy.active}</span>
+                        {activeAddonsList.map(addon => {
+                            const ctxColor = CONTEXT_COLORS[addon.context] || CONTEXT_COLORS.global;
+                            return (
+                                <div
+                                    key={addon.id}
+                                    className="flex h-7 items-center gap-1.5 rounded-full py-0 pl-1 pr-1.5 text-[11px] font-bold leading-none transition"
+                                    style={{ backgroundColor: `${ctxColor}18`, border: `1px solid ${ctxColor}40`, color: ctxColor }}>
+                                    <span
+                                        className="flex h-5 w-5 flex-shrink-0 items-center justify-center overflow-hidden rounded-full [&>svg]:h-3 [&>svg]:w-3 [&>svg]:flex-shrink-0"
+                                        style={{ backgroundColor: `${ctxColor}28` }}>
+                                        <AddonIcon id={addon.id} />
+                                    </span>
+                                    <span className="max-w-[110px] truncate leading-none">{getLocalizedText(addon.name, lang)}</span>
+                                    <button
+                                        onClick={() => handleToggle(addon.id)}
+                                        title={copy.clickToDisable}
+                                        aria-label={copy.clickToDisable}
+                                        className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-black leading-none transition hover:brightness-125"
+                                        style={{ backgroundColor: `${ctxColor}30` }}>
+                                        ×
+                                    </button>
+                                </div>
+                            );
+                        })}
                     </div>
                 )}
 
-                {false && <div className="flex flex-shrink-0 gap-1.5 overflow-x-auto border-b px-5 py-2.5" style={{ borderColor: 'var(--border-color)' }}>
-                    {[
-                        ['all', lang === 'es' ? 'Todos' : 'All', WORKSHOP_ADDONS.length],
-                        ['installed', lang === 'es' ? 'Instalados' : 'Installed', activeCount],
-                        ['stable', lang === 'es' ? 'Estables' : 'Stable', stableCount],
-                        ['experimental', lang === 'es' ? 'Experimentales' : 'Experimental', experimentalCount],
-                    ].map(([id, label, count]) => (
-                        <button
-                            key={id}
-                            onClick={() => setAddonScope(id)}
-                            className={`flex-shrink-0 whitespace-nowrap rounded-full px-3 py-1 text-xs font-bold transition ${addonScope === id ? 'text-white' : 'bg-black/5 opacity-60 hover:opacity-100 dark:bg-white/5'}`}
-                            style={addonScope === id ? { background: id === 'experimental' ? '#f59e0b' : 'linear-gradient(135deg, var(--topbar-bg), var(--highlight))' } : {}}>
-                            {label} <span className="opacity-70">{count}</span>
-                        </button>
-                    ))}
-                </div>}
+                <div className="flex flex-shrink-0 flex-col gap-2.5 border-b px-5 py-3" style={{ borderColor: 'var(--border-color)' }}>
+                    <div className="inline-flex w-fit flex-shrink-0 gap-0.5 rounded-full p-0.5" style={{ backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)' }}>
+                        {[
+                            ['all', lang === 'es' ? 'Todos' : 'All', WORKSHOP_ADDONS.length],
+                            ['installed', lang === 'es' ? 'Instalados' : 'Installed', activeCount],
+                            ['stable', lang === 'es' ? 'Estables' : 'Stable', stableCount],
+                            ['experimental', lang === 'es' ? 'Experimental' : 'Experimental', experimentalCount],
+                        ].map(([id, label, count]) => (
+                            <button
+                                key={id}
+                                onClick={() => setAddonScope(id)}
+                                className={`flex-shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-[11px] font-bold transition ${addonScope === id ? 'text-white shadow-sm' : 'opacity-55 hover:opacity-90'}`}
+                                style={addonScope === id ? { backgroundColor: id === 'experimental' ? '#f59e0b' : 'var(--highlight)' } : {}}>
+                                {label} <span className="opacity-70">{count}</span>
+                            </button>
+                        ))}
+                    </div>
 
-                <div className="flex flex-shrink-0 gap-1.5 overflow-x-auto border-b px-5 py-2.5" style={{ borderColor: 'var(--border-color)' }}>
-                    {WORKSHOP_CATEGORIES.map(category => (
-                        <button
-                            key={category.id}
-                            onClick={() => setActiveCategory(category.id)}
-                            className={`flex-shrink-0 whitespace-nowrap rounded-full px-3 py-1 text-xs font-bold transition ${activeCategory === category.id ? 'text-white' : 'bg-black/5 opacity-60 hover:opacity-100 dark:bg-white/5'}`}
-                            style={activeCategory === category.id ? { background: 'linear-gradient(135deg, var(--topbar-bg), var(--highlight))' } : {}}>
-                            {getLocalizedText(category.label, lang)}
-                        </button>
-                    ))}
+                    <div className="flex flex-shrink-0 gap-4 overflow-x-auto">
+                        {WORKSHOP_CATEGORIES.map(category => (
+                            <button
+                                key={category.id}
+                                onClick={() => setActiveCategory(category.id)}
+                                className="relative flex-shrink-0 whitespace-nowrap pb-1.5 text-[12px] font-bold transition"
+                                style={{ color: activeCategory === category.id ? 'var(--highlight)' : 'var(--text-color)', opacity: activeCategory === category.id ? 1 : 0.45 }}>
+                                {getLocalizedText(category.label, lang)}
+                                {activeCategory === category.id && (
+                                    <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-full" style={{ backgroundColor: 'var(--highlight)' }} />
+                                )}
+                            </button>
+                        ))}
+                    </div>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-4" style={{ overscrollBehavior: 'contain' }}>
-                    {activeCount === 0 && (
-                        <div className="mb-4">
-                            <p className="mb-2.5 text-[10px] font-black uppercase tracking-widest opacity-40">
-                                {lang === 'es' ? 'Empieza con un preset' : 'Start with a preset'}
-                            </p>
-                            <div className="grid grid-cols-3 gap-2">
-                                {PRESETS.map(preset => (
+                    <div className="mb-4">
+                        <p className="mb-2.5 text-[10px] font-black uppercase tracking-widest opacity-40">
+                            {activeCount === 0
+                                ? (lang === 'es' ? 'Empieza con un preset' : 'Start with a preset')
+                                : (lang === 'es' ? 'Presets' : 'Presets')}
+                        </p>
+                        <div className="grid grid-cols-3 gap-2">
+                            {PRESETS.map(preset => {
+                                const applied = isPresetApplied(preset);
+                                const appliedCount = preset.addons.filter(id => !!addons?.[id]).length;
+                                return (
                                     <button
                                         key={preset.id}
                                         onClick={() => applyPreset(preset)}
-                                        className="group flex flex-col items-center gap-1.5 rounded-2xl border p-3 transition hover:scale-[1.02] active:scale-[0.98]"
-                                        style={{ borderColor: `${preset.color}30`, background: `${preset.color}08` }}>
+                                        title={applied ? (lang === 'es' ? 'Clic para quitar este preset' : 'Click to remove this preset') : undefined}
+                                        className={`group relative flex flex-col items-center gap-1.5 rounded-2xl border p-3 transition hover:scale-[1.02] active:scale-[0.98] ${applied ? 'ring-1 ring-offset-0' : ''}`}
+                                        style={{
+                                            borderColor: applied ? preset.color : `${preset.color}30`,
+                                            background: applied ? `${preset.color}14` : `${preset.color}08`,
+                                            ...(applied ? { '--tw-ring-color': preset.color } : {}),
+                                        }}>
+                                        {applied && (
+                                            <span className="absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-black text-white" style={{ backgroundColor: preset.color }}>✓</span>
+                                        )}
                                         <span className="flex h-9 w-9 items-center justify-center rounded-2xl border" style={{ borderColor: `${preset.color}35`, color: preset.color, backgroundColor: `${preset.color}12` }}>
                                             <AddonIcon id={preset.iconId} />
                                         </span>
                                         <span className="text-xs font-black">{preset.label}</span>
                                         <span className="text-[10px] opacity-50 leading-tight text-center">{preset.desc}</span>
                                         <span className="mt-1 rounded-full px-2 py-0.5 text-[9px] font-bold text-white" style={{ backgroundColor: preset.color }}>
-                                            {preset.addons.length} addons
+                                            {applied
+                                                ? (lang === 'es' ? 'Aplicado' : 'Applied')
+                                                : appliedCount > 0
+                                                    ? `${appliedCount}/${preset.addons.length}`
+                                                    : `${preset.addons.length} addons`}
                                         </span>
                                     </button>
-                                ))}
-                            </div>
+                                );
+                            })}
                         </div>
-                    )}
-                    <div className="grid gap-2.5 sm:grid-cols-2">
-                        {filtered.map(addon => {
+                    </div>
+                    {(() => {
+                        const renderCard = (addon) => {
                             const enabled = !!addons?.[addon.id];
                             const isSoon = addon.status === 'soon';
                             const justToggled = lastToggled === addon.id;
                             const ctxColor = CONTEXT_COLORS[addon.context] || CONTEXT_COLORS.global;
-                            const config = addonConfig?.[addon.id] || {};
                             const addonName = getLocalizedText(addon.name, lang);
                             const addonDesc = getLocalizedText(addon.desc, lang);
                             const contextLabel = copy.contexts[addon.context] || copy.contexts.global;
@@ -335,21 +405,34 @@ const WorkshopPanel = ({
                             return (
                                 <div
                                     key={addon.id}
+                                    role={isSoon ? undefined : 'switch'}
+                                    aria-checked={isSoon ? undefined : enabled}
+                                    aria-label={isSoon ? undefined : addonName}
+                                    tabIndex={isSoon ? undefined : 0}
                                     className={`relative overflow-hidden rounded-2xl border p-4 transition-all ${isSoon ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'} ${enabled ? 'ring-1 ring-[var(--highlight)]/25' : ''}`}
                                     style={{
                                         borderColor: enabled ? 'color-mix(in srgb, var(--highlight) 55%, var(--border-color))' : 'var(--border-color)',
                                         background: enabled ? 'color-mix(in srgb, var(--highlight) 7%, var(--bg-color))' : 'var(--bg-color)',
                                         boxShadow: justToggled ? '0 0 0 3px var(--highlight)' : 'none',
                                     }}
-                                    onClick={() => !isSoon && handleToggle(addon.id)}>
+                                    onClick={() => !isSoon && handleToggle(addon.id)}
+                                    onKeyDown={(e) => { if (!isSoon && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleToggle(addon.id); } }}>
                                     {justToggled && <div className="pointer-events-none absolute inset-0 rounded-2xl" style={{ background: 'var(--highlight)', opacity: 0.12, animation: 'fadeOut 1.2s forwards' }} />}
+
+                                    <button
+                                        onClick={(event) => { event.stopPropagation(); setDetailAddonId(addon.id); }}
+                                        title={lang === 'es' ? 'Ver detalles' : 'View details'}
+                                        aria-label={lang === 'es' ? 'Ver detalles del addon' : 'View addon details'}
+                                        className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-black opacity-40 transition hover:bg-black/10 hover:opacity-90 dark:hover:bg-white/10">
+                                        i
+                                    </button>
 
                                     <div className="flex items-start gap-3">
                                         <div className="mt-0.5 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border" style={{ borderColor: `${ctxColor}35`, color: ctxColor, backgroundColor: `${ctxColor}12` }}>
                                             <AddonIcon id={addon.id} />
                                         </div>
                                         <div className="min-w-0 flex-1">
-                                            <div className="mb-1 flex items-start justify-between gap-3">
+                                            <div className="mb-1 flex items-start justify-between gap-3 pr-5">
                                                 <div className="min-w-0">
                                                     <span className="block truncate text-sm font-black">{addonName}</span>
                                                     <span className="mt-0.5 block text-[10px] font-bold uppercase tracking-[0.16em] opacity-40">{categoryLabel || contextLabel}</span>
@@ -377,174 +460,6 @@ const WorkshopPanel = ({
                                                 </p>
                                             )}
 
-                                            {false && addon.id === 'reminders' && enabled && (
-                                                <label className="mt-3 flex items-center gap-2 text-[10px] font-bold opacity-70" onClick={e => e.stopPropagation()}>
-                                                    {copy.fields.hours}
-                                                    <input
-                                                        type="number"
-                                                        min="1"
-                                                        max="72"
-                                                        value={config.minHoursSinceLastOpen || 1}
-                                                        onChange={e => onUpdateAddonConfig(addon.id, { minHoursSinceLastOpen: Math.max(1, Number(e.target.value) || 1) })}
-                                                        className="w-14 rounded-lg bg-black/10 px-2 py-1 outline-none dark:bg-white/10"
-                                                    />
-                                                </label>
-                                            )}
-
-                                            {false && addon.id === 'watchedFolder' && enabled && (
-                                                <div className="mt-3 space-y-2 text-[10px] font-bold opacity-75" onClick={e => e.stopPropagation()}>
-                                                    <button onClick={() => onPickAddonFolder(addon.id, 'folder')} className="rounded-lg bg-black/10 px-2 py-1 hover:bg-black/15 dark:bg-white/10 dark:hover:bg-white/15">
-                                                        {config.folder ? copy.folder.change : copy.folder.choose}
-                                                    </button>
-                                                    <p className="truncate opacity-60">{config.folder || copy.folder.none}</p>
-                                                    <label className="flex items-center gap-2">
-                                                        {copy.fields.minutes}
-                                                        <input
-                                                            type="number"
-                                                            min="5"
-                                                            max="1440"
-                                                            value={config.intervalMinutes || 30}
-                                                            onChange={e => onUpdateAddonConfig(addon.id, { intervalMinutes: Math.max(5, Number(e.target.value) || 30) })}
-                                                            className="w-16 rounded-lg bg-black/10 px-2 py-1 outline-none dark:bg-white/10"
-                                                        />
-                                                    </label>
-                                                </div>
-                                            )}
-
-                                            {false && addon.id === 'autoBackup' && enabled && (
-                                                <div className="mt-3 space-y-2 text-[10px] font-bold opacity-75" onClick={e => e.stopPropagation()}>
-                                                    <button onClick={() => onPickAddonFolder(addon.id, 'folder')} className="rounded-lg bg-black/10 px-2 py-1 hover:bg-black/15 dark:bg-white/10 dark:hover:bg-white/15">
-                                                        {config.folder ? copy.folder.changeDestination : copy.folder.chooseDestination}
-                                                    </button>
-                                                    <p className="truncate opacity-60">{config.folder || copy.folder.noDestination}</p>
-                                                    <label className="flex items-center gap-2">
-                                                        {copy.fields.days}
-                                                        <input
-                                                            type="number"
-                                                            min="1"
-                                                            max="90"
-                                                            value={config.everyDays || 7}
-                                                            onChange={e => onUpdateAddonConfig(addon.id, { everyDays: Math.max(1, Number(e.target.value) || 7) })}
-                                                            className="w-16 rounded-lg bg-black/10 px-2 py-1 outline-none dark:bg-white/10"
-                                                        />
-                                                    </label>
-                                                </div>
-                                            )}
-
-                                            {false && addon.id === 'dyslexiaMode' && enabled && (
-                                                <div className="mt-3 space-y-2 text-[10px] font-bold opacity-75" onClick={e => e.stopPropagation()}>
-                                                    <div className="flex items-center gap-2">
-                                                        <span>{lang === 'es' ? 'Tamaño de texto:' : 'Text size:'}</span>
-                                                        <select
-                                                            value={config.fontScale || '1.1'}
-                                                            onChange={e => onUpdateAddonConfig(addon.id, { fontScale: e.target.value })}
-                                                            className="rounded-lg bg-black/10 px-2 py-1 outline-none dark:bg-white/10">
-                                                            <option value="1.0">{lang === 'es' ? 'Normal' : 'Normal'}</option>
-                                                            <option value="1.1">{lang === 'es' ? 'Grande' : 'Large'}</option>
-                                                            <option value="1.2">{lang === 'es' ? 'Más grande' : 'Larger'}</option>
-                                                        </select>
-                                                    </div>
-                                                    <label className="flex items-center gap-2 cursor-pointer">
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={config.strongerContrast !== false}
-                                                            onChange={e => onUpdateAddonConfig(addon.id, { strongerContrast: e.target.checked })}
-                                                        />
-                                                        {lang === 'es' ? 'Mayor contraste' : 'Stronger contrast'}
-                                                    </label>
-                                                </div>
-                                            )}
-
-                                            {false && addon.id === 'bookRoulette' && enabled && (
-                                                <div className="mt-3 space-y-1.5 text-[10px] font-bold opacity-75" onClick={e => e.stopPropagation()}>
-                                                    <label className="flex items-center gap-2 cursor-pointer">
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={config.onlyUnread !== false}
-                                                            onChange={e => onUpdateAddonConfig(addon.id, { onlyUnread: e.target.checked })}
-                                                        />
-                                                        {lang === 'es' ? 'Solo no leídos' : 'Unread only'}
-                                                    </label>
-                                                    <label className="flex items-center gap-2 cursor-pointer">
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={!!config.onlyFavorites}
-                                                            onChange={e => onUpdateAddonConfig(addon.id, { onlyFavorites: e.target.checked })}
-                                                        />
-                                                        {lang === 'es' ? 'Solo favoritos' : 'Favorites only'}
-                                                    </label>
-                                                    <div className="pt-0.5">
-                                                        <div className="opacity-60 mb-1">{lang === 'es' ? 'Filtrar por etiqueta' : 'Filter by tag'}</div>
-                                                        <input
-                                                            type="text"
-                                                            value={config.filterTag || ''}
-                                                            onChange={e => onUpdateAddonConfig(addon.id, { filterTag: e.target.value })}
-                                                            placeholder={lang === 'es' ? 'ej: fantasía' : 'e.g. fantasy'}
-                                                            className="w-full px-2 py-1 rounded-lg text-[10px]"
-                                                            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', color: 'inherit', outline: 'none' }}
-                                                        />
-                                                    </div>
-                                                </div>
-                                            )}
-
-                                            {false && addon.id === 'soundFeedback' && enabled && (
-                                                <div className="mt-3 space-y-2 text-[10px] font-bold opacity-75" onClick={e => e.stopPropagation()}>
-                                                    <label className="flex items-center gap-2">
-                                                        {lang === 'es' ? 'Volumen:' : 'Volume:'}
-                                                        <input
-                                                            type="range"
-                                                            min="0"
-                                                            max="100"
-                                                            value={config.volume ?? 50}
-                                                            onChange={e => onUpdateAddonConfig(addon.id, { volume: Number(e.target.value) })}
-                                                            className="flex-1 accent-[var(--highlight)]"
-                                                        />
-                                                        <span className="w-8 text-right opacity-60">{config.volume ?? 50}%</span>
-                                                    </label>
-                                                    {[
-                                                        { key: 'pageTurn', label: lang === 'es' ? 'Paso de página' : 'Page turn' },
-                                                        { key: 'achievements', label: lang === 'es' ? 'Logros y libros' : 'Achievements & books' },
-                                                        { key: 'streaks', label: lang === 'es' ? 'Rachas' : 'Streaks' },
-                                                        { key: 'sharky', label: 'Sharky' },
-                                                    ].map(opt => (
-                                                        <label key={opt.key} className="flex items-center gap-2 cursor-pointer">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={config[opt.key] !== false}
-                                                                onChange={e => onUpdateAddonConfig(addon.id, { [opt.key]: e.target.checked })}
-                                                            />
-                                                            {opt.label}
-                                                        </label>
-                                                    ))}
-                                                </div>
-                                            )}
-
-                                            {false && addon.id === 'levelSystem' && enabled && (
-                                                <div className="mt-3 space-y-2 text-[10px] font-bold opacity-75" onClick={e => e.stopPropagation()}>
-                                                    <label className="flex items-center gap-2">
-                                                        {lang === 'es' ? 'XP por nivel:' : 'XP per level:'}
-                                                        <input
-                                                            type="number"
-                                                            min="50"
-                                                            max="1000"
-                                                            step="50"
-                                                            value={config.xpPerLevel || 100}
-                                                            onChange={e => onUpdateAddonConfig(addon.id, { xpPerLevel: Math.max(50, Number(e.target.value) || 100) })}
-                                                            className="w-16 rounded-lg bg-black/10 px-2 py-1 outline-none dark:bg-white/10"
-                                                        />
-                                                    </label>
-                                                    <div className="flex items-center gap-2">
-                                                        <span>{lang === 'es' ? 'Mostrar como:' : 'Display as:'}</span>
-                                                        <select
-                                                            value={config.displayStyle || 'full'}
-                                                            onChange={e => onUpdateAddonConfig(addon.id, { displayStyle: e.target.value })}
-                                                            className="rounded-lg bg-black/10 px-2 py-1 outline-none dark:bg-white/10">
-                                                            <option value="full">{lang === 'es' ? 'Nivel + XP' : 'Level + XP'}</option>
-                                                            <option value="minimal">{lang === 'es' ? 'Solo nivel' : 'Level only'}</option>
-                                                        </select>
-                                                    </div>
-                                                </div>
-                                            )}
                                         </div>
                                         {!isSoon && (
                                             <div className="relative mt-0.5 flex-shrink-0" style={{ width: 38, height: 22, borderRadius: 11, backgroundColor: enabled ? 'var(--highlight)' : 'rgba(128,128,128,0.25)', transition: 'background-color 0.2s' }}>
@@ -556,8 +471,23 @@ const WorkshopPanel = ({
                                     {enabled && <div className="absolute bottom-0 left-0 right-0 h-0.5 rounded-b-2xl" style={{ backgroundColor: 'var(--highlight)' }} />}
                                 </div>
                             );
-                        })}
-                    </div>
+                        };
+
+                        if (addonScope !== 'all') {
+                            return <div className="grid gap-2.5 sm:grid-cols-2">{filtered.map(renderCard)}</div>;
+                        }
+
+                        return SECTIONS.map(section => {
+                            const sectionAddons = filtered.filter(section.match);
+                            if (sectionAddons.length === 0) return null;
+                            return (
+                                <div key={section.id} className="mb-5 last:mb-0">
+                                    <p className="mb-2.5 text-[10px] font-black uppercase tracking-widest opacity-40">{section.label} <span className="opacity-60">{sectionAddons.length}</span></p>
+                                    <div className="grid gap-2.5 sm:grid-cols-2">{sectionAddons.map(renderCard)}</div>
+                                </div>
+                            );
+                        });
+                    })()}
 
                     {addons?.externalSources && (
                         <div className="mt-4 rounded-2xl border p-4" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-color)' }}>
@@ -680,6 +610,90 @@ const WorkshopPanel = ({
                 </div>
             </div>
 
+            {detailAddon && (
+                <div className="fixed inset-0 z-[340] flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm" onClick={(event) => { event.stopPropagation(); setDetailAddonId(null); }}>
+                    <div
+                        className="w-full max-w-md rounded-3xl border p-5 shadow-2xl"
+                        style={{ backgroundColor: 'var(--surface-bg)', borderColor: 'var(--border-color)' }}
+                        onClick={event => event.stopPropagation()}>
+                        <div className="mb-4 flex items-start justify-between gap-4">
+                            <div className="flex items-start gap-3">
+                                <div className="mt-0.5 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border" style={{ borderColor: `${CONTEXT_COLORS[detailAddon.context] || CONTEXT_COLORS.global}35`, color: CONTEXT_COLORS[detailAddon.context] || CONTEXT_COLORS.global, backgroundColor: `${CONTEXT_COLORS[detailAddon.context] || CONTEXT_COLORS.global}12` }}>
+                                    <AddonIcon id={detailAddon.id} />
+                                </div>
+                                <div>
+                                    <p className="text-[10px] font-black uppercase tracking-[0.22em] opacity-45">
+                                        {getLocalizedText(WORKSHOP_MATURITY[detailAddon.maturity], lang)}
+                                    </p>
+                                    <h3 className="mt-1 text-xl font-black">{getLocalizedText(detailAddon.name, lang)}</h3>
+                                </div>
+                            </div>
+                            <button onClick={() => setDetailAddonId(null)} aria-label={lang === 'es' ? 'Cerrar detalle del addon' : 'Close addon details'} className="rounded-full p-2 text-xl leading-none opacity-60 transition hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/5">×</button>
+                        </div>
+
+                        <div className="max-h-[55vh] space-y-4 overflow-y-auto pr-1" style={{ overscrollBehavior: 'contain' }}>
+                            <div>
+                                <p className="mb-1 text-[10px] font-black uppercase tracking-widest opacity-40">{lang === 'es' ? 'Qué hace' : 'What it does'}</p>
+                                <p className="text-sm leading-relaxed opacity-80">{getLocalizedText(detailAddon.desc, lang)}</p>
+                            </div>
+
+                            {detailAddon.docs && (
+                                <div>
+                                    <p className="mb-1 text-[10px] font-black uppercase tracking-widest opacity-40">{lang === 'es' ? 'Cómo usarlo' : 'How to use it'}</p>
+                                    <p className="rounded-2xl bg-black/5 p-3 text-sm leading-relaxed opacity-80 dark:bg-white/5">{getLocalizedText(detailAddon.docs, lang)}</p>
+                                </div>
+                            )}
+
+                            <div>
+                                <p className="mb-1.5 text-[10px] font-black uppercase tracking-widest opacity-40">{lang === 'es' ? 'Permisos y capacidades' : 'Permissions & capabilities'}</p>
+                                {detailCapabilities.length > 0 ? (
+                                    <ul className="space-y-1.5">
+                                        {detailCapabilities.map(cap => (
+                                            <li key={cap.id} className="flex items-center gap-2 rounded-xl bg-black/5 px-3 py-2 text-xs font-bold opacity-75 dark:bg-white/5">
+                                                <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full" style={{ backgroundColor: CONTEXT_COLORS[detailAddon.context] || CONTEXT_COLORS.global }} />
+                                                {cap.label}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                ) : (
+                                    <p className="rounded-xl bg-black/5 px-3 py-2 text-xs font-bold opacity-50 dark:bg-white/5">
+                                        {lang === 'es' ? 'No requiere permisos especiales.' : 'No special permissions required.'}
+                                    </p>
+                                )}
+                            </div>
+
+                            {detailHistory.length > 0 && (
+                                <div>
+                                    <p className="mb-1.5 text-[10px] font-black uppercase tracking-widest opacity-40">{lang === 'es' ? 'Historial de cambios' : 'Change history'}</p>
+                                    <ul className="space-y-1.5">
+                                        {detailHistory.map(entry => (
+                                            <li key={entry.id} className="flex items-center justify-between gap-2 rounded-xl bg-black/5 px-3 py-2 text-xs font-bold dark:bg-white/5">
+                                                <span className="opacity-75">{HISTORY_LABELS[entry.type] || entry.type}</span>
+                                                <span className="flex-shrink-0 opacity-40">{formatHistoryDate(entry.timestamp)}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="mt-5 flex gap-2">
+                            {addons?.[detailAddon.id] && detailAddon.lifecycle?.configurable && (
+                                <button
+                                    onClick={() => { setDetailAddonId(null); setConfigAddonId(detailAddon.id); }}
+                                    className="flex-1 rounded-2xl border py-3 text-sm font-black transition hover:bg-black/5 dark:hover:bg-white/5"
+                                    style={{ borderColor: 'var(--border-color)' }}>
+                                    {copy.configure || (lang === 'es' ? 'Configurar' : 'Configure')}
+                                </button>
+                            )}
+                            <button onClick={() => setDetailAddonId(null)} className="flex-1 rounded-2xl bg-[var(--highlight)] py-3 text-sm font-black text-white transition hover:brightness-110">
+                                {lang === 'es' ? 'Listo' : 'Done'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {configAddon && (
                 <div className="fixed inset-0 z-[340] flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm" onClick={(event) => { event.stopPropagation(); setConfigAddonId(null); }}>
                     <div
@@ -692,7 +706,7 @@ const WorkshopPanel = ({
                                 <h3 className="mt-1 text-xl font-black">{getLocalizedText(configAddon.name, lang)}</h3>
                                 <p className="mt-1 text-xs opacity-55">{getLocalizedText(configAddon.desc, lang)}</p>
                             </div>
-                            <button onClick={() => setConfigAddonId(null)} className="rounded-full p-2 text-xl leading-none opacity-60 transition hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/5">×</button>
+                            <button onClick={() => setConfigAddonId(null)} aria-label={lang === 'es' ? 'Cerrar configuración del addon' : 'Close addon configuration'} className="rounded-full p-2 text-xl leading-none opacity-60 transition hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/5">×</button>
                         </div>
 
                         <div className="max-h-[55vh] space-y-3 overflow-y-auto pr-1" style={{ overscrollBehavior: 'contain' }}>
